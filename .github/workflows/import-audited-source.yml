@@ -1,0 +1,52 @@
+name: Import audited source
+on:
+  push:
+    branches: ['fix/publish-and-audit-v0.2.1']
+    paths: ['.delivery/READY.json']
+permissions:
+  contents: write
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/publish-and-audit-v0.2.1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify and unpack audited text files
+        shell: python
+        run: |
+          import base64, hashlib, json, lzma, os, pathlib, shutil
+          root = pathlib.Path.cwd()
+          spec = json.loads((root/'.delivery/READY.json').read_text())
+          encoded = ''.join((root/'.delivery'/name).read_text().strip() for name in spec['parts'])
+          packed = base64.b64decode(encoded, validate=True)
+          assert hashlib.sha256(packed).hexdigest() == spec['sha256'], 'Payload checksum mismatch'
+          files = json.loads(lzma.decompress(packed))
+          assert isinstance(files, dict) and len(files) == spec['file_count']
+          for name, content in files.items():
+              path = pathlib.PurePosixPath(name)
+              assert not path.is_absolute() and '..' not in path.parts and '.git' not in path.parts
+              assert isinstance(content, str) and not name.startswith('.delivery/')
+              target = root / path
+              target.parent.mkdir(parents=True, exist_ok=True)
+              target.write_bytes(content.encode('utf-8'))
+          shutil.rmtree(root/'.delivery')
+          (root/'.github/workflows/import-audited-source.yml').unlink()
+          for name in ('install.sh','start.sh','start.command'):
+              (root/name).chmod(0o755)
+          manifest = json.loads((root/'MANIFEST.json').read_text())
+          for name, checksum in manifest['files'].items():
+              assert hashlib.sha256((root/name).read_bytes()).hexdigest() == checksum, name
+          print('Verified', len(files), 'audited source files')
+      - name: Commit plaintext source to the requested branch
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add --all
+          git commit -m 'Опубликовать рабочее место Арктика-М 0.2.1 после аудита'
+          git push origin HEAD:fix/publish-and-audit-v0.2.1
