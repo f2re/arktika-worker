@@ -19,7 +19,7 @@ jobs:
       - name: Verify and unpack audited text files
         shell: python
         run: |
-          import base64, hashlib, json, lzma, os, pathlib, shutil
+          import base64, hashlib, json, lzma, pathlib, shutil
           root = pathlib.Path.cwd()
           spec = json.loads((root/'.delivery/READY.json').read_text())
           encoded = ''.join((root/'.delivery'/name).read_text().strip() for name in spec['parts'])
@@ -32,10 +32,11 @@ jobs:
               assert not path.is_absolute() and '..' not in path.parts and '.git' not in path.parts
               assert isinstance(content, str) and not name.startswith('.delivery/')
               target = root / path
+              if name.startswith('.github/workflows/'):
+                  assert target.read_bytes() == content.encode('utf-8'), 'Workflows are managed separately'
               target.parent.mkdir(parents=True, exist_ok=True)
               target.write_bytes(content.encode('utf-8'))
           shutil.rmtree(root/'.delivery')
-          (root/'.github/workflows/import-audited-source.yml').unlink()
           for name in ('install.sh','start.sh','start.command'):
               (root/name).chmod(0o755)
           manifest = json.loads((root/'MANIFEST.json').read_text())
