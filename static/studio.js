@@ -36,7 +36,7 @@ function workflowLayout() {
     #profilePreview{padding:12px 14px;border-radius:12px;background:var(--bg);font-size:13px;line-height:1.65;overflow-wrap:anywhere}
     #profileMetadata[open],#profileLimits[open]{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 16px}
     #profileMetadata>summary,#profileLimits>summary,#profileLimits>p{grid-column:1/-1}
-    #profileFileName{overflow-wrap:anywhere;font-size:12px}
+    #profileFileName{display:none}
     #profileImportError{white-space:normal}
     #profileImportDetails a{overflow-wrap:anywhere}
     #profileImportDetails input[aria-invalid=true]{border-color:#a23b51}
@@ -343,17 +343,18 @@ function tasks() {
 
 productHint = function() {
   original.productHint();drawChannelChips();
-  $$('#taskGrid button').forEach(b=>b.classList.toggle('active',b.dataset.task===$('#product').value));
   const guide=UI.guides[$('#product').value];
-  if(guide)$('#productHint').textContent=guide.purpose;
+  if(guide&&$('#product').value!=='channel')$('#productHint').textContent=guide.purpose;
   const have=new Set((S.scene?.channels||[]).map(c=>c.channel));
   for(const button of $$('#taskGrid button')){
     const id=button.dataset.task,product=S.registry.products.find(p=>p.id===id);
     const required=id==='channel'?[9]:(product?.channels||[]);
     const missing=required.filter(ch=>!have.has(ch));
+    const active=id===$('#product').value&&(id!=='channel'||Number($('#channel').value)===9);
+    button.classList.toggle('active',active);
     button.disabled=id==='motion'?S.scenes.length<2:!S.scene||missing.length>0;
     button.title=missing.length?'Нужны каналы: '+missing.join(', '):!S.scene?'Сначала откройте снимок':'';
-    button.setAttribute('aria-pressed',String(id===$('#product').value));
+    button.setAttribute('aria-pressed',String(active));
   }
   const item=S.registry.products.find(p=>p.id===$('#product').value);
   const needed=item?.id==='channel'?[Number($('#channel').value)]:(item?.channels||[]);
@@ -445,7 +446,9 @@ function legendSwatches(guide) {
 }
 
 drawLegend = function(l) {
-  let guide=interpretedGuide(l.product);if(l.product==='channel'&&l.units!=='K')guide={title:'Значения канала · DN',purpose:'Числа из файла, не температура. Цвет помогает сравнивать сигнал и различать структуру.',swatches:[]};const temperature=l.units==='K'&&l.product==='channel';
+  let guide=interpretedGuide(l.product);if(l.product==='channel'&&l.units!=='K')guide={title:'Значения канала · DN',purpose:'Числа из файла, не температура. Цвет помогает сравнивать сигнал и различать структуру.',swatches:[]};
+  if(l.product==='channel'&&l.units==='K'&&Number(S.product?.request.channel)!==9)guide={title:'Яркостная температура выбранного канала',purpose:channelMeta(S.product.request.channel)?.description||'Температура излучения; не температура воздуха.',swatches:[]};
+  const temperature=l.units==='K'&&l.product==='channel';
   const value=v=>temperature&&v!==null?v-273.15:v;
   const unit=temperature?'°C':l.units;
   let html=`<h3>${escape(guide.title||l.title)}</h3><p class="hint">${escape(guide.purpose||l.meaning||'')}</p>`;
@@ -605,12 +608,15 @@ function profileReady() {
   const ready=Boolean(UI.profileText)&&selectors.every(id=>$(id).value.trim()!==''&&$(id).checkValidity());
   $('#importProfile').disabled=!ready||Boolean(UI.profileImportBusy);
   for(const id of selectors)$(id).setAttribute('aria-invalid',String(Boolean(UI.profileText)&&(!$(id).value.trim()||!$(id).checkValidity())));
+  if(UI.profileText&&UI.profileSummary){
+    $('#profilePreview').textContent=UI.profileSummary+(ready?' Источник: '+$('#profileSource').value+'; срок: '+$('#profileTime').value.replace('T',' ')+' UTC; координаты: '+$('#profileLat').value+'°, '+$('#profileLon').value+'°.':' Проверьте источник, срок, координаты и допуски ниже.');
+  }
   return ready;
 }
 
 async function profileFileChanged() {
   const sequence=(UI.profileFileSequence||0)+1;UI.profileFileSequence=sequence;
-  UI.profileText='';$('#profileFileName').textContent='';$('#profilePreview').replaceChildren();$('#profilePreview').hidden=true;
+  UI.profileText='';UI.profileSummary='';$('#profileFileName').textContent='';$('#profilePreview').replaceChildren();$('#profilePreview').hidden=true;
   $('#profileMetadata').hidden=true;$('#profileLimits').hidden=true;
   inlineError('#profileImportError','');
   for(const id of ['#profileSource','#profileLat','#profileLon','#profileTime'])$(id).value='';
@@ -632,12 +638,11 @@ async function profileFileChanged() {
       const header=text.trim().split(/\r?\n/)[0].split(/[;,]/).map(x=>x.trim());
       if(!header.includes('height_m')||!header.some(x=>x==='temperature_c'||x==='temperature_k'))throw Error('CSV: нужны столбцы height_m и temperature_c либо temperature_k. Формат описан по ссылке над полями.');
     }
-    UI.profileText=text;$('#profileFileName').textContent=file.name;
-    const missing=['#profileSource','#profileTime','#profileLat','#profileLon'].some(id=>!$(id).value.trim());
-    $('#profilePreview').textContent=summary+(missing?' Заполните недостающие сведения.':' Источник: '+$('#profileSource').value+'; срок: '+$('#profileTime').value.replace('T',' ')+' UTC; координаты: '+$('#profileLat').value+'°, '+$('#profileLon').value+'°.');
+    UI.profileText=text;UI.profileSummary=summary;$('#profileFileName').textContent=file.name;
+    const missing=['#profileSource','#profileTime','#profileLat','#profileLon'].some(id=>!$(id).value.trim()||!$(id).checkValidity());
     $('#profilePreview').hidden=false;$('#profileMetadata').hidden=false;$('#profileLimits').hidden=false;$('#profileMetadata').open=missing;
     $('#profileImportHint').textContent='Проверьте сведения. Структура и единицы будут проверены при добавлении.';profileReady();
-  }catch(error){if(sequence===UI.profileFileSequence){UI.profileText='';inlineError('#profileImportError',error.message);profileReady();}}
+  }catch(error){if(sequence===UI.profileFileSequence){UI.profileText='';inlineError('#profileImportError',error instanceof SyntaxError?'Не удалось разобрать JSON. Проверьте скобки, запятые и кавычки в файле.':error.message);profileReady();}}
 }
 
 async function importProfile() {
@@ -761,17 +766,18 @@ function renderRoute(r, requested) {
 calculateRoute = async function() {
   invalidateRoute();
   if(!S.product){inlineError('#routeError','Откройте снимок для маршрута.');return;}
+  if(UI.waypointInvalid){inlineError('#routeError','Исправьте координаты точки маршрута.');return;}
   const product=S.product.id,rev=UI.routeRevision;
   UI.routeBusy=true;syncRouteControls();$('#calculateRoute').textContent='Выборка значений…';
   try{
     const points=routePoints();if(points.length<2)throw Error('Добавьте как минимум две точки маршрута.');
     const timed=$('#routeTimingEnabled').checked,profile=$('#routeProfile').value;
     const step=Number($('#routeStep').value),speed=Number($('#speed').value);
-    if(!Number.isFinite(step)||step<1||step>500)throw Error('Шаг выборки: от 1 до 500 км.');
+    if(!Number.isFinite(step)||step<1||step>500){$('#routeOptions').open=true;throw Error('Шаг выборки: от 1 до 500 км.');}
     if(timed&&(!Number.isFinite(speed)||speed<=0||speed>2000))throw Error('Скорость: больше 0 и не более 2000 км/ч.');
     if(timed&&!$('#departure').value)throw Error('Укажите время отправления UTC или отключите учёт времени прохождения.');
     const altitude=profile&&$('#routeAltitude').value!==''?Number($('#routeAltitude').value):null;
-    if(profile&&(altitude===null||!Number.isFinite(altitude)||altitude< -500||altitude>30000))throw Error('Укажите высоту от −500 до 30 000 м над уровнем моря.');
+    if(profile&&(altitude===null||!Number.isFinite(altitude)||altitude< -500||altitude>30000)){ $('#routeProfileOptions').open=true;throw Error('Укажите высоту от −500 до 30 000 м над уровнем моря.');}
     const value=$('#departure').value;
     const data={product,points,step_km:step,speed_kmh:timed?speed:300,
       departure:timed?value+(value.length===16?':00Z':'Z'):'',profile_id:profile||undefined,altitude_m:altitude};
@@ -867,6 +873,7 @@ registerEvents = function() {
   $('#routeTimingEnabled').onchange=()=>{invalidateRoute();syncRouteControls();};
   bind('#calculatePoint',()=>{if(UI.lastPoint)return inspectAt(UI.lastPoint.x,UI.lastPoint.y,true);});
   $('#analysisProfile').onchange=()=>{syncProfileControls();if(UI.lastPoint)inspectAt(UI.lastPoint.x,UI.lastPoint.y,true).catch(e=>toast(e.message));};
+  $('#cloudHeightDetails').addEventListener('toggle',()=>{if(UI.analysis)drawProfilePoint(UI.analysis.profile_result);});
   bind('#assumptionInfo',()=>ask('Облачность и непрозрачность','Подтверждение относится только к выбранному пикселю. Оно должно опираться на дополнительный анализ или независимую маску, а не только на цвет. Для высоты принимается Tя9 = T вершины; атмосферная поправка не выполнена.'));
   $('#product').onchange=()=>{clearRange();productHint();requestBuild();};
   $('#channel').onchange=()=>{clearRange();productHint();requestBuild();};
