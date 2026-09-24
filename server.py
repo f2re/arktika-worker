@@ -116,7 +116,7 @@ class Handler(BaseHTTPRequestHandler):
             elif path=='/api/map':result=app.context(q.get('preset','arctic'),int(q.get('width',1000)),q.get('product'))
             elif path=='/api/motion-result':
                 p=app.store.root/'motion.json'
-                result=json.loads(p.read_text()) if p.exists() else {'vectors':[],'candidates':[]}
+                result=json.loads(p.read_text(encoding='utf-8')) if p.exists() else {'vectors':[],'candidates':[]}
             elif path.startswith('/artifact/'):
                 bits=path.split('/')
                 if len(bits)!=4:raise ValueError('Неверный путь продукта.')
