@@ -1,7 +1,0 @@
-{
-  "sha256": "d19a5448510e743667d101a68759498da78d5703a7c58f5b2a25eadda69f16a1",
-  "parts": ["part-00.txt", "part-01.txt", "part-02.txt", "part-03.txt", "part-04.txt", "part-05.txt", "part-06.txt"],
-  "file_count": 75,
-  "generated": ["docs/index.html", "static/land.geojson"],
-  "manifest_sha256": "f355520f53c66993cab48e59777975ff1b4b92b358a1a1739db66436777dd845"
-}
