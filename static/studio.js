@@ -125,7 +125,7 @@ function drawChannelChips() {
 
 const TASKS=[
   {id:'micro24',icon:'cloud',name:'Облачность',hint:'Фаза и прозрачность'},
-  {id:'channel',icon:'thermometer',name:'Температура',hint:'Оконный канал 9'},
+  {id:'channel',icon:'thermometer',name:'Оконный ИК',hint:'Канал 9 · Tя при калибровке'},
   {id:'night',icon:'fog',name:'Низкие облака',hint:'Ночная микрофизика'},
   {id:'difference',icon:'layers',name:'Разности',hint:'Оконный контраст'},
   {id:'phase',icon:'snow',name:'Фаза',hint:'Совместные признаки'},
@@ -362,7 +362,7 @@ async function profileFileChanged() {
   if(UI.profileText.trim().startsWith('{')){
     const p=JSON.parse(UI.profileText);
     for(const [field,selector] of [['source','#profileSource'],['lat','#profileLat'],['lon','#profileLon'],['radius_km','#profileRadius'],['max_hours','#profileHours']])if(p[field]!==undefined)$(selector).value=p[field];
-    if(p.valid_time){const d=new Date(p.valid_time);if(Number.isFinite(d.getTime()))$('#profileTime').value=d.toISOString().slice(0,19);}
+    if(p.valid_time){const stamp=String(p.valid_time).trim();if(/(?:Z|[+-]\\d{2}:?\\d{2})$/i.test(stamp)){const d=new Date(stamp);if(Number.isFinite(d.getTime()))$('#profileTime').value=d.toISOString().slice(0,19);}}
   }
 }
 
@@ -440,7 +440,7 @@ calculateRoute = async function() {
     const r=await api('/api/route',data);
     if(S.product?.id!==product||rev!==UI.routeRevision)return;
     S.route=r;setDrawing(false);
-    $('#routeResult').innerHTML=`<div class="section-heading"><h3>${num(r.length_km,0)} км</h3><span class="micro">${r.samples.length} точек</span></div>${routeChart(r)}<div class="row"><a href="/route-export/${r.id}/csv">CSV</a><a href="/route-export/${r.id}/geojson">GeoJSON</a><a href="/route-export/${r.id}/json">Расчёты</a></div><div class="route-table"><table><thead><tr><th>Км</th><th>Tя9, °C</th><th>Слой</th></tr></thead><tbody>${r.samples.map((x,i)=>`<tr tabindex="0" data-sample="${i}" data-tip="Исследовать точку маршрута"><td>${num(x.distance_km,0)}<small>${escape(x.eta?.slice(11,16)||'')}</small></td><td>${num(x.metrics?.t9)}</td><td>${escape(x.profile_result?.layer?.status==='supercooled'?'💧 T < 0 °C':x.profile_result?.profile?.applicable===false?'Вне профиля':x.profile_result?.layer?.temperature_c!==undefined?num(x.profile_result.layer.temperature_c)+' °C':'—')}</td></tr>`).join('')}</tbody></table></div><details><summary>Основание маршрутного анализа</summary><p class="micro">Спектральные признаки относятся к наблюдению. Для профильных условий используется время прохождения и индивидуальная проверка радиуса/срока каждой точки. Возраст наблюдения и отсутствие данных сохранены в экспорте.</p></details>`;
+    $('#routeResult').innerHTML=`<div class="section-heading"><h3>${num(r.length_km,0)} км</h3><span class="micro">${r.samples.length} точек</span></div>${routeChart(r)}<div class="row"><a href="/route-export/${r.id}/csv">CSV</a><a href="/route-export/${r.id}/geojson">GeoJSON</a><a href="/route-export/${r.id}/json">Расчёты</a></div><div class="route-table"><table><thead><tr><th>Км</th><th>Tя9, °C</th><th>Слой</th></tr></thead><tbody>${r.samples.map((x,i)=>`<tr tabindex="0" data-sample="${i}" data-tip="Исследовать точку маршрута"><td>${num(x.distance_km,0)}<small>${escape(x.eta?.slice(11,16)||'')}</small></td><td>${num(x.metrics?.t9)}</td><td>${escape(x.profile_result?.layer?.status==='supercooled'?'Переохл. жидкость':x.profile_result?.profile?.applicable===false?'Вне профиля':x.profile_result?.layer?.temperature_c!==undefined?num(x.profile_result.layer.temperature_c)+' °C':'—')}</td></tr>`).join('')}</tbody></table></div><details><summary>Основание маршрутного анализа</summary><p class="micro">Спектральные признаки относятся к наблюдению. Для профильных условий используется время прохождения и индивидуальная проверка радиуса/срока каждой точки. Возраст наблюдения и отсутствие данных сохранены в экспорте.</p></details>`;
     $$('#routeResult [data-sample]').forEach(row=>{const openPoint=()=>{const xy=r.map_points[Number(row.dataset.sample)];if(xy?.every(Number.isFinite))inspectAt(...xy).catch(e=>toast(e.message));};row.onclick=openPoint;row.onkeydown=e=>{if(e.key==='Enter')openPoint();};});
   }finally{$('#calculateRoute').disabled=false;}
 };
