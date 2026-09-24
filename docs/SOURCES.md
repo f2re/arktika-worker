@@ -4,7 +4,7 @@
 
 **S1. GPTL — программный интерфейс.** https://s3.gptl.ru/geoportal-public/pro-guide/v1/index.html . STAC, OAuth-клиенты, refresh token, STS, временные S3-реквизиты, ограничения доступа. Реализация не использует чужой client_id из примеров.
 
-**S2. CEOS/WMO OSCAR: семейство MSU-GS/VE.** https://database.eohandbook.com/database/instrumentsummary.aspx?instrumentID=1691 . Общее описание прибора и спектральных каналов. Для конкретного аппарата требуется его радиометрическая спецификация; запись в справочнике не заменяет коэффициенты продукции GPTL. Миссия: https://ntsomz.ru/arktika-m/ .
+**S2. WMO OSCAR — MSU-GS/A.** https://space.oscar.wmo.int/instruments/view/msu_gs_a . Номинальные центральные длины волн, спектральные интервалы, разрешение и назначение прибора для «Арктики-М». Для конкретного аппарата всё равно требуется его радиометрическая спецификация; запись OSCAR не заменяет коэффициенты продукции GPTL.
 
 **S3. Rasterio — reprojection.** https://rasterio.readthedocs.io/en/stable/topics/reproject.html . Модель src/dst CRS/transform и ресэмплинг. Конкретный выбор ближайшего соседа в MVP — инженерное решение, а не универсальная рекомендация для всех метеопродуктов.
 
