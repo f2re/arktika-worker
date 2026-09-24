@@ -30,6 +30,9 @@ class ScienceTests(unittest.TestCase):
  def setUp(self):self.tmp=tempfile.TemporaryDirectory();self.root=Path(self.tmp.name);self.scene=fixture(self.root)
  def tearDown(self):self.tmp.cleanup()
  def build(self,product='channel',cal=None):return build_product(self.scene,self.root/'products',dict(product=product,preset='barents',width=256,channel=9),cal or {'mode':'unknown'})
+ def test_msu_gs_a_nominal_channel_centres(self):
+  from arktika.products import CHANNELS
+  self.assertEqual([w for _,w,_,_ in CHANNELS],[.57,.72,.86,3.75,6.35,8.,8.7,9.7,10.7,11.7])
  def test_uint16_not_kelvin(self):
   with rasterio.open(self.scene['channels']['9']['path']) as ds:self.assertEqual(calibration(ds,9,{'mode':'unknown'})[2],'DN')
  def test_explicit_kelvin_metadata(self):
