@@ -146,7 +146,7 @@ class TransportRegressions(unittest.TestCase):
             atomic_json(path, {'value': 1})
             with self.assertRaises(ValueError):
                 atomic_json(path, {'value': float('nan')})
-            self.assertEqual(json.loads(path.read_text()), {'value': 1})
+            self.assertEqual(json.loads(path.read_text(encoding='utf-8')), {'value': 1})
             self.assertEqual(len(list(Path(tmp).iterdir())), 1)
 
     def test_concurrent_json_writes_do_not_share_temp_path(self):
@@ -154,7 +154,7 @@ class TransportRegressions(unittest.TestCase):
             path = Path(tmp) / 'state.json'
             with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
                 list(pool.map(lambda n: atomic_json(path, {'writer': n, 'body': 'x' * 1000}), range(32)))
-            self.assertIn(json.loads(path.read_text())['writer'], range(32))
+            self.assertIn(json.loads(path.read_text(encoding='utf-8'))['writer'], range(32))
             self.assertEqual(len(list(Path(tmp).iterdir())), 1)
 
     def test_weak_etag_not_used_for_byte_identity(self):
