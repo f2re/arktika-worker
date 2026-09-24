@@ -37,7 +37,7 @@ def project_points(g,points):
  return out
 
 def map_context(g,land_path):
- obj=json.loads(Path(land_path).read_text())['geometry'];polys=obj['coordinates'] if obj['type']=='MultiPolygon' else [obj['coordinates']]
+ obj=json.loads(Path(land_path).read_text(encoding='utf-8'))['geometry'];polys=obj['coordinates'] if obj['type']=='MultiPolygon' else [obj['coordinates']]
  # Project coordinate arrays in one pass; split at map discontinuities.
  tr=Transformer.from_crs(4326,g['crs'],always_xy=True);a=g['transform']
  def fast_split(coords):
