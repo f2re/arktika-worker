@@ -14,6 +14,7 @@ from .network import NetworkError, Cancelled, redact, error_hint
 
 CHUNK=8*1024*1024
 READ_BLOCK=256*1024
+_ATOMIC_JSON_LOCK=threading.RLock()
 
 
 def destination(root,asset):
@@ -34,18 +35,21 @@ def digest(path,cancel=None):
 
 
 def atomic_json(path,obj):
-    """Atomic replacement with a per-writer temporary file in the same directory."""
+    """Atomic UTF-8 replacement; concurrent writers are serialized in this process."""
     path=Path(path)
     if path.is_symlink():raise ValueError('Служебный JSON не должен быть символьной ссылкой.')
     # Validate before creating the temp file. RFC 8259 forbids NaN and Infinity.
     content=json.dumps(obj,ensure_ascii=False,indent=2,allow_nan=False)
-    fd,tmp=tempfile.mkstemp(prefix='.'+path.name+'.',suffix='.tmp',dir=path.parent)
-    try:
-        with os.fdopen(fd,'w',encoding='utf-8') as f:
-            f.write(content);f.flush();os.fsync(f.fileno())
-        os.replace(tmp,path)
-    finally:
-        if os.path.exists(tmp):os.unlink(tmp)
+    # Unique temp names avoid collisions. The lock is still required on Windows,
+    # where concurrent replace() calls for the same destination can raise WinError 5.
+    with _ATOMIC_JSON_LOCK:
+        fd,tmp=tempfile.mkstemp(prefix='.'+path.name+'.',suffix='.tmp',dir=path.parent)
+        try:
+            with os.fdopen(fd,'w',encoding='utf-8') as f:
+                f.write(content);f.flush();os.fsync(f.fileno())
+            os.replace(tmp,path)
+        finally:
+            if os.path.exists(tmp):os.unlink(tmp)
 
 
 def bad_payload(data,ctype,filename):
