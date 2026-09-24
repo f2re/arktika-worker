@@ -122,6 +122,8 @@ def main():
                     wait_js('(p) => S.product && (!p || S.product.product === p) && !S.busy && !UI.activeBuild', product)
                 check('Начальная дата и локальный сеанс', lambda: page.locator('#sessions button.session').first.click())
                 loaded('channel')
+                check('Канал 9 не объявлен температурой без калибровки',
+                      lambda: wait_js('() => [...document.querySelectorAll("#taskGrid .task-card")].some(b => b.textContent.includes("Оконный ИК"))'))
                 check('Некалиброванный канал остаётся DN', lambda: wait_js('() => S.product.legend.units === "DN"'))
                 check('Легенда открывается', lambda: page.locator('#legendOpen').click())
                 page.screenshot(path=str(out / 'channel.png'))
@@ -147,6 +149,15 @@ def main():
                 page.screenshot(path=str(out / 'point.png'))
                 page.locator('#profilesOpen').click()
                 page.locator('#profileImportDetails').evaluate('(e)=>e.open=true')
+                naive_path = data / 'synthetic-profile-naive-time.json'
+                naive = profile()
+                naive['source'] = 'SYNTHETIC BROWSER TEST; NOT OBSERVATIONS'
+                naive['valid_time'] = '2026-01-01T00:00:23'
+                naive_path.write_text(json.dumps(naive), encoding='utf-8')
+                page.locator('#profileFile').set_input_files(str(naive_path))
+                wait_js('() => UI.profileText.length > 0')
+                check('Профиль без часового пояса не подменяется локальным временем',
+                      lambda: wait_js('() => document.querySelector("#profileTime").value === ""'))
                 path = data / 'synthetic-profile.json'
                 prof = profile()
                 prof['source'] = 'SYNTHETIC BROWSER TEST; NOT OBSERVATIONS'
