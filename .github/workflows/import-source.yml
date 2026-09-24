@@ -1,0 +1,52 @@
+name: Import audited source
+on:
+  push:
+    branches: [fix/audit-release-0.2.2]
+    paths: [.github/workflows/import-source.yml, .delivery/READY.json]
+permissions:
+  contents: write
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify and import source
+        id: source
+        shell: python
+        run: |
+          import base64, hashlib, json, lzma, os, pathlib, shutil
+          root = pathlib.Path.cwd()
+          ready = root / '.delivery/READY.json'
+          if not ready.exists():
+              print('Transport prepared; no payload submitted yet.')
+          else:
+              spec = json.loads(ready.read_text())
+              encoded = ''.join((root / '.delivery' / name).read_text().strip() for name in spec['parts'])
+              packed = base64.b64decode(encoded, validate=True)
+              assert hashlib.sha256(packed).hexdigest() == spec['sha256'], 'Payload checksum mismatch'
+              files = json.loads(lzma.decompress(packed))
+              assert len(files) == spec['file_count']
+              for name, text in files.items():
+                  rel = pathlib.PurePosixPath(name)
+                  assert not rel.is_absolute() and '..' not in rel.parts and '.git' not in rel.parts
+                  assert not name.startswith(('.delivery/', '.github/workflows/'))
+                  assert isinstance(text, str)
+                  path = root / rel
+                  path.parent.mkdir(parents=True, exist_ok=True)
+                  path.write_bytes(text.encode('utf-8'))
+              for name in ('start.sh', 'install.sh', 'start.command'):
+                  (root / name).chmod(0o755)
+              shutil.rmtree(root / '.delivery')
+              with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
+                  out.write('ready=true\n')
+              print('Imported', len(files), 'verified source files')
+      - name: Commit source to audit branch
+        if: steps.source.outputs.ready == 'true'
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add --all
+          git commit -m 'Опубликовать исходники после локального аудита'
+          git push origin HEAD:fix/audit-release-0.2.2
