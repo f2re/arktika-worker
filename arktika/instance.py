@@ -27,7 +27,7 @@ class InstanceLock:
             json.dump({'pid':os.getpid(),'url':url},f)
         if os.name!='nt':os.chmod(self.root/'server.json',0o600)
     def read_url(self):
-        try:return json.loads((self.root/'server.json').read_text())['url']
+        try:return json.loads((self.root/'server.json').read_text(encoding='utf-8'))['url']
         except (OSError,ValueError,KeyError):return ''
     def close(self):
         if not self.handle:return
