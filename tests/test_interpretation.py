@@ -165,7 +165,7 @@ class AnalysisIntegrationTests(unittest.TestCase):
         with self.assertRaises(ValueError):self.app.analysis_export('../../secret')
     def test_export_contains_explanatory_legend(self):
         self.assertIn('Красные тона',self.product['legend']['interpretation']['swatches'][0]['title'])
-        self.assertIn('Красные тона',(self.app.product_root/self.product['id']/'report.html').read_text())
+        self.assertIn('Красные тона',(self.app.product_root/self.product['id']/'report.html').read_text(encoding='utf-8'))
     def test_new_phase_product(self):
         p=build_product(self.scene,self.app.product_root,dict(product='phase',preset='barents',width=256),{'mode':'assumed'})
         self.assertEqual(len(p['legend']['classes']),6);self.assertIn('values.tif',p['files'])
