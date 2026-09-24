@@ -99,34 +99,49 @@ def main():
                     page.add_script_tag(content=(ROOT / 'static/studio.js').read_text())
                 else:
                     page.goto(base + '/#' + server.key)
-                page.wait_for_function('typeof S !== "undefined" && S.scenes.length > 0', timeout=30000)
+                def wait_js(expression, arg=None, timeout=30000):
+                    """Poll through Runtime.evaluate so the smoke test respects the app CSP."""
+                    deadline = time.monotonic() + timeout / 1000
+                    last_error = None
+                    while time.monotonic() < deadline:
+                        try:
+                            ok = page.evaluate(expression, arg) if arg is not None else page.evaluate(expression)
+                            if ok:
+                                return
+                        except Exception as exc:
+                            last_error = exc
+                        page.wait_for_timeout(100)
+                    detail = f": {last_error}" if last_error else ""
+                    raise TimeoutError("Не выполнено условие браузерной проверки" + detail)
+
+                wait_js('() => typeof S !== "undefined" && S.scenes.length > 0')
                 def check(name, action):
                     action()
                     report['checks'].append({'name': name, 'passed': True})
                 def loaded(product=None):
-                    page.wait_for_function('(p) => S.product && (!p || S.product.product === p) && !S.busy && !UI.activeBuild', arg=product, timeout=30000)
+                    wait_js('(p) => S.product && (!p || S.product.product === p) && !S.busy && !UI.activeBuild', product)
                 check('Начальная дата и локальный сеанс', lambda: page.locator('#sessions button.session').first.click())
                 loaded('channel')
-                check('Некалиброванный канал остаётся DN', lambda: page.wait_for_function('S.product.legend.units === "DN"'))
+                check('Некалиброванный канал остаётся DN', lambda: wait_js('() => S.product.legend.units === "DN"'))
                 check('Легенда открывается', lambda: page.locator('#legendOpen').click())
                 page.screenshot(path=str(out / 'channel.png'))
                 page.locator('#calibrationOpen').click()
                 page.locator('#calMode').select_option('assumed')
                 page.locator('#saveCalibration').click()
                 page.locator('#confirmYes').click()
-                page.wait_for_function('S.product && S.product.calibration_status === "assumed" && !S.busy', timeout=30000)
-                check('Допущение видно в продукте', lambda: page.wait_for_function('S.product.calibration_status === "assumed"'))
+                wait_js('() => S.product && S.product.calibration_status === "assumed" && !S.busy')
+                check('Допущение видно в продукте', lambda: wait_js('() => S.product.calibration_status === "assumed"'))
                 page.locator('#productRail').click()
                 page.locator('#product').select_option('micro24')
                 loaded('micro24')
-                check('Цветосинтез и согласованная легенда', lambda: page.wait_for_function('S.product.legend.interpretation.swatches.length > 0'))
+                check('Цветосинтез и согласованная легенда', lambda: wait_js('() => S.product.legend.interpretation.swatches.length > 0'))
                 page.screenshot(path=str(out / 'microphysics.png'))
                 # Координаты преобразует production API, а щелчок выполняет браузер.
                 def click_point(lon=30, lat=70):
                     xy = page.evaluate('async p => (await api("/api/project-points", {product:S.product.id,points:[p]})).points[0]', [lon, lat])
                     screen = page.evaluate('p=>{const q=new DOMPoint(...p).matrixTransform(document.querySelector("#map").getScreenCTM());return [q.x,q.y];}', xy)
                     page.mouse.click(*screen)
-                    page.wait_for_function('UI.analysis !== null', timeout=15000)
+                    wait_js('() => UI.analysis !== null', timeout=15000)
                 check('Щелчок по карте и анализ исходного пикселя', click_point)
                 check('Экспорт точки доступен', lambda: page.locator('#analysisExport').wait_for(state='visible'))
                 page.screenshot(path=str(out / 'point.png'))
@@ -138,10 +153,10 @@ def main():
                 prof['valid_time'] = '2026-01-01T00:00:23Z'
                 path.write_text(json.dumps(prof), encoding='utf-8')
                 page.locator('#profileFile').set_input_files(str(path))
-                page.wait_for_function('UI.profileText.length > 0')
+                wait_js('() => UI.profileText.length > 0')
                 page.locator('#importProfile').click()
-                page.wait_for_function('UI.profiles.length === 1')
-                check('JSON-профиль сохраняет секунды срока', lambda: page.wait_for_function('UI.profiles[0].valid_time.endsWith("00:00:23Z")'))
+                wait_js('() => UI.profiles.length === 1')
+                check('JSON-профиль сохраняет секунды срока', lambda: wait_js('() => UI.profiles[0].valid_time.endsWith("00:00:23Z")'))
                 if page.locator('#profilesDialog').evaluate('(e)=>e.open'):
                     page.locator('#profilesDialog [data-close]').click()
                 page.locator('#routeRail').click()
@@ -151,30 +166,30 @@ def main():
                 page.locator('#departure').fill('2026-01-01T00:00')
                 page.locator('#departure').dispatch_event('change')
                 page.locator('#calculateRoute').click()
-                page.wait_for_function('S.route !== null', timeout=15000)
-                check('Расчёт маршрута', lambda: page.wait_for_function('S.route.samples.length > 1'))
+                wait_js('() => S.route !== null', timeout=15000)
+                check('Расчёт маршрута', lambda: wait_js('() => S.route.samples.length > 1'))
                 page.screenshot(path=str(out / 'route.png'))
                 page.locator('#clearRoute').click()
-                check('Очистка не оставляет старые значения', lambda: page.wait_for_function('S.route === null && document.querySelector("#routeResult").childElementCount === 0'))
+                check('Очистка не оставляет старые значения', lambda: wait_js('() => S.route === null && document.querySelector("#routeResult").childElementCount === 0'))
                 page.locator('#dateOpen').click()
                 page.locator('#date').fill('2025-12-31')
                 page.locator('#date').dispatch_event('change')
-                check('Новая дата сбрасывает анализ и экспорт', lambda: page.wait_for_function('UI.analysis===null && document.querySelector("#analysisExport").hidden'))
+                check('Новая дата сбрасывает анализ и экспорт', lambda: wait_js('() => UI.analysis===null && document.querySelector("#analysisExport").hidden'))
                 page.locator('#date').fill('2026-01-01')
                 page.locator('#date').dispatch_event('change')
-                page.wait_for_function('S.scenes.length > 0')
+                wait_js('() => S.scenes.length > 0')
                 page.locator('#sessions button.session').first.click()
                 loaded()
                 page.locator('#productRail').click()
                 page.locator('#product').select_option('difference')
                 page.locator('#product').select_option('phase')
                 loaded('phase')
-                check('Быстрая смена продуктов оставляет последний выбор', lambda: page.wait_for_function('S.product.product === document.querySelector("#product").value'))
+                check('Быстрая смена продуктов оставляет последний выбор', lambda: wait_js('() => S.product.product === document.querySelector("#product").value'))
                 context.new_page().close()
                 for width in (1024, 390):
                     page.set_viewport_size({'width': width, 'height': 844})
                     page.wait_for_timeout(200)
-                    check('Нет переполнения при ширине '+str(width), lambda: page.wait_for_function('document.documentElement.scrollWidth <= innerWidth + 1'))
+                    check('Нет переполнения при ширине '+str(width), lambda: wait_js('() => document.documentElement.scrollWidth <= innerWidth + 1'))
                     page.screenshot(path=str(out / ('width-'+str(width)+'.png')))
                 assert not report['browser_errors'], report['browser_errors']
                 browser.close()
