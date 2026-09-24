@@ -1,0 +1,48 @@
+name: Workstation checks
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  python:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python: ['3.11', '3.12']
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install --only-binary=:all: -r requirements.txt
+      - run: python check.py
+      - run: python -m unittest discover -s tests -v
+      - run: python -m compileall -q arktika server.py
+      - run: python scripts/manifest.py --check
+  browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r requirements.txt 'playwright>=1.50,<2'
+      - run: python -m playwright install --with-deps chromium
+      - run: node --check static/app.js && node --check static/studio.js
+      - run: python scripts/browser_smoke.py --output browser-results
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: browser-results
+          path: browser-results
+          retention-days: 7
