@@ -24,7 +24,7 @@
     "arktika/motion.py": "ad5e159f532557bdf1452b877b970d4123cdd49395e41ecb2b701cc7f14a0d2d",
     "arktika/network.py": "463f9817335704cfefe2f8fcc06be04c2400741c597ca1b4e116bac0935d5dd0",
     "arktika/processing.py": "455be4e968d0b6f55bdd3b659e6f93ac74db6a8b9c76e532aefe39fef453ac12",
-    "arktika/products.py": "6deb3d76121ef9a14bf9e77d13e66d9c325ad1a80ede88521b2230a2c04f19d0",
+    "arktika/products.py": "eb9be7ec4e262cdf09796720538b12d95347632c15058fef16a059c1507aa243",
     "arktika/profiles.py": "84506244bacbcce4c603ec7f8bec59f283a676a45b0d8ee7bea810b945941dc8",
     "arktika/routes.py": "537cb707cbb7dd23da44e50087d0b572e0fb07c66a1ea982b362e358485ed678",
     "arktika/service.py": "ad8e39a2a3319e377faf772d948d54061ceb564034d4ae31bdd85316b91a8c97",
@@ -37,7 +37,7 @@
     "docs/ANALYSIS.md": "ce8ebee97294cf07472cdbf89365768cdf8c9ffa80cd2187321bd78d8cd112cc",
     "docs/API.md": "e668f23222887664f813e7f389e28bc8bf1b44d40bb91d9e0bd40a469193f59d",
     "docs/ARCHITECTURE.md": "578d6e3e8f3857cd931cb68ffca24913e54f5eb1ad458891a57d43454b0b7ea3",
-    "docs/AUDIT.md": "552a8bdea21cc00f144e7b441f4411ceb4e1e5aafdd008d5f201681fdac28e74",
+    "docs/AUDIT.md": "5657e71af6faf2b4d89a2a474032fa0e0f6a215f34a2dac024e652c0b9984c27",
     "docs/AUTH.md": "e680214cae168f5d705a5126e504832df611ce660d5d38461aa4a36a41ed7a63",
     "docs/DATA_MODEL.md": "00eee22ac0ea361679e785842433eca65a10c2ac82cf71e3cb3da572fe67bd85",
     "docs/DESIGN.md": "272e98dffafd1ec56d4b44e673910dbe2471b74541a0140a43e67dc3b00f21ef",
@@ -45,8 +45,8 @@
     "docs/KNOWN_LIMITS.md": "27e4590eeb75376476ed6be5099855cba8e36663d6d96234d11fcd0144d99140",
     "docs/PUBLISH.md": "6277fe19b282024ff8e7d13f9ad28f3d7087903cbfb51d93f3dff232f1928d7c",
     "docs/ROADMAP.md": "6370163d3b64f4336cce407a50c8f67c37e6aed22cf8d082bddedcd9dcd9bcd4",
-    "docs/SCIENCE.md": "233de1de4e0f7b6b56423b61e6c5d1879fd843de2ef5cb7c4d03e2ff963ff94d",
-    "docs/SOURCES.md": "18d6ab2c8dcb18249bf5ded033bb900fad376eb2ab7dfa3ae42382658dceebd7",
+    "docs/SCIENCE.md": "63d4250f0d205f88bddcd4d3ad431ef96ca0da747ab3b92197b83e51da5047fa",
+    "docs/SOURCES.md": "e4cd6552e9e8797ea9b743f0db8834005cdff5c2c5b908be2f7ee210402e588e",
     "docs/USER_GUIDE.md": "d10b4694c7448c8983f999cc914a55737399d795188aea1a6124de137ad96f17",
     "docs/VERIFICATION.md": "d3c9b79bc88b4fd5ec0637bba875923b8dd8ef867a7ff32c372d590b763d5074",
     "docs/index.html": "5886386a119a62684ef69363871907cfc87359a62971e70276a7e78872e4697d",
@@ -76,7 +76,7 @@
     "tests/test_audit_regressions.py": "6c18e5c86f3d1ce07ea2e818ee9fd596f724512faa51d00d5bf1559c104f784d",
     "tests/test_interpretation.py": "e541dc0cef8bfee035f11ec0aa3692fe2f4389bfcd25bb7b13f12da062ab75e8",
     "tests/test_publish.py": "9d6a170d42b08dc170c648098a95e7dad04a5e9659c26a6bf6bf2a15e92790b9",
-    "tests/test_science.py": "ea53a117eb37b5b5812d391cd4a1635fdbe85eb2a18bd9732da02c8fb14c3992",
+    "tests/test_science.py": "2ad0a0b40d47cdd2fcfabb18b8f4799aa44d583011833e94d33e102fb92f45be",
     "tests/test_transport.py": "f2b2df96c5e5af642063b57aea097d463bcea8b2b40432c1cf3a641cf00a5e29"
   }
 }
