@@ -1,0 +1,21 @@
+# Пример. Пути и пользователь обязательны к адаптации перед установкой.
+[Unit]
+Description=Arktika-M local meteorologist workstation
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=arktika
+WorkingDirectory=/opt/arktika-worker
+ExecStart=/opt/arktika-worker/.venv/bin/python /opt/arktika-worker/server.py --no-browser --data-dir /var/lib/arktika-worker --download-dir /srv/arktika/downloads
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+# При необходимости: EnvironmentFile=/etc/arktika-worker/credentials.env
+# Файл окружения с секретами — только для владельца; не коммитить.
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,9 @@
+{
+  "download_dir": null,
+  "calibration": {"mode": "unknown"},
+  "oauth": {
+    "client_id": "",
+    "redirect_uri": "http://127.0.0.1:8765/oauth/callback",
+    "scope": "openid s3policy offline_access"
+  }
+}
