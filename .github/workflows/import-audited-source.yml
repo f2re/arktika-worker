@@ -1,0 +1,57 @@
+name: Import reviewed source
+on:
+  push:
+    branches: [fix/workstation-audit-20260924]
+    paths: [.delivery/READY.json]
+permissions:
+  contents: write
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: fix/workstation-audit-20260924
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+      - name: Verify reviewed package and write source files
+        shell: python
+        run: |
+          import base64, hashlib, json, lzma, pathlib, shutil
+          root = pathlib.Path.cwd()
+          spec = json.loads((root/'.delivery/READY.json').read_text())
+          assert all(pathlib.PurePosixPath(n).name == n for n in spec['parts'])
+          encoded = ''.join((root/'.delivery'/n).read_text().strip() for n in spec['parts'])
+          packed = base64.b64decode(encoded, validate=True)
+          assert hashlib.sha256(packed).hexdigest() == spec['sha256'], 'Package checksum mismatch'
+          unpacker = lzma.LZMADecompressor()
+          raw = unpacker.decompress(packed, max_length=16*1024*1024)
+          assert unpacker.eof, 'Package exceeds size limit'
+          files = json.loads(raw)
+          assert isinstance(files, dict) and len(files) == spec['file_count']
+          for name, content in files.items():
+              path = pathlib.PurePosixPath(name)
+              assert not path.is_absolute() and '..' not in path.parts and '.git' not in path.parts
+              assert isinstance(content, str) and not name.startswith('.delivery/')
+              target = root/path
+              if name.startswith('.github/workflows/'):
+                  assert target.read_bytes() == content.encode('utf-8'), 'Workflow changes must use the connector'
+              target.parent.mkdir(parents=True, exist_ok=True)
+              target.write_bytes(content.encode('utf-8'))
+          manifest = json.loads((root/'MANIFEST.json').read_text())
+          for name, checksum in manifest['files'].items():
+              assert hashlib.sha256((root/name).read_bytes()).hexdigest() == checksum, name
+          shutil.rmtree(root/'.delivery')
+          for name in ('install.sh', 'start.sh', 'start.command'):
+              (root/name).chmod(0o755)
+          print('Verified source files:', len(files))
+      - name: Commit plaintext source
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add --all
+          git commit -m 'Импортировать проверенные исходники рабочего места 0.2.1'
+          git push origin HEAD:fix/workstation-audit-20260924
