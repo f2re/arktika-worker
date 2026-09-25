@@ -16,6 +16,7 @@ RECIPES={
 'dust':dict(title='Спектральный контраст пыли',channels=[7,9,10],components=[[10,9,-4,2,1],[9,7,0,15,2.5],[9,None,261,289,1]],meaning='Не подтверждение пыли и не оценка её концентрации.',reference='Satpy dust_default'),
 'ash':dict(title='Спектральный контраст пепла',channels=[7,9,10],components=[[10,9,-4,2,1],[9,7,-4,5,1],[9,None,243,303,1]],meaning='Не подтверждение пепла, не высота его слоя и не авиационное предупреждение.',reference='Satpy ash_default')}
 PRODUCTS=[dict(id='channel',title='Отдельный канал',status='implemented',meaning='Хранимые значения DN либо яркостная температура при явно заданной калибровке.'),
+dict(id='archive_rgb',title='Готовая RGB-композиция',channels=[],status='implemented',display_only=True,meaning='Просмотр цветового GeoTIFF/COG поставщика. Без расчёта температуры и спектральных признаков.'),
 *[dict(id=k,status='experimental',**v) for k,v in RECIPES.items()],
 dict(id='difference',title='Разность оконных каналов',channels=[9,10],status='experimental',meaning='T10 − T9. Не осадки и не влагозапас.'),
 dict(id='phase',title='Спектральные кандидаты фазы',channels=[7,9,10],status='experimental',meaning='Общие правила по температуре и двум разностям каналов. Вода/лёд — гипотезы с контролем качества; не подтверждение обледенения.'),

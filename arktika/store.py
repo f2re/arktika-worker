@@ -119,7 +119,7 @@ class Store:
 
     def jobs(self):
         with self.lock:
-            return [dict(r) for r in self.conn.execute('SELECT * FROM jobs ORDER BY created,id')]
+            return [dict(r) for r in self.conn.execute('SELECT * FROM jobs ORDER BY created,rowid')]
 
     def job(self, identity):
         with self.lock:

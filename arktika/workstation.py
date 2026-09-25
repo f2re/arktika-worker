@@ -18,6 +18,7 @@ FILE_PATTERN=re.compile(r'^A([12])_(\d{14})_ch(\d{2})\.tif$',re.I)
 from .analysis_service import AnalysisMixin
 from .interpretation import spectral, profile_diagnostics
 from .catalog import catalog_sessions, describe_session
+from .archive import register_composite, build_composite
 class Workstation(AnalysisMixin, App):
  def __init__(self,state_dir,download_dir=None,token='',config=None,client=None):
   self.config=config or {};super().__init__(state_dir,download_dir,token,client or AuthClient(token,self.config.get('oauth')))
@@ -25,9 +26,10 @@ class Workstation(AnalysisMixin, App):
    self.store.conn.execute('CREATE TABLE IF NOT EXISTS scenes(id TEXT PRIMARY KEY,stamp TEXT,data TEXT)')
   self.product_root=self.store.root/'products';self.product_root.mkdir(exist_ok=True)
   self.route_root=self.store.root/'routes';self.route_root.mkdir(exist_ok=True)
-  self.context_cache={};self.done_jobs=set()
+  self.context_cache={};self.done_jobs={};self.registration_errors={}
   self.cal=self.store.setting('calibration',self.config.get('calibration',{'mode':'unknown'}));validate_calibration(self.cal)
  def state(self):
+  self.sync_downloads()
   result=super().state();result.update(view_settings=self.store.setting('view_settings',{}),version='0.2.2',calibration=self.cal,oauth=dict(client_id=self.client.oauth.get('client_id',''),redirect_uri=self.client.oauth.get('redirect_uri',''),refresh_present=bool(self.client.refresh_token)))
   return result
  def configure(self,data):
@@ -44,9 +46,9 @@ class Workstation(AnalysisMixin, App):
   if not isinstance(value,dict):raise ValueError('Ожидается JSON-объект калибровки.')
   validate_calibration(value);self.cal=json.loads(json.dumps(value));self.store.set_setting('calibration',self.cal)
   return self.cal
- def register_file(self,path):
+ def register_file(self,path,asset=None):
   path=Path(path).expanduser().resolve();m=FILE_PATTERN.fullmatch(path.name)
-  if not m:return None
+  if not m:return register_composite(self,path,asset)
   platform='ARCM'+m[1];stamp=dt.datetime.strptime(m[2],'%Y%m%d%H%M%S').replace(tzinfo=UTC);ch=int(m[3])
   if not 1<=ch<=10:return None
   with rasterio.open(path) as ds:
@@ -69,28 +71,54 @@ class Workstation(AnalysisMixin, App):
   p=Path(path).expanduser().resolve()
   if not p.is_dir():raise ValueError('Укажите существующую папку GeoTIFF.')
   found=0;seen=0;skipped=[]
+  known={str(Path(j['path']).resolve()):self.store.asset(j['asset_id']) for j in self.store.jobs()}
   for f in p.rglob('*'):
    if self.cancel.is_set():break
    seen+=1
    if seen>100000:raise ValueError('Просмотрено 100 000 путей. Выберите более узкую папку.')
-   if not f.is_file() or not FILE_PATTERN.fullmatch(f.name):continue
+   if not f.is_file() or f.suffix.lower() not in ('.tif','.tiff'):continue
    try:
-    if self.register_file(f):found+=1
-   except (OSError,rasterio.errors.RasterioError) as e:skipped.append(f.name)
-  self.log('Импорт GeoTIFF: {} файлов; ошибок чтения: {}. Файлы не перемещены.'.format(found,len(skipped)))
+    if self.register_file(f,known.get(str(f.resolve()))):found+=1
+    else:skipped.append(f.name)
+   except (ValueError,OSError,rasterio.errors.RasterioError):skipped.append(f.name)
+  self.log('Импорт GeoTIFF: {} файлов; не зарегистрировано: {}. Файлы не перемещены.'.format(found,len(skipped)))
   return dict(files=found,skipped=skipped)
  def sync_downloads(self):
   for job in self.store.jobs():
-   if job['state']=='done' and job['id'] not in self.done_jobs:
-    try:self.register_file(job['path']);self.done_jobs.add(job['id'])
-    except (OSError,rasterio.errors.RasterioError):pass
+   if job['state']!='done':continue
+   try:
+    path=Path(job['path']);stat=path.stat();signature=(str(path),stat.st_size,stat.st_mtime_ns)
+    if self.done_jobs.get(job['id'])==signature:continue
+    asset=self.store.asset(job['asset_id'])
+    if asset and asset.get('category') in ('channel','rgb'):
+     try:
+      if not self.register_file(path,asset):raise ValueError('Не удалось определить аппарат и срок файла.')
+      self.registration_errors.pop(job['id'],None)
+     except (ValueError,rasterio.errors.RasterioError):
+      self.registration_errors[job['id']]='GeoTIFF не распознан для карты: проверьте цветовые полосы, геопривязку и метаданные срока.'
+    self.done_jobs[job['id']]=signature
+   except OSError:
+    self.done_jobs.pop(job['id'],None)
+ def jobs(self):
+  rows=super().jobs();scenes={(s['platform'],s['time']):s for s in self.scenes()}
+  for row in rows:
+   local=scenes.get((row['platform'],row['time']),{})
+   composite=next((c for c in local.get('composites',[]) if c.get('asset_id')==row['asset_id']),None)
+   row['scene_id']=local.get('id')
+   row['composite_id']=composite['id'] if composite else None
+   asset=self.store.asset(row['asset_id']) or {}
+   row['channel']=asset.get('channel')
+   row['can_open']=row['state']=='done' and Path(row['path']).is_file() and bool(composite or (row['category']=='channel' and any(c['channel']==row['channel'] for c in local.get('channels',[]))))
+   row['map_error']=self.registration_errors.get(row['id'],'')
+  return rows
  def scenes(self,date='',platform=''):
   self.sync_downloads()
   with self.store.lock:rows=[json.loads(r[0]) for r in self.store.conn.execute('SELECT data FROM scenes WHERE stamp LIKE ? ORDER BY stamp, id',(date+'%',))]
   for scene in rows:
    scene['channels']={ch:c for ch,c in scene['channels'].items() if Path(c['path']).is_file()}
-  rows=[s for s in rows if s['channels']]
-  return [dict(id=s['id'],platform=s['platform'],time=s['time'],time_assumed=s.get('time_assumed',True),channels=[{k:v for k,v in c.items() if k!='path'} for c in sorted(s['channels'].values(),key=lambda x:x['channel'])]) for s in rows if not platform or s['platform']==platform]
+   scene['composites']={key:c for key,c in scene.get('composites',{}).items() if Path(c['path']).is_file() and c.get('asset_id') not in self.registration_errors}
+  rows=[s for s in rows if s['channels'] or s['composites']]
+  return [dict(id=s['id'],platform=s['platform'],time=s['time'],time_assumed=s.get('time_assumed',True),composites=[{k:v for k,v in c.items() if k!='path'} for c in sorted(s['composites'].values(),key=lambda c:(c['crs']!='EPSG:4326',c['size'],c['id']))],channels=[{k:v for k,v in c.items() if k!='path'} for c in sorted(s['channels'].values(),key=lambda x:x['channel'])]) for s in rows if not platform or s['platform']==platform]
  def scene(self,identity):
   with self.store.lock:r=self.store.conn.execute('SELECT data FROM scenes WHERE id=?',(identity,)).fetchone()
   if not r:raise ValueError('Сначала скачайте или импортируйте этот сеанс.')
@@ -108,15 +136,18 @@ class Workstation(AnalysisMixin, App):
   jobs={j['id']:j for j in self.store.jobs()}
   result.update(describe_session(result['assets'],local,jobs))
   result['local_files']=(local or {}).get('channels',[])
+  result['local_composites']=(local or {}).get('composites',[])
   for asset in result['assets']:
    job=jobs.get(asset['id'])
+   if asset['id'] in self.registration_errors:asset['map_error']=self.registration_errors[asset['id']]
+   asset['composite_id']=next((c['id'] for c in result['local_composites'] if c.get('asset_id')==asset['id']),None)
    if job:asset['job_state']='missing' if job['state']=='done' and not Path(job['path']).is_file() else job['state']
   result['records']=[{k:r.get(k) for k in ('id','time','time_original','time_assumed','bbox','geometry','level','gsd')} for r in records]
   return result
  def prepare(self,data):
-  scene=self.scene(data['scene']);request={k:data[k] for k in ('product','channel','preset','width','display_min','display_max') if k in data};cal=json.loads(json.dumps(self.cal))
+  scene=self.scene(data['scene']);request={k:data[k] for k in ('product','channel','preset','width','display_min','display_max','composite') if k in data};cal=json.loads(json.dumps(self.cal))
   def work():
-   result=build_product(scene,self.product_root,request,cal,self.cancel,self.log);self.log('Продукт готов: '+result['title']);return result
+   result=build_composite(scene,self.product_root,request,self.cancel,self.log) if request.get('product')=='archive_rgb' else build_product(scene,self.product_root,request,cal,self.cancel,self.log);self.log('Продукт готов: '+result['title']);return result
   self.start('Создание продукта',work)
  def products(self):
   rows=[]
@@ -152,6 +183,7 @@ class Workstation(AnalysisMixin, App):
   if not np.isfinite(lon+lat) or not -180<=lon<=180 or not -90<=lat<=90:raise ValueError('Обратная проекция не определена в этой точке.')
   return dict(lon=lon,lat=lat)
  def frozen_scene(self,product):
+  if product.get('display_only'):raise ValueError('Готовая RGB-композиция содержит цвета, а не исходные каналы. Для численного анализа откройте поканальный GeoTIFF.')
   scene=self.scene(product['scene_id'])
   for item in product['inputs']:
    entry=scene['channels'].get(str(item['channel']))

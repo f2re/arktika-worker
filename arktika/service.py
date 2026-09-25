@@ -220,7 +220,8 @@ class App:
             result.append(dict(j,filename=a['filename'] if a else j['asset_id'],category=a['category'] if a else 'other',
                                platform=a['platform'] if a else '',time=a['time'] if a else '',
                                speed=self.queue.runtime.get(j['id'],{}).get('speed',0),mode=self.queue.runtime.get(j['id'],{}).get('mode','')))
-        return result
+        priority={'running':0,'queued':1,'error':2,'paused':3,'done':4}
+        return [row for _,row in sorted(enumerate(result),key=lambda pair:(priority.get(pair[1]['state'],5),-pair[0]))]
     def import_report(self,path):
         def work():
             result=import_path(self.store,path,self.log)
