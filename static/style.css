@@ -282,3 +282,26 @@ pre {white-space:pre-wrap;overflow-wrap:anywhere;font:11px/1.65 ui-monospace,SFM
 .profile-chart{width:100%;display:block;margin-top:10px}.confirmation{background:var(--surface-variant);border-radius:12px;padding:10px}
 
 #pointLayer, #motionLayer{pointer-events:none}
+
+/* Заголовок и закрытие вне прокручиваемого содержимого. */
+dialog.fixed-dialog[open]{display:flex;flex-direction:column;padding:0;overflow:hidden;max-height:90dvh}
+dialog.fixed-dialog>.dialog-head{flex:0 0 auto;margin:0;padding:22px 24px 16px;border-bottom:1px solid var(--line);background:var(--surface);z-index:5}
+dialog.fixed-dialog>.dialog-head>button{flex:0 0 40px;width:40px;height:40px;min-height:40px}
+dialog.fixed-dialog>.dialog-body{flex:1 1 auto;min-height:0;overflow:auto;overscroll-behavior:contain;padding:18px 24px 24px;scroll-padding-top:12px}
+dialog.fixed-dialog>.dialog-footer{position:relative;flex:0 0 auto;margin:0;padding:14px 24px;bottom:auto;z-index:5}
+dialog.fixed-dialog .table-scroll{max-height:none;overflow:visible}
+#fileRows table{table-layout:fixed}#fileRows td{vertical-align:top;overflow-wrap:anywhere}
+#fileRows button{white-space:normal;max-width:100%;font-size:12px;padding:8px;line-height:1.35}
+#fileRows th:first-child{width:9%}#fileRows th:nth-child(2){width:34%}#fileRows th:nth-child(3){width:16%}#fileRows th:nth-child(4){width:15%}
+.archive-caption{font-size:12px;color:var(--muted);margin:10px 0 4px}
+@media(max-width:600px){dialog.fixed-dialog>.dialog-head{padding:16px}dialog.fixed-dialog>.dialog-body{padding:14px 16px 18px}dialog.fixed-dialog>.dialog-footer{padding:12px 16px}#fileRows th:nth-child(3),#fileRows td:nth-child(3),#fileRows th:nth-child(4),#fileRows td:nth-child(4){display:none}#fileRows th:first-child{width:12%}#fileRows th:nth-child(2){width:48%}#fileRows th:last-child{width:40%}}
+
+#filesDialog .dialog-body{padding-top:0}
+#fileRows th{z-index:2}
+#fileRows details{margin:6px 0 0;padding:0;border:0}
+#fileRows .file-version{display:none}
+@media(max-width:600px){#fileRows .file-version{display:block;margin:5px 0}}
+
+#queueDialog .dialog-body>.row{flex-wrap:wrap;align-items:stretch}
+#queueDialog .dialog-body>.row>button{white-space:normal;line-height:1.35;flex:1 1 130px}
+@media(max-width:600px){#queueDialog .dialog-body>.row>#downloadFolder{flex-basis:100%}#queueDialog .dialog-body>.row>button{font-size:12px;flex-basis:100px}.queue-item .pill{flex-shrink:0}}

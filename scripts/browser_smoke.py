@@ -80,7 +80,7 @@ def main():
                     html = (ROOT/'static/index.html').read_text(encoding='utf-8')
                     html = re.sub(r'<script[^>]+src=[^>]+></script>', '', html)
                     html = re.sub(r'<link[^>]+>', '', html)
-                    html = html.replace('</head>', '<style>' + (ROOT/'static/style.css').read_text(encoding='utf-8') + '</style></head>')
+                    html = html.replace('</head>', '<style>' + (ROOT/'static/style.css').read_text(encoding='utf-8') + (ROOT/'static/catalog.css').read_text(encoding='utf-8') + '</style></head>')
                     page.set_content(html)
                     page.evaluate(r"""() => {
                         window.fetch = async (path, options={}) => {
@@ -96,6 +96,7 @@ def main():
                         };
                     }""")
                     page.add_script_tag(content=(ROOT/'static/app.js').read_text(encoding='utf-8'))
+                    page.add_script_tag(content=(ROOT/'static/catalog.js').read_text(encoding='utf-8'))
                     page.add_script_tag(content=(ROOT/'static/studio.js').read_text(encoding='utf-8'))
                 else:
                     page.goto(base + '/#' + server.key)

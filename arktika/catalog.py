@@ -8,6 +8,7 @@ from typing import Any
 
 BUNDLES = [
     dict(id='channel', title='Отдельный канал', channels=None),
+    dict(id='archive_rgb', title='Готовые цветные снимки · RGB', channels=[]),
     dict(id='micro24', title='Микрофизика · 24 ч', channels=[7, 9, 10]),
     dict(id='night', title='Низкие облака · ночь', channels=[4, 9, 10]),
     dict(id='phase', title='Признаки фазы · эксперимент', channels=[7, 9, 10]),
@@ -62,13 +63,24 @@ def channel_inventory(assets: list[dict], local: dict | None, jobs: dict) -> lis
 
 def describe_session(assets: list[dict], local: dict | None, jobs: dict) -> dict:
     inventory = channel_inventory(assets, local, jobs)
-    return dict(local_id=(local or {}).get('id'), channel_inventory=inventory,
+    composites=(local or {}).get('composites',[])
+    imagery=[]
+    for a in sorted((a for a in assets if a.get('category')=='rgb'), key=lambda a:(a.get('epsg')!=4326,a.get('size') or float('inf'),a['id'])):
+        entry=next((c for c in composites if c.get('asset_id')==a['id']),None)
+        job=jobs.get(a['id'],{})
+        state='local' if entry else job.get('state','remote')
+        if state=='done':state='unregistered' if Path(job.get('path','')).is_file() else 'remote'
+        imagery.append(dict(id=a['id'],composite_id=entry['id'] if entry else None,state=state,size=a.get('size'),epsg=a.get('epsg'),level=a.get('level'),filename=a.get('filename')))
+    for c in composites:
+        if not any(i['composite_id']==c['id'] for i in imagery):
+            imagery.append(dict(id=c['id'],composite_id=c['id'],state='local',size=c['size'],epsg=_epsg(c['crs']),level=c['level'],filename=c['filename']))
+    return dict(imagery=imagery,archive_only=bool(imagery) and not any(c['present'] for c in inventory),local_id=(local or {}).get('id'), channel_inventory=inventory,
                 local_channels=[c['channel'] for c in inventory if c['state'] == 'local'],
                 catalog_channels=sorted({a['channel'] for a in assets if a.get('category') == 'channel'
                                          and 1 <= a.get('channel', 0) <= 10}),
                 queue=dict(Counter(jobs[a['id']]['state'] for a in assets if a['id'] in jobs)),
                 search_text=' '.join(str(a.get(k) or '') for a in assets+(local or {}).get('channels', [])
-                                     for k in ('filename', 'title', 'level')))
+                                     for k in ('filename', 'title', 'level'))+' '+' '.join(c['filename'] for c in composites))
 
 
 def _asset_matches(asset: dict, filters: dict) -> bool:
@@ -86,7 +98,7 @@ def _session_matches(summary: dict, assets: list[dict], local: dict | None, filt
     category, channel, epsg = (filters.get('category', 'all'), filters.get('channel', 0), filters.get('epsg', 0))
     if category != 'all' or channel or epsg:
         candidates = assets + [dict(c, category='channel', epsg=_epsg(c.get('crs', '')))
-                               for c in (local or {}).get('channels', [])]
+                               for c in (local or {}).get('channels', [])] + [dict(c,category='rgb',epsg=_epsg(c.get('crs',''))) for c in (local or {}).get('composites',[])]
         if not any((category == 'all' or c.get('category') == category)
                    and (not channel or c.get('channel') == channel)
                    and (not epsg or c.get('epsg') == epsg) for c in candidates):

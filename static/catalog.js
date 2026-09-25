@@ -11,7 +11,20 @@ const sessionKey=s=>s.platform+'|'+s.time;
 const catalogContext=()=>[S.day,$('#platform').value,$('#catalogTask').value,$('#catalogChannel').value].join('|');
 
 function cancelCatalogOpen(){CATALOG.pending=null;}
+function catalogImagePlan(row, preferred){
+  const images=row.imagery||[];
+  const local=images.find(i=>i.state==='local'&&(!preferred||i.id===preferred||i.composite_id===preferred));
+  const active=images.find(i=>['running','queued'].includes(i.state)&&(!preferred||i.id===preferred));
+  const remote=images.find(i=>['remote','paused','error'].includes(i.state)&&(!preferred||i.id===preferred));
+  const item=local||active||remote||images.find(i=>!preferred||i.id===preferred);
+  return {rgb:true,image:item,required:[],local:local?[item.id]:[],waiting:active?[item.id]:[],
+    absent:item?[]:['RGB'],blocked:item?.state==='unregistered'?[item.id]:[],
+    failed:['error','paused'].includes(item?.state)?[item.id]:[],ids:remote&&!local&&!active?[remote.id]:[],
+    size:remote&&!local&&!active?(remote.size||0):0,unknown:remote&&!local&&!active&&remote.size==null?1:0,
+    ready:Boolean(local),canOpen:true,composite:local?.composite_id};
+}
 function catalogPlan(row,task=$('#catalogTask').value,channel=Number($('#catalogChannel').value)){
+  if(task==='archive_rgb'||row.archive_only)return catalogImagePlan(row);
   const bundle=CATALOG.bundles.find(b=>b.id===task);
   if(!bundle)throw Error('Неизвестный набор каналов.');
   const required=bundle.channels||[channel],inventory=row.channel_inventory||[];
@@ -28,6 +41,7 @@ function catalogPlan(row,task=$('#catalogTask').value,channel=Number($('#catalog
 }
 function catalogSize(plan){return plan.unknown?(plan.size?size(plan.size)+' + неизвестный размер':'размер не указан'):size(plan.size);}
 function catalogPlanText(plan){
+  if(plan.rgb)return plan.ready?'Готовый цветной снимок на диске':plan.blocked.length?'Файл скачан, но не распознан для карты':plan.waiting.length?'RGB-композиция загружается':plan.ids.length?'Готовый цветной снимок в каталоге':'Готовой RGB-композиции нет';
   const pieces=['На диске '+plan.local.length+' из '+plan.required.length];
   if(plan.waiting.length)pieces.push('в очереди: '+plan.waiting.join(', '));
   if(plan.absent.length)pieces.push('не найдены: '+plan.absent.join(', '));
@@ -65,9 +79,9 @@ function renderCatalog(){
   $('#sessions').innerHTML=rows.slice(0,CATALOG.visible).map(row=>{
     const plan=catalogPlan(row),key=sessionKey(row),busy=CATALOG.downloading.has(key);
     const title=row.platform==='ARCM1'?'Арктика-М1':'Арктика-М2';
-    const action=plan.ready?'Открыть':plan.ids.length?(plan.canOpen&&!plan.absent.length&&!plan.blocked.length?'Скачать и открыть':'Скачать доступные'):plan.waiting.length?'Загружается':'Нет набора';
+    const action=plan.rgb?(plan.ready?'Открыть RGB':plan.ids.length?'Скачать и открыть RGB':plan.waiting.length?'Загружается':'Нет готового RGB'):plan.ready?'Открыть':plan.ids.length?(plan.canOpen&&!plan.absent.length&&!plan.blocked.length?'Скачать и открыть':'Скачать доступные'):plan.waiting.length?'Загружается':'Нет набора';
     const channels=(row.channel_inventory||[]).map(c=>`<span class="catalog-channel ${escape(c.state)}" title="Канал ${c.channel}: ${escape(catalogStates[c.state]||c.state)}" aria-label="Канал ${c.channel}: ${escape(catalogStates[c.state]||c.state)}">${c.channel}</span>`).join('');
-    return `<article class="catalog-card ${row.local_id===S.scene?.id?'selected':''}" data-session="${escape(key)}"><header><strong><time>${escape(row.time.slice(11,19))}</time> UTC</strong><span>${title}</span></header><div class="catalog-channels" aria-label="Состав каналов">${channels}</div><p class="catalog-completeness">${escape(catalogPlanText(plan))}</p>${row.no_uri&&!row.local_id?'<p class="error-text">Есть запись, но нет ссылок на файлы.</p>':''}<div class="catalog-actions"><button class="session primary" data-key="${escape(key)}" ${busy||(!plan.ready&&!plan.ids.length)?'disabled':''}>${busy?'Добавление…':action}</button><button class="catalog-files text-button" data-key="${escape(key)}">${row.count?'Файлы · '+row.count:row.local_channels.length?'Каналы · '+row.local_channels.length:'Запись'}</button></div>${plan.ids.length?`<small>К загрузке: ${plan.ids.length} · ${escape(catalogSize(plan))}</small>`:''}</article>`;
+    return `<article class="catalog-card ${row.local_id===S.scene?.id?'selected':''}" data-session="${escape(key)}"><header><strong><time>${escape(row.time.slice(11,19))}</time> UTC</strong><span>${title}</span></header>${plan.rgb?`<p class="archive-caption">${escape(plan.image?.level||'RGB / COG')} · готовые цвета</p>`:`<div class="catalog-channels" aria-label="Состав каналов">${channels}</div>`}<p class="catalog-completeness">${escape(catalogPlanText(plan))}</p>${row.no_uri&&!row.local_id?'<p class="error-text">Есть запись, но нет ссылок на файлы.</p>':''}<div class="catalog-actions"><button class="session primary" data-key="${escape(key)}" ${busy||(!plan.ready&&!plan.ids.length)?'disabled':''}>${busy?'Добавление…':action}</button><button class="catalog-files text-button" data-key="${escape(key)}">${row.count?'Файлы · '+row.count:row.local_channels.length?'Каналы · '+row.local_channels.length:'Запись'}</button></div>${plan.ids.length?`<small>К загрузке: ${plan.ids.length} · ${escape(catalogSize(plan))}</small>`:''}</article>`;
   }).join('');
   $$('#sessions button.session').forEach(b=>b.onclick=()=>{
     const row=CATALOG.rows.find(r=>sessionKey(r)===b.dataset.key);if(!row)return;
@@ -78,13 +92,15 @@ function renderCatalog(){
   });
 }
 function catalogError(message){CATALOG.error=message;CATALOG.fingerprint='';renderCatalog();}
-function openCatalogScene(row,task=$('#catalogTask').value,channel=Number($('#catalogChannel').value)){
+function openCatalogScene(row,task=$('#catalogTask').value,channel=Number($('#catalogChannel').value),composite){
   const scene=S.scenes.find(s=>s.id===row.local_id);
   if(!scene){catalogError('Локальный снимок изменился. Обновите каталог.');return;}
   cancelCatalogOpen();
   if(typeof clearRange==='function')clearRange();
+  const plan=composite?catalogImagePlan(row,composite):catalogPlan(row,task,channel);
+  if(plan.rgb){task='archive_rgb';UI.compositeId=plan.composite;}
   $('#product').value=['ir','all'].includes(task)?'channel':task;
-  $('#channel').value=task==='channel'?channel:scene.channels.some(c=>c.channel===9)?9:scene.channels[0].channel;
+  $('#channel').value=task==='channel'?channel:scene.channels.some(c=>c.channel===9)?9:(scene.channels[0]?.channel||9);
   selectScene(scene);productHint();requestBuild();
   if(innerWidth<1050)$('#leftPanel').hidden=true;
 }
@@ -127,7 +143,7 @@ async function loadDay(){
     if(CATALOG.pending){
       const pending=CATALOG.pending,row=rows.find(r=>sessionKey(r)===pending.key);
       if(pending.context!==catalogContext())cancelCatalogOpen();
-      else if(row){const plan=catalogPlan(row,pending.task,pending.channel);if(plan.failed.length||plan.blocked.length)cancelCatalogOpen();else if(plan.ready&&S.scenes.some(s=>s.id===row.local_id))openCatalogScene(row,pending.task,pending.channel);}
+      else if(row){const plan=pending.composite?catalogImagePlan(row,pending.composite):catalogPlan(row,pending.task,pending.channel);if(plan.failed.length||plan.blocked.length)cancelCatalogOpen();else if(plan.ready&&S.scenes.some(s=>s.id===row.local_id))openCatalogScene(row,pending.task,pending.channel,pending.composite);}
     }else if(!S.scene&&S.scenes.length){selectScene(S.scenes[S.scenes.length-1]);}
   }catch(e){if(generation===S.generation)catalogError(e.message);}
 }
@@ -159,11 +175,13 @@ function drawFiles(){
   const localHTML=localRows.length?'<details class="local-file-summary" '+(!S.fileAssets.length||query?'open':'')+'><summary>На диске: '+localRows.length+' каналов</summary><table><thead><tr><th>Канал</th><th>Исходный файл</th><th>Проекция</th><th>Размер</th></tr></thead><tbody>'+localRows.map(c=>`<tr><td>${c.channel}</td><td>${escape(c.filename)}<small>${escape(channelMeta(c.channel)?.name||'')}</small></td><td>${escape(c.crs||'Не указана')}</td><td>${size(c.size)}</td></tr>`).join('')+'</tbody></table></details>':'';
   $('#fileRows').innerHTML=localHTML+(rows.length?'<table><thead><tr><th>Выбор</th><th>Содержание</th><th>Проекция</th><th>Размер</th><th>Доступ</th></tr></thead><tbody>'+rows.map(a=>{
     const ch=channelMeta(a.channel),label=a.category==='channel'&&ch?'Канал '+a.channel+' · '+ch.wavelength_um+' мкм · '+ch.name:(categoryNames[a.category]||'Другой файл');
-    const active=['queued','running'].includes(a.job_state);
-    return `<tr><td><input type="checkbox" data-id="${escape(a.id)}" ${S.selection.has(a.id)?'checked':''} ${active?'disabled':''} aria-label="Выбрать ${escape(label+' '+a.filename)}"></td><td><strong>${escape(label)}</strong><small>${escape(a.level||'Уровень не указан')}${a.job_state?' · '+escape({missing:'Файл удалён',done:'Скачан',queued:'В очереди',running:'Загружается',paused:'Пауза',error:'Ошибка'}[a.job_state]||a.job_state):''}</small><details><summary>Имя файла</summary>${escape(a.filename)}</details></td><td>${a.epsg?'EPSG:'+a.epsg:'Не указана'}</td><td>${size(a.size)}</td><td><button class="probe text-button" data-id="${escape(a.id)}">Проверить</button></td></tr>`;
+    const active=['queued','running'].includes(a.job_state)||Boolean(a.composite_id);
+    return `<tr><td><input type="checkbox" data-id="${escape(a.id)}" ${S.selection.has(a.id)?'checked':''} ${active?'disabled':''} aria-label="Выбрать ${escape(label+' '+a.filename)}"></td><td><strong>${escape(label)}</strong><small>${escape(a.level||'Уровень не указан')}${a.job_state?' · '+escape({missing:'Файл удалён',done:'Скачан',queued:'В очереди',running:'Загружается',paused:'Пауза',error:'Ошибка'}[a.job_state]||a.job_state):''}</small><small class="file-version">${a.epsg?"EPSG:"+a.epsg:"Проекция не указана"} · ${size(a.size)}</small><details><summary>Имя файла</summary>${escape(a.filename)}</details></td><td>${a.epsg?'EPSG:'+a.epsg:'Не указана'}</td><td>${size(a.size)}</td><td>${a.composite_id?`<button class="open-composite primary" data-id="${escape(a.composite_id)}">На карту</button>`:a.category==='rgb'&&!a.map_error?`<button class="queue-composite tonal" data-id="${escape(a.id)}" ${active?'disabled':''}>${active?'Загружается':'Скачать и открыть'}</button>`:`<button class="probe text-button" data-id="${escape(a.id)}">Проверить</button>`}${a.map_error?`<p class="error-text">${escape(a.map_error)}</p>`:''}</td></tr>`;
   }).join('')+'</tbody></table>':S.fileAssets.length?'<p class="empty">В каталоге нет файлов по выбранным условиям.</p>':localRows.length?'':'<p class="empty">У записи нет ссылок на файлы.</p>');
   $$('#fileRows input').forEach(c=>c.onchange=()=>{c.checked?S.selection.add(c.dataset.id):S.selection.delete(c.dataset.id);fileSelection();});
   $$('#fileRows .probe').forEach(b=>b.onclick=async()=>{b.disabled=true;try{const r=await api('/api/check',{id:b.dataset.id});b.textContent='Доступен · '+r.http;}catch(e){fileError(e.message);}finally{b.disabled=false;}});
+  $$('#fileRows .open-composite').forEach(b=>b.onclick=()=>openFileComposite(b.dataset.id).catch(e=>fileError(e.message)));
+  $$('#fileRows .queue-composite').forEach(b=>b.onclick=()=>queueFileComposite(b.dataset.id).catch(e=>fileError(e.message)));
   fileSelection();
 }
 function fileSelection(){
@@ -199,18 +217,73 @@ function initCatalog(){
   $('#filesSearch').oninput=drawFiles;
   $('#fileCategory').onchange=()=>{S.selection.clear();drawFiles();};
   $('#selectChannels').textContent='Набор по задаче';
-  $('#selectChannels').onclick=()=>{if(CATALOG.fileSession){S.selection=new Set(catalogPlan(CATALOG.fileSession).ids);$('#fileCategory').value='channel';$('#filesSearch').value='';drawFiles();}};
+  $('#selectChannels').onclick=()=>{if(CATALOG.fileSession){S.selection=new Set(catalogPlan(CATALOG.fileSession).ids);$('#fileCategory').value=catalogPlan(CATALOG.fileSession).rgb?'rgb':'channel';$('#filesSearch').value='';drawFiles();}};
   $('#clearFiles').onclick=()=>{S.selection.clear();drawFiles();};
   $('#filesDialog').addEventListener('close',()=>{CATALOG.filesSequence++;CATALOG.fileSession=null;});
   $('#downloadSelected').onclick=async()=>{
-    const ids=[...S.selection],sequence=CATALOG.filesSequence;if(!ids.length)return;
+    const ids=[...S.selection],sequence=CATALOG.filesSequence,session=CATALOG.fileSession,context=catalogContext();if(!ids.length)return;
     const rows=S.fileAssets.filter(a=>S.selection.has(a.id)),bytes=rows.reduce((n,a)=>n+(a.size||0),0);
     if(bytes>=512*1024*1024&&!await ask('Загрузка большого набора',$('#fileSelection').textContent))return;
     if(sequence!==CATALOG.filesSequence)return;
     $('#downloadSelected').disabled=true;fileError('');
-    try{await api('/api/queue',{ids});if(sequence===CATALOG.filesSequence){$('#filesDialog').close();toast('Добавлено в очередь: '+ids.length);}await loadDay();}
+    try{
+      await api('/api/queue',{ids});
+      if(sequence===CATALOG.filesSequence){
+        const autoOpen=rows.length===1&&rows[0].category==='rgb'&&session&&context===catalogContext();
+        if(autoOpen)CATALOG.pending={key:sessionKey(session),context,task:'archive_rgb',channel:9,composite:rows[0].id};
+        $('#filesDialog').close();toast(autoOpen?'RGB-композиция откроется после загрузки.':'Добавлено в очередь: '+ids.length);
+      }
+      await loadDay();
+    }
     catch(e){if(sequence===CATALOG.filesSequence)fileError(e.message);}
     finally{if(sequence===CATALOG.filesSequence)fileSelection();}
   };
   const help=document.createElement('a');help.href='/docs/CATALOG.html';help.target='_blank';help.rel='noopener';help.className='text-button';help.textContent='Как устроен каталог';controls.append(help);
 }
+
+async function openFileComposite(composite){
+  const session=CATALOG.fileSession;if(!session)return;
+  const key=sessionKey(session);await loadDay();
+  const row=CATALOG.rows.find(r=>sessionKey(r)===key);
+  if(!row)throw Error('Срок больше не выбран. Откройте его в каталоге.');
+  $('#filesDialog').close();openCatalogScene(row,'archive_rgb',9,composite);
+}
+async function queueFileComposite(identity){
+  const session=CATALOG.fileSession,context=catalogContext(),sequence=CATALOG.filesSequence;
+  const asset=S.fileAssets.find(a=>a.id===identity);if(!session||!asset)return;
+  if(asset.size>=512*1024*1024&&!await ask('Загрузка большого файла',size(asset.size)))return;
+  if(sequence!==CATALOG.filesSequence)return;
+  await api('/api/queue',{ids:[identity]});
+  if(context===catalogContext())CATALOG.pending={key:sessionKey(session),context,task:'archive_rgb',channel:9,composite:identity};
+  $('#filesDialog').close();await loadDay();toast('RGB-композиция откроется после загрузки.');
+}
+
+// Порядок интерфейса независим от FIFO загрузчика. Не перестраиваем кнопки на каждом тике.
+let queueFingerprint='';
+refreshQueue=async function(){
+  const {jobs}=await api('/api/queue');
+  const fingerprint=JSON.stringify(jobs.map(j=>[j.id,j.state,j.error,j.can_open,j.composite_id,j.map_error]));
+  if(fingerprint!==queueFingerprint||!$('#queueRows').childElementCount){
+    const body=$('#queueDialog .dialog-body');
+    const anchor=body&&body.scrollTop>5?[...$('#queueRows').children].find(n=>n.getBoundingClientRect().bottom>body.getBoundingClientRect().top):null;
+    const anchorId=anchor?.dataset.job,offset=anchor?.getBoundingClientRect().top;
+    const focused=document.activeElement,focusJob=focused?.closest('[data-job]')?.dataset.job,focusAction=focused?.dataset.action;
+    $('#queueRows').innerHTML=jobs.length?jobs.map(j=>`<article class="queue-item" data-job="${escape(j.id)}"><div class="row"><strong class="grow">${escape(j.filename)}</strong><span class="pill">${escape({running:'Загружается',queued:'В очереди',done:'Скачан',paused:'Пауза',error:'Ошибка'}[j.state]||j.state)}</span></div><progress aria-label="Прогресс загрузки" value="${j.done}" max="${j.total||1}"></progress><p class="micro queue-size"></p><p class="micro">${escape(j.platform)} · ${escape(j.time)}</p>${j.error?`<p class="error-text">${escape(j.error)}</p>`:''}${j.map_error?`<p class="error-text">${escape(j.map_error)}</p>`:''}<div class="row wrap">${j.can_open?'<button class="primary" data-action="open">На карту</button>':''}${['paused','error'].includes(j.state)?'<button data-action="resume">Продолжить</button><button data-action="restart">Заново</button>':''}<button data-action="folder">Папка</button></div></article>`).join(''):'<p class="empty">Загрузок пока нет. Выберите снимок в каталоге.</p>';
+    $$('#queueRows [data-action]').forEach(button=>button.onclick=async()=>{
+      const id=button.closest('[data-job]').dataset.job,j=jobs.find(row=>row.id===id);button.disabled=true;
+      try{
+        if(button.dataset.action==='open'){
+          $('#queueDialog').close();cancelCatalogOpen();$('#platform').value=j.platform;setDate(j.time.slice(0,10));await loadDay();
+          const row=CATALOG.rows.find(r=>r.local_id===j.scene_id);
+          if(!row)throw Error('Срок не найден: проверьте выбранный аппарат и наличие файла.');
+          openCatalogScene(row,j.composite_id?'archive_rgb':'channel',j.channel||9,j.composite_id);
+        }else if(button.dataset.action==='folder')await api('/api/open-folder',{job:id});
+        else if(button.dataset.action!=='restart'||await ask('Повторная загрузка','Удалить незавершённую часть и начать заново?'))await api('/api/queue/action',{action:button.dataset.action,id});
+      }catch(e){toast(e.message);}finally{button.disabled=false;}
+    });
+    if(anchorId&&body){const next=$$('#queueRows [data-job]').find(n=>n.dataset.job===anchorId);if(next)body.scrollTop+=next.getBoundingClientRect().top-offset;}
+    if(focusJob&&focusAction){const row=$$('#queueRows [data-job]').find(n=>n.dataset.job===focusJob);row?.querySelector(`[data-action="${focusAction}"]`)?.focus({preventScroll:true});}
+    queueFingerprint=fingerprint;
+  }
+  for(const row of $$('#queueRows [data-job]')){const j=jobs.find(j=>j.id===row.dataset.job);if(!j)continue;row.querySelector('progress').max=j.total||Math.max(j.done,1);row.querySelector('progress').value=j.done;row.querySelector('.queue-size').textContent=size(j.done)+' / '+size(j.total);}
+};

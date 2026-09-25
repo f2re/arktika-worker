@@ -10,8 +10,8 @@ const UI = {
 const original = {setMap, showProduct, selectScene, registerEvents, productHint, clearMapProduct, setDate};
 const icon = name => `<svg class="icon" aria-hidden="true"><use href="#i-${escape(name)}"/></svg>`;
 const readableDate = day => new Date(day+'T12:00:00Z').toLocaleDateString('ru-RU', {day:'numeric',month:'long',year:'numeric',timeZone:'UTC'}).replace(' г.','');
-const displayCal = {unknown:'DN', assumed:'DN ≈ K', declared:'K', metadata:'K'};
-const sourceCal = {unknown:'Единицы не объявлены',assumed:'DN = K: допущение',declared:'Задана калибровка',metadata:'Калибровка GeoTIFF'};
+const displayCal = {not_applicable:'RGB',unknown:'DN', assumed:'DN ≈ K', declared:'K', metadata:'K'};
+const sourceCal = {not_applicable:'Готовые цвета поставщика — не физические каналы',unknown:'Единицы не объявлены',assumed:'DN = K: допущение',declared:'Задана калибровка',metadata:'Калибровка GeoTIFF'};
 
 // Сохраняем существующие элементы и контракты API, группируя дополнительные
 // параметры по задаче. Профиль не является условием просмотра снимка.
@@ -145,7 +145,24 @@ function workflowLayout() {
   }
   const firstHelp=$('#helpDialog a[href="/docs/index.html"]');
   if(firstHelp){firstHelp.href=help;firstHelp.textContent='Как работать со снимком, маршрутом и профилем';}
+  const label=document.createElement('label');label.id='compositeSourceLabel';label.hidden=true;label.textContent='Готовая композиция';const select=document.createElement('select');select.id='compositeSource';label.append(select);$('#product').closest('label').after(label);select.onchange=()=>{UI.compositeId=select.value;requestBuild();};
   syncProfileControls();syncRouteControls();
+}
+
+function setupDialogShells(){
+  for(const dialog of $$('dialog')){
+    if(dialog.querySelector(':scope > .dialog-body'))continue;
+    const head=dialog.querySelector(':scope > .dialog-head');
+    if(!head)continue; // Диалог подтверждения имеет собственные короткие действия.
+    const footer=dialog.querySelector(':scope > .dialog-footer');
+    const body=document.createElement('div');body.className='dialog-body';
+    for(const node of [...dialog.childNodes])if(node!==head&&node!==footer)body.append(node);
+    dialog.classList.add('fixed-dialog');dialog.replaceChildren(head,body);
+    if(footer)dialog.append(footer);
+    head.querySelector('[data-close]')?.setAttribute('aria-label','Закрыть окно');
+    dialog.setAttribute('aria-labelledby',dialog.id+'-title');
+    const title=head.querySelector('h2');if(title)title.id=dialog.id+'-title';
+  }
 }
 
 function inlineError(selector,message) {
@@ -172,10 +189,11 @@ function syncRouteControls() {
   if(!$('#routeHint'))return;
   let count=0;try{count=routePoints().length;}catch{/* Незавершённый текст координат ещё не маршрут. */}
   const busy=Boolean(UI.routeBusy);
-  $('#calculateRoute').disabled=!S.product||count<2||busy||Boolean(UI.waypointInvalid);
+  $('#calculateRoute').disabled=!S.product||S.product.display_only||count<2||busy||Boolean(UI.waypointInvalid);
   $('#drawRoute').disabled=!S.product;
   $('#undoRoute').disabled=!count;$('#clearRoute').disabled=!count&&!$('#routePoints').value;
   $('#routeHint').textContent=!S.product?'Откройте снимок, затем добавьте точки маршрута.':count<2?'Добавьте как минимум две точки на карте или введите координаты.':`${count} точек маршрута. Перетаскивайте точки на карте или меняйте координаты ниже.`;
+  if(S.product?.display_only)$('#routeHint').textContent='На готовой RGB-композиции можно отметить маршрут. Для графика значений нужны исходные поканальные GeoTIFF; цвета RGB не являются температурой.';
   const timed=$('#routeTimingEnabled').checked;
   $('#routeTimingFields').hidden=!timed;$('#departure').disabled=!timed;$('#speed').disabled=!timed;
 }
@@ -281,7 +299,7 @@ clearMapProduct = function() {
 };
 
 function timeStrip() {
-  $('#timeStrip').innerHTML=S.scenes.length?S.scenes.map(s=>`<button data-scene="${escape(s.id)}" class="${s.id===S.scene?.id?'active':''}" aria-pressed="${s.id===S.scene?.id}" data-tip="${escape((s.platform==='ARCM1'?'Арктика-М1':'Арктика-М2')+' · '+s.channels.length+' каналов')}">${escape(s.time.slice(11,16))}<small>${s.platform.slice(-1)}</small></button>`).join(''):'<span class="subtle">Выберите снимки</span>';
+  $('#timeStrip').innerHTML=S.scenes.length?S.scenes.map(s=>`<button data-scene="${escape(s.id)}" class="${s.id===S.scene?.id?'active':''}" aria-pressed="${s.id===S.scene?.id}" data-tip="${escape((s.platform==='ARCM1'?'Арктика-М1':'Арктика-М2')+' · '+(s.channels.length?s.channels.length+' каналов':'Готовая RGB-композиция'))}">${escape(s.time.slice(11,16))}<small>${s.platform.slice(-1)}</small></button>`).join(''):'<span class="subtle">Выберите снимки</span>';
   $$('#timeStrip button').forEach(b=>b.onclick=()=>selectScene(S.scenes.find(s=>s.id===b.dataset.scene)));
   $('#previousScene').disabled=!S.scene||S.scenes.findIndex(s=>s.id===S.scene.id)<=0;
   $('#nextScene').disabled=!S.scene||S.scenes.findIndex(s=>s.id===S.scene.id)>=S.scenes.length-1;
@@ -291,6 +309,7 @@ function timeStrip() {
 selectScene = function(scene) {
   const changed=S.scene?.id!==scene.id;cancelCatalogOpen();
   if(changed){clearRange();invalidateRoute();}
+  if(!scene.composites?.some(c=>c.id===UI.compositeId))UI.compositeId=scene.composites?.[0]?.id||null;
   original.selectScene(scene);UI.selectedScene=scene.id;
   $('#dateCaption').textContent=readableDate(scene.time.slice(0,10));$('#timeCaption').textContent=scene.time.slice(11,16)+' UTC';
   timeStrip();drawChannelChips();renderCatalog();
@@ -332,6 +351,9 @@ function tasks() {
 
 productHint = function() {
   original.productHint();drawChannelChips();
+  const composites=S.scene?.composites||[];
+  if($('#compositeSource')){const selected=UI.compositeId;$('#compositeSource').innerHTML=composites.map(c=>`<option value="${escape(c.id)}">${escape(c.level+' · '+c.crs)}</option>`).join('');if(composites.some(c=>c.id===selected))$('#compositeSource').value=selected;UI.compositeId=$('#compositeSource').value;$('#compositeSourceLabel').hidden=$('#product').value!=='archive_rgb'||composites.length<2;}
+  for(const option of $$('#product option')){const spec=S.registry.products.find(p=>p.id===option.value);option.disabled=option.value==='archive_rgb'?!composites.length:!S.scene?.channels.length||Boolean(spec?.channels?.some(ch=>!S.scene.channels.some(c=>c.channel===ch)));}
   const guide=UI.guides[$('#product').value];
   if(guide&&$('#product').value!=='channel')$('#productHint').textContent=guide.purpose;
   const have=new Set((S.scene?.channels||[]).map(c=>c.channel));
@@ -358,7 +380,8 @@ productHint = function() {
 
 function buildRequest() {
   if(!S.scene)return null;
-  const body={scene:S.scene.id,product:$('#product').value,channel:Number($('#channel').value),preset:$('#preset').value,width:1000};
+  const body={scene:S.scene.id,product:$('#product').value,channel:Number($('#channel').value)||9,preset:$('#preset').value,width:1000};
+  if(body.product==='archive_rgb')body.composite=UI.compositeId||S.scene.composites?.[0]?.id;
   if(body.product==='channel'){
     const offset=S.product?.product==='channel'&&Number(S.product.request.channel)===body.channel&&S.product.legend.units==='K'?273.15:0;
     if($('#displayMin').value!=='')body.display_min=Number($('#displayMin').value)+offset;
@@ -409,14 +432,14 @@ showProduct = async function(p) {
   const epoch=UI.contextEpoch;
   if(UI.activeBuild&&UI.activeEpoch!==epoch)return;
   const current=buildRequest();
-  if(UI.activeBuild&&current&&(p.scene_id!==current.scene||p.product!==current.product||p.grid.preset!==current.preset||Number(p.request.channel||9)!==current.channel))return;
+  if(UI.activeBuild&&current&&(p.scene_id!==current.scene||p.product!==current.product||p.grid.preset!==current.preset||Number(p.request.channel||9)!==current.channel||(p.product==='archive_rgb'&&p.request.composite!==current.composite)))return;
   const keepView=S.map?.grid.crs===p.grid.crs&&S.map?.grid.preset===p.grid.preset&&S.map?.grid.width===p.grid.width;
   const view=keepView&&S.view?[...S.view]:null;
   const oldPoint=keepView&&S.product?.scene_id===p.scene_id?UI.lastPoint:null;
   const ctx=await setMap(p.grid.preset,p.grid.width,p.id);if(!ctx||epoch!==UI.contextEpoch)return;
   if(S.scene?.id!==p.scene_id){S.scene=S.scenes.find(s=>s.id===p.scene_id)||null;$('#dateCaption').textContent=readableDate(p.time.slice(0,10));$('#timeCaption').textContent=p.time.slice(11,16)+' UTC';}
   api('/api/settings',{view_settings:{preset:p.grid.preset,product:p.product,channel:p.request.channel||9}}).catch(e=>toast(e.message));
-  S.product=p;$('#preset').value=p.grid.preset;$('#product').value=p.product;$('#channel').value=p.request.channel||9;
+  S.product=p;$('#calibrationState').textContent=p.display_only?'RGB':displayCal[p.calibration_status]||'DN';$('#calibrationOpen').disabled=Boolean(p.display_only);if(p.display_only)UI.compositeId=p.request.composite;$('#preset').value=p.grid.preset;$('#product').value=p.product;$('#channel').value=p.request.channel||9;
   $('#mapTitle').textContent=p.title.replace('Круглосуточная микрофизика','Микрофизика · 24 ч').replace('Интегральная карта спектральных признаков','Спектральные признаки');
   $('#mapSubtitle').textContent=p.platform+' · '+p.time;
   $('#productTag').textContent=(p.platform==='ARCM1'?'Арктика-М1':'Арктика-М2')+' · '+p.time.slice(11,16)+' UTC'+(p.calibration_status==='assumed'?' · DN ≈ K':'');
@@ -436,6 +459,11 @@ function legendSwatches(guide) {
 }
 
 drawLegend = function(l) {
+  if(l.product==='archive_rgb'){
+    $('#legend').innerHTML=`<h3>Готовая цветовая композиция</h3><p class="hint">${escape(l.meaning)}</p><p class="hint">${escape(l.source_level)} · ${escape(l.source_crs)}</p><details><summary>Исходный файл и отображение</summary><p class="micro">${escape(l.source_filename)}<br>${escape(l.color_conversion)}<br>${escape(l.nodata)}</p></details><a class="export-link" href="/docs/ARCHIVE.html" target="_blank" rel="noopener">Как работать с архивным снимком</a>`;
+    $('#miniLegend').innerHTML='<div class="mini-legend-title">'+icon('info')+'Готовые цвета поставщика</div><span>RGB · не температурная шкала</span>';$('#miniLegend').hidden=false;return;
+  }
+
   let guide=interpretedGuide(l.product);if(l.product==='channel'&&l.units!=='K')guide={title:'Значения канала · DN',purpose:'Числа из файла, не температура. Цвет помогает сравнивать сигнал и различать структуру.',swatches:[]};
   if(l.product==='channel'&&l.units==='K'&&Number(S.product?.request.channel)!==9)guide={title:'Яркостная температура выбранного канала',purpose:channelMeta(S.product.request.channel)?.description||'Температура излучения; не температура воздуха.',swatches:[]};
   const temperature=l.units==='K'&&l.product==='channel';
@@ -493,6 +521,14 @@ function pointRequest() {
 }
 
 async function inspectAt(x,y,keep=false) {
+  if(S.product?.display_only){
+    invalidatePoint();const sequence=UI.pointSequence,product=S.product;
+    const point=await api('/api/coordinates',{product:product.id,x,y});
+    if(sequence!==UI.pointSequence||S.product?.id!==product.id)return;
+    tab('point');$('#pixel').innerHTML=`<h3>${num(point.lat,3)}° · ${num(point.lon,3)}°</h3><p class="hint">Готовая RGB-композиция поставщика. В файле есть цвета, но нет исходных значений каналов для спектрального анализа.</p><p class="micro">${escape(product.time)} · ${escape(product.legend.source_level)}</p><a class="export-link" href="/docs/ARCHIVE.html" target="_blank" rel="noopener">Возможности архивного снимка</a>`;
+    return;
+  }
+
   const id=++UI.pointSequence;UI.lastPoint={x,y};UI.analysis=null;
   $('#analysisExport').hidden=true;$('#analysisExport').removeAttribute('href');
   $('#profilePointResult').replaceChildren();$('#pixel').innerHTML='<p class="hint">Расчёт…</p>';
@@ -819,7 +855,7 @@ poll = async function() {
     $('#status').textContent=r.busy?r.status:'Готово';$('#statusdot').classList.toggle('busy',r.busy);
     $('#cancel').hidden=!r.busy;$('#process').disabled=r.busy;
     const cal=S.product?.calibration_status||r.calibration?.mode;
-    $('#calibrationState').textContent=displayCal[cal]||'DN';
+    $('#calibrationState').textContent=S.product?.display_only?'RGB':displayCal[cal]||'DN';$('#calibrationOpen').disabled=Boolean(S.product?.display_only);
     $('#calibrationOpen').dataset.tip=sourceCal[cal]||'Единицы каналов';
     $('#downloadPath').textContent=r.download_dir;
     const q=r.queue_counts||{},count=(q.queued||0)+(q.running||0);
@@ -898,7 +934,7 @@ registerEvents = function() {
     if(e.key==='Escape'&&!$$('dialog').some(d=>d.open)){if(S.drawing)setDrawing(false);else $('#inspector').hidden=true;}
   });
   $('#calibrationDialog').addEventListener('close',()=>{if(UI.calSaved&&S.scene){UI.calSaved=false;clearRange();requestBuild();}});
-  tasks();installTooltips();
+  setupDialogShells();tasks();installTooltips();
   const helpObserver=new MutationObserver(()=>{for(const a of $$('a[href^="/docs/"]')){const href=a.getAttribute('href');if(/\.md(?:#.*)?$/.test(href))a.setAttribute('href','/docs/index.html#'+href.split('/').at(-1).split('.')[0].toLowerCase());}});
   helpObserver.observe(document.body,{subtree:true,childList:true});
 };
