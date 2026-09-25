@@ -65,7 +65,7 @@
     "install.sh": "b41f9798ef73b5261e50016d67207bc011618238e72d270aa34d7060ae239f02",
     "requirements-tested-linux.txt": "c3457d0c8ccf2035e87c4174901a8be5cf3f149d4fde9836b869f88e134f6076",
     "requirements.txt": "338f4b14041704850bca86bf0941dae3162e2d324c15f30a35f92fdae706a353",
-    "scripts/archive_browser_smoke.py": "1e554117717b7cd0152d2cccb19c1e975dc6a3198cf21ef3f1d4acd42c81f30e",
+    "scripts/archive_browser_smoke.py": "8281abb0f7573dd458fcde058b889377b6a9ac3f9afcd5747dd8bab03330b2d3",
     "scripts/browser_smoke.py": "2f8158c7c7148dbd1dfda4cb7fab4e87e31b8aece7f679eaa7c3a7aca1cd14d5",
     "scripts/browser_support.py": "67b29a8033b5a3340e19c4ec6252777dfb63d906f333d6c6a69a08c819a8c218",
     "scripts/build_basemap.py": "898015379fa775bab7cebf67b18bb34d82adee8a3a01d3c3525529c9872ffeb7",

@@ -48,6 +48,11 @@ def main():
                         page.wait_for_timeout(100)
                     raise AssertionError(expression)
                 def check(name,expression):wait(expression);report['checks'].append(dict(name=name,passed=True))
+                def open_queue():
+                    # Щелчок запускает HTTP-запрос; прокручивать ещё скрытое окно нельзя.
+                    page.locator('#queueOpen').click()
+                    page.locator('#queueDialog').wait_for(state='visible')
+                    wait('()=>{const e=document.querySelector("#queueDialog .dialog-body");return e.clientHeight>0&&e.scrollHeight>e.clientHeight;}')
                 try:
                     mount(page,ROOT,server,args.bridge)
                     check('Старый скачанный RGB открывается без повторной загрузки','()=>typeof S!=="undefined"&&S.product?.display_only&&!S.busy&&!UI.activeBuild')
@@ -87,7 +92,7 @@ def main():
                     for i,a in enumerate(extra):
                         app.store.enqueue(a,root/a['filename']);app.store.update_job(a['id'],state='done' if i<33 else 'queued')
                     app.store.update_job(extra[-2]['id'],state='running')
-                    page.locator('#queueOpen').click()
+                    open_queue()
                     check('Выполняемая загрузка сверху','()=>document.querySelector("#queueRows [data-job]").dataset.job==="meta-33"')
                     check('Новая ожидающая перед историей','()=>document.querySelectorAll("#queueRows [data-job]")[1].dataset.job==="meta-34"')
                     close=page.locator('#queueDialog [data-close]');before=close.bounding_box()
@@ -97,13 +102,13 @@ def main():
                     check('Закрытие очереди не перекрывается содержимым','()=>{const e=document.querySelector("#queueDialog [data-close]"),r=e.getBoundingClientRect();return e.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2));}')
                     page.screenshot(path=str(out/'queue-scrolled.png'))
                     page.keyboard.press('Escape');check('Escape закрывает верхнее окно','()=>!document.querySelector("#queueDialog").open')
-                    page.locator('#queueOpen').click();page.locator('#queueDialog .dialog-body').evaluate('(e)=>e.scrollTop=0');page.screenshot(path=str(out/'queue-current.png'));page.keyboard.press('Escape')
+                    open_queue();page.locator('#queueDialog .dialog-body').evaluate('(e)=>e.scrollTop=0');page.screenshot(path=str(out/'queue-current.png'));page.keyboard.press('Escape')
                     # Возврат к числовым каналам после готового изображения.
                     page.evaluate("()=>setDate('2026-01-01')")
                     check('Обычные поканальные сцены не сломаны','()=>S.product?.product==="channel"&&!S.busy&&!UI.activeBuild')
                     check('Калибровка снова доступна на канале','()=>!document.querySelector("#calibrationOpen").disabled')
                     for width in (1024,390):
-                        page.set_viewport_size(dict(width=width,height=844));page.locator('#queueOpen').click()
+                        page.set_viewport_size(dict(width=width,height=844));open_queue()
                         page.locator('#queueDialog .dialog-body').evaluate('(e)=>e.scrollTop=e.scrollHeight')
                         check('Тело окна прокручивается '+str(width),'()=>document.querySelector("#queueDialog .dialog-body").scrollTop>100')
                         check('Окно без переполнения '+str(width),'()=>document.documentElement.scrollWidth<=innerWidth+1')
