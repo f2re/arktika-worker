@@ -95,11 +95,11 @@ class Handler(BaseHTTPRequestHandler):
                 self.send(303,b'',extra={'Location':'/'})
             except Exception as e:self.error(e)
             return
-        if path in ('/','/app.js','/style.css','/icon.svg','/favicon.ico','/studio.js'):
+        if path in ('/','/app.js','/style.css','/icon.svg','/favicon.ico','/studio.js','/catalog.js','/catalog.css'):
             if not self.gate(False):return
-            names={'/':'index.html','/app.js':'app.js','/style.css':'style.css','/icon.svg':'icon.svg','/favicon.ico':'icon.svg','/studio.js':'studio.js'}
+            names={'/':'index.html','/app.js':'app.js','/style.css':'style.css','/icon.svg':'icon.svg','/favicon.ico':'icon.svg','/studio.js':'studio.js','/catalog.js':'catalog.js','/catalog.css':'catalog.css'}
             p=ROOT/'static'/names[path]
-            ctype={'index.html':'text/html; charset=utf-8','app.js':'application/javascript; charset=utf-8','studio.js':'application/javascript; charset=utf-8','style.css':'text/css; charset=utf-8','icon.svg':'image/svg+xml'}[p.name]
+            ctype={'index.html':'text/html; charset=utf-8','app.js':'application/javascript; charset=utf-8','studio.js':'application/javascript; charset=utf-8','catalog.js':'application/javascript; charset=utf-8','catalog.css':'text/css; charset=utf-8','style.css':'text/css; charset=utf-8','icon.svg':'image/svg+xml'}[p.name]
             self.send(200,p.read_bytes(),ctype);return
         if path=='/health':
             if self.gate(False):self.send(200,{'app':'arktika-web','version':'0.2.2'})

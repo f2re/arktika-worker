@@ -17,6 +17,7 @@ ROOT=Path(__file__).resolve().parents[1]
 FILE_PATTERN=re.compile(r'^A([12])_(\d{14})_ch(\d{2})\.tif$',re.I)
 from .analysis_service import AnalysisMixin
 from .interpretation import spectral, profile_diagnostics
+from .catalog import catalog_sessions, describe_session
 class Workstation(AnalysisMixin, App):
  def __init__(self,state_dir,download_dir=None,token='',config=None,client=None):
   self.config=config or {};super().__init__(state_dir,download_dir,token,client or AuthClient(token,self.config.get('oauth')))
@@ -86,6 +87,9 @@ class Workstation(AnalysisMixin, App):
  def scenes(self,date='',platform=''):
   self.sync_downloads()
   with self.store.lock:rows=[json.loads(r[0]) for r in self.store.conn.execute('SELECT data FROM scenes WHERE stamp LIKE ? ORDER BY stamp, id',(date+'%',))]
+  for scene in rows:
+   scene['channels']={ch:c for ch,c in scene['channels'].items() if Path(c['path']).is_file()}
+  rows=[s for s in rows if s['channels']]
   return [dict(id=s['id'],platform=s['platform'],time=s['time'],time_assumed=s.get('time_assumed',True),channels=[{k:v for k,v in c.items() if k!='path'} for c in sorted(s['channels'].values(),key=lambda x:x['channel'])]) for s in rows if not platform or s['platform']==platform]
  def scene(self,identity):
   with self.store.lock:r=self.store.conn.execute('SELECT data FROM scenes WHERE id=?',(identity,)).fetchone()
@@ -96,8 +100,17 @@ class Workstation(AnalysisMixin, App):
   for s in scenes:counts[s['time'][:10]]=counts.get(s['time'][:10],0)+1
   for day in result['days']:day['local_scenes']=counts.get(day['date'],0)
   return result
+ def sessions(self,day,filters,offset=0,limit=24):
+  return catalog_sessions(self,day,filters,offset,limit)
  def session(self,platform,stamp):
   result=super().session(platform,stamp);records=[r for r in self.store.records(stamp,platform) if r['time']==stamp]
+  local=next((s for s in self.scenes(stamp,platform) if s['time']==stamp),None)
+  jobs={j['id']:j for j in self.store.jobs()}
+  result.update(describe_session(result['assets'],local,jobs))
+  result['local_files']=(local or {}).get('channels',[])
+  for asset in result['assets']:
+   job=jobs.get(asset['id'])
+   if job:asset['job_state']='missing' if job['state']=='done' and not Path(job['path']).is_file() else job['state']
   result['records']=[{k:r.get(k) for k in ('id','time','time_original','time_assumed','bbox','geometry','level','gsd')} for r in records]
   return result
  def prepare(self,data):

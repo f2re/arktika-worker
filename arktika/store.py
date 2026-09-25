@@ -128,9 +128,11 @@ class Store:
 
     def enqueue(self, asset, path):
         with self.lock, self.conn:
-            old = self.conn.execute('SELECT state FROM jobs WHERE id=?', (asset['id'],)).fetchone()
+            old = self.conn.execute('SELECT state,path FROM jobs WHERE id=?', (asset['id'],)).fetchone()
             if old:
-                if old[0] not in ('done', 'running'):
+                if old[0]=='done' and not Path(old[1]).is_file():
+                    self.conn.execute("UPDATE jobs SET state='queued',done=0,error='',sha256='' WHERE id=?", (asset['id'],))
+                elif old[0] not in ('done', 'running'):
                     self.conn.execute("UPDATE jobs SET state='queued',error='' WHERE id=?", (asset['id'],))
             else:
                 self.conn.execute('INSERT INTO jobs VALUES(?,?,?,?,?,?,?,?,?)',

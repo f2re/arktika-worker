@@ -7,7 +7,7 @@ const UI = {
   activeBuild: null, resultSeen: '', profileText: '', routeRevision: 0,
   selectedScene: null, autoBuild: true, profileLoaded: false, contextEpoch: 0, activeEpoch: 0,
 };
-const original = {setMap, showProduct, selectScene, registerEvents, productHint, clearMapProduct, setDate, loadDay};
+const original = {setMap, showProduct, selectScene, registerEvents, productHint, clearMapProduct, setDate};
 const icon = name => `<svg class="icon" aria-hidden="true"><use href="#i-${escape(name)}"/></svg>`;
 const readableDate = day => new Date(day+'T12:00:00Z').toLocaleDateString('ru-RU', {day:'numeric',month:'long',year:'numeric',timeZone:'UTC'}).replace(' г.','');
 const displayCal = {unknown:'DN', assumed:'DN ≈ K', declared:'K', metadata:'K'};
@@ -265,6 +265,7 @@ function invalidatePoint() {
 }
 
 setDate = function(day) {
+  cancelCatalogOpen();
   if(!/^\d{4}-\d{2}-\d{2}$/.test(day)) return toast('Введите полную дату.');
   const test=new Date(day+'T00:00:00Z');
   if(!Number.isFinite(test.getTime())||test.toISOString().slice(0,10)!==day) return toast('Такой даты нет.');
@@ -288,11 +289,11 @@ function timeStrip() {
 }
 
 selectScene = function(scene) {
-  const changed=S.scene?.id!==scene.id;
+  const changed=S.scene?.id!==scene.id;cancelCatalogOpen();
   if(changed){clearRange();invalidateRoute();}
   original.selectScene(scene);UI.selectedScene=scene.id;
   $('#dateCaption').textContent=readableDate(scene.time.slice(0,10));$('#timeCaption').textContent=scene.time.slice(11,16)+' UTC';
-  timeStrip();drawChannelChips();
+  timeStrip();drawChannelChips();renderCatalog();
   if(changed) {
     invalidatePoint();
     if(S.product&&S.product.scene_id!==scene.id) {
@@ -300,18 +301,6 @@ selectScene = function(scene) {
     }
     if(UI.autoBuild) requestBuild();
   }
-};
-
-loadDay = async function() {
-  await original.loadDay();timeStrip();
-  $$('#sessions .session').forEach(button=>{
-    const key=button.dataset.key;button.setAttribute('data-tip','Открыть срок; файлы — двойной щелчок');
-    const item=S.catalog.find(s=>s.platform+'|'+s.time===key);
-    if(item){
-      button.oncontextmenu=e=>{e.preventDefault();showFiles(item).catch(e=>toast(e.message));};
-      const fileButton=document.createElement('button');fileButton.className='session-files text-button';fileButton.innerHTML=icon('folder')+'Каналы и файлы';fileButton.setAttribute('aria-label','Каналы и файлы '+item.time.slice(11,16));fileButton.onclick=()=>showFiles(item).catch(e=>toast(e.message));button.after(fileButton);
-    }
-  });
 };
 
 function drawChannelChips() {
@@ -381,6 +370,7 @@ function buildRequest() {
 }
 
 function requestBuild() {
+  cancelCatalogOpen();
   const request=buildRequest();
   if(!request){left('catalog');return;}
   UI.contextEpoch++;UI.mapSequence++;invalidatePoint();invalidateRoute();
