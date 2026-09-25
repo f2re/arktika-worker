@@ -42,6 +42,7 @@ jobs:
       - run: node --check static/app.js && node --check static/studio.js && node --check static/catalog.js
       - run: python scripts/browser_smoke.py --output browser-results
       - run: python scripts/catalog_browser_smoke.py --output browser-results/catalog
+      - run: python scripts/archive_browser_smoke.py --output browser-results/archive
       - uses: actions/upload-artifact@v4
         if: always()
         with:
