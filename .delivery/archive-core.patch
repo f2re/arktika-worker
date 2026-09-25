@@ -1,0 +1,342 @@
+diff --git a/arktika/archive.py b/arktika/archive.py
+new file mode 100644
+index 0000000..5dc870e
+--- /dev/null
++++ b/arktika/archive.py
+@@ -0,0 +1,210 @@
++"""Готовые цветовые GeoTIFF/COG: просмотр без восстановления физических каналов."""
++from __future__ import annotations
++
++import datetime as dt
++import hashlib
++import json
++import os
++import re
++import shutil
++from pathlib import Path
++
++import numpy as np
++import rasterio
++from PIL import Image
++from rasterio.enums import ColorInterp, Resampling
++from rasterio.vrt import WarpedVRT
++
++from .download import atomic_json, digest
++from .geo import grid, lonlat_grid, solar_elevation
++from .model import UTC, iso, parse_time
++from .network import Cancelled
++
++VERSION = 'archive-rgb-1'
++NOTE = ('Готовая цветовая композиция поставщика. Цвета сохранены, каналы прибора '
++        'из RGB не восстанавливаются. Температура, фаза облаков и условия '
++        'обледенения по этому файлу не рассчитываются.')
++
++
++def color_layout(ds):
++    """Используем ColorInterp/палитру, а не принимаем три произвольных канала за RGB."""
++    if ds.driver != 'GTiff' or not ds.crs or abs(ds.transform.determinant) == 0:
++        raise ValueError('Для карты нужен GeoTIFF с системой координат и геопривязкой.')
++    colors = list(ds.colorinterp)
++    if all(c in colors for c in (ColorInterp.red, ColorInterp.green, ColorInterp.blue)):
++        bands = [colors.index(c)+1 for c in (ColorInterp.red, ColorInterp.green, ColorInterp.blue)]
++        mode = 'rgb'
++    elif ds.count == 1 and colors[0] == ColorInterp.palette:
++        ds.colormap(1)  # Ошибка отсутствующей палитры не должна маскироваться.
++        bands, mode = [1], 'palette'
++    else:
++        raise ValueError('В GeoTIFF не объявлены цветовые полосы RGB или палитра. Нужны поканальные данные либо готовая RGB-композиция.')
++    if any(ds.dtypes[b-1] not in ('uint8', 'uint16') for b in bands):
++        raise ValueError('Готовые цвета поддерживаются в uint8/uint16; автоматическая растяжка физических величин не выполняется.')
++    alpha = colors.index(ColorInterp.alpha)+1 if ColorInterp.alpha in colors else None
++    if alpha and ds.dtypes[alpha-1] not in ('uint8', 'uint16'):
++        raise ValueError('Неподдерживаемый тип альфа-канала.')
++    return dict(mode=mode, bands=bands, alpha=alpha)
++
++
++def check_tiff(path):
++    # Проверка выполняется до GDAL: VRT может содержать внешние ссылки.
++    with Path(path).open('rb') as stream:
++        if stream.read(4) not in (b'II*\x00', b'MM\x00*', b'II+\x00', b'MM\x00+'):
++            raise ValueError('Файл не является TIFF. XML/VRT под видом снимка не открывается.')
++
++
++def inspect_composite(path, asset=None):
++    """Метаданные срока берутся из каталога, TIFF-тегов или явно определённого имени."""
++    path = Path(path).resolve()
++    if path.suffix.lower() not in ('.tif', '.tiff'):
++        return None
++    check_tiff(path)
++    asset = asset or {}
++    with rasterio.open(path) as ds:
++        tags = ds.tags()
++        platform = asset.get('platform') or tags.get('platform', '')
++        stamp, assumed = parse_time(asset.get('time') or tags.get('time', ''))
++        match = re.fullmatch(r'A([12])_(\d{14})(?:[_\.].*)?\.tiff?', path.name, re.I)
++        if match:
++            if not platform:
++                platform = 'ARCM'+match[1]
++            if not stamp:
++                stamp = iso(dt.datetime.strptime(match[2], '%Y%m%d%H%M%S').replace(tzinfo=UTC))
++                assumed = True
++        if platform not in ('ARCM1', 'ARCM2') or not stamp:
++            return None
++        layout = color_layout(ds)
++        identity = asset.get('id') or hashlib.sha256(str(path).encode()).hexdigest()[:32]
++        return dict(id=identity, asset_id=asset.get('id'), path=str(path), filename=path.name,
++                    platform=platform, time=stamp, time_assumed=asset.get('time_assumed', assumed),
++                    level=asset.get('level') or tags.get('level') or 'RGB',
++                    crs=ds.crs.to_string(), size=path.stat().st_size, shape=[ds.height, ds.width],
++                    dtype=ds.dtypes[layout['bands'][0]-1], **layout)
++
++
++def register_composite(app, path, asset=None):
++    entry = inspect_composite(path, asset)
++    if entry is None:
++        return None
++    stamp = dt.datetime.fromisoformat(entry['time'].replace('Z', '+00:00'))
++    identity = entry['platform']+'_'+stamp.strftime('%Y%m%d%H%M%S')
++    with app.store.lock, app.store.conn:
++        old = app.store.conn.execute('SELECT data FROM scenes WHERE id=?', (identity,)).fetchone()
++        scene = json.loads(old[0]) if old else dict(id=identity, platform=entry['platform'],
++                    time=entry['time'], time_assumed=entry['time_assumed'], channels={})
++        # Повторный импорт той же копии не создаёт второй пункт списка.
++        composites = scene.setdefault('composites', {})
++        for key, previous in list(composites.items()):
++            if key != entry['id'] and previous['path'] == entry['path']:
++                del composites[key]
++        if composites.get(entry['id']) == entry:
++            return identity
++        composites[entry['id']] = entry
++        app.store.conn.execute('INSERT OR REPLACE INTO scenes VALUES(?,?,?)',
++                              (identity, scene['time'], json.dumps(scene, ensure_ascii=False)))
++        app.store.revision += 1
++    return identity
++
++
++def _byte(values, dtype):
++    if dtype == 'uint16':
++        return np.rint(values.astype('float32')/257).clip(0, 255).astype('uint8')
++    return values.astype('uint8')
++
++
++def read_composite(path, g):
++    """WarpedVRT ограничивает чтение целевой сеткой; исходник целиком в RAM не загружается."""
++    check_tiff(path)
++    with rasterio.open(path) as ds:
++        layout = color_layout(ds)
++        table = ds.colormap(1) if layout['mode'] == 'palette' else None
++        with WarpedVRT(ds, crs=g['crs'], transform=g['transform'], width=g['width'],
++                       height=g['height'], resampling=Resampling.nearest,
++                       add_alpha=layout['alpha'] is None, warp_mem_limit=128) as vrt:
++            bands = vrt.read(layout['bands'])
++            mask = vrt.dataset_mask()
++            if table is not None:
++                lut = np.zeros((65536, 4), dtype='uint8')
++                for key, value in table.items():
++                    lut[key] = value
++                rgba = lut[bands[0]]
++            else:
++                rgb = np.stack([_byte(bands[i], ds.dtypes[b-1]) for i,b in enumerate(layout['bands'])], axis=-1)
++                alpha = _byte(vrt.read(layout['alpha']), ds.dtypes[layout['alpha']-1]) if layout['alpha'] else mask
++                rgba = np.dstack([rgb, alpha])
++            rgba[:, :, 3] = np.minimum(rgba[:, :, 3], mask)
++            rgba[rgba[:, :, 3] == 0, :3] = 0
++    return rgba
++
++
++def build_composite(scene, root, request, cancel=None, progress=lambda message: None):
++    entries = scene.get('composites', {})
++    selected = request.get('composite')
++    if selected:
++        source = entries.get(selected)
++    else:
++        source = next(iter(sorted(entries.values(), key=lambda e: (e['crs'] != 'EPSG:4326', e['size'], e['id']))), None)
++    if not source or not Path(source['path']).is_file():
++        raise ValueError('Готовая RGB-композиция не найдена на диске. Скачайте файл или заново откройте папку.')
++    request = dict(request, product='archive_rgb', composite=source['id'])
++    g = grid(request.get('preset', 'arctic'), request.get('width', 1000))
++    path = Path(source['path']); before = path.stat()
++    sha = digest(path, cancel)
++    inputs = [dict(composite=source['id'], filename=path.name, sha256=sha, size=before.st_size,
++                   source_crs=source['crs'])]
++    identity = hashlib.sha256(json.dumps(dict(inputs=inputs, scene=scene['id'], time=scene['time'],
++                              request=request, version=VERSION), sort_keys=True).encode()).hexdigest()[:24]
++    final = Path(root)/identity
++    if (final/'product.json').exists():
++        return json.loads((final/'product.json').read_text(encoding='utf-8'))
++    if cancel and cancel.is_set():
++        raise Cancelled()
++    progress('Нанесение готовой RGB-композиции: '+source['crs'])
++    rgba = read_composite(path, g)
++    after = path.stat()
++    if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
++        raise ValueError('Исходный RGB-файл изменился во время чтения. Повторите построение.')
++    valid = rgba[:, :, 3] > 0
++    if not valid.any():
++        raise ValueError('В выбранной области нет данных этой RGB-композиции. Измените область карты.')
++    target = Path(root)/(identity+'.building')
++    if target.exists():
++        shutil.rmtree(target)
++    target.mkdir(parents=True)
++    try:
++        profile = dict(driver='GTiff', width=g['width'], height=g['height'], crs=g['crs'],
++                       transform=g['transform'], compress='deflate', tiled=True, blockxsize=256, blockysize=256)
++        tags = dict(product='archive_rgb', scene=scene['id'], time=scene['time'], display_only='true',
++                    source_sha256=sha, algorithm=VERSION)
++        with rasterio.open(target/'display.tif', 'w', count=4, dtype='uint8', **profile) as ds:
++            ds.write(rgba.transpose(2,0,1));ds.colorinterp=(ColorInterp.red,ColorInterp.green,ColorInterp.blue,ColorInterp.alpha)
++            ds.update_tags(**tags)
++        with rasterio.open(target/'quality.tif', 'w', count=1, dtype='uint8', **profile) as ds:
++            ds.write((~valid).astype('uint8'), 1);ds.update_tags(**tags)
++        Image.fromarray(rgba).save(target/'map.png')
++        lon,lat = lonlat_grid(g);sun = solar_elevation(lon,lat,scene['time'])
++        night = np.zeros_like(rgba);night[:,:,:3]=[13,26,50];night[:,:,3]=np.where(sun<0,90,0)
++        Image.fromarray(night).save(target/'night.png')
++        legend = dict(product='archive_rgb', title='Готовая RGB-композиция', units='RGB', status='not_applicable',
++                      interpretation=dict(title='Цвета поставщика', purpose=NOTE, swatches=[]), meaning=NOTE,
++                      source_filename=path.name, source_crs=source['crs'], source_level=source['level'],
++                      nodata='Прозрачность — нет данных, не ясное небо.', quality_flags={'1':'нет данных'},
++                      scene_time=scene['time'], version=VERSION, valid_pixels=int(valid.sum()), total_pixels=int(valid.size),
++                      color_conversion='uint16 / 257 → uint8' if source['dtype']=='uint16' else 'Исходные 8-битные цвета; без растяжки')
++        meta = dict(id=identity, scene_id=scene['id'], platform=scene['platform'], time=scene['time'],
++                    product='archive_rgb', title='Архивный цветной снимок', display_only=True,
++                    calibration_status='not_applicable', calibration_config={'mode':'unknown'},
++                    time_assumed=scene.get('time_assumed', True), grid={k:v for k,v in g.items() if k!='transform'},
++                    transform=list(g['transform'])[:6], request=request, inputs=inputs, legend=legend,
++                    files=['map.png','night.png','display.tif','quality.tif','legend.json','product.json','report.html'])
++        from .processing import write_report
++        atomic_json(target/'legend.json', legend);write_report(target,meta,g)
++        if cancel and cancel.is_set():
++            raise Cancelled()
++        atomic_json(target/'product.json',meta)
++        os.replace(target,final)
++        return meta
++    finally:
++        if target.exists():
++            shutil.rmtree(target)
+ diff --git a/arktika/catalog.py b/arktika/catalog.py
+index ff1f590..da53741 100644
+--- a/arktika/catalog.py
++++ b/arktika/catalog.py
+@@ -10,0 +11 @@ BUNDLES = [
++    dict(id='archive_rgb', title='Готовые цветные снимки · RGB', channels=[]),
+@@ -65 +66,12 @@ def describe_session(assets: list[dict], local: dict | None, jobs: dict) -> dict
+-    return dict(local_id=(local or {}).get('id'), channel_inventory=inventory,
++    composites=(local or {}).get('composites',[])
++    imagery=[]
++    for a in sorted((a for a in assets if a.get('category')=='rgb'), key=lambda a:(a.get('epsg')!=4326,a.get('size') or float('inf'),a['id'])):
++        entry=next((c for c in composites if c.get('asset_id')==a['id']),None)
++        job=jobs.get(a['id'],{})
++        state='local' if entry else job.get('state','remote')
++        if state=='done':state='unregistered' if Path(job.get('path','')).is_file() else 'remote'
++        imagery.append(dict(id=a['id'],composite_id=entry['id'] if entry else None,state=state,size=a.get('size'),epsg=a.get('epsg'),level=a.get('level'),filename=a.get('filename')))
++    for c in composites:
++        if not any(i['composite_id']==c['id'] for i in imagery):
++            imagery.append(dict(id=c['id'],composite_id=c['id'],state='local',size=c['size'],epsg=_epsg(c['crs']),level=c['level'],filename=c['filename']))
++    return dict(imagery=imagery,archive_only=bool(imagery) and not any(c['present'] for c in inventory),local_id=(local or {}).get('id'), channel_inventory=inventory,
+@@ -71 +83 @@ def describe_session(assets: list[dict], local: dict | None, jobs: dict) -> dict
+-                                     for k in ('filename', 'title', 'level')))
++                                     for k in ('filename', 'title', 'level'))+' '+' '.join(c['filename'] for c in composites))
+@@ -89 +101 @@ def _session_matches(summary: dict, assets: list[dict], local: dict | None, filt
+-                               for c in (local or {}).get('channels', [])]
++                               for c in (local or {}).get('channels', [])] + [dict(c,category='rgb',epsg=_epsg(c.get('crs',''))) for c in (local or {}).get('composites',[])]
+diff --git a/arktika/products.py b/arktika/products.py
+index 13e6f9d..98ad6f4 100644
+--- a/arktika/products.py
++++ b/arktika/products.py
+@@ -18,0 +19 @@ PRODUCTS=[dict(id='channel',title='Отдельный канал',status='implem
++dict(id='archive_rgb',title='Готовая RGB-композиция',channels=[],status='implemented',display_only=True,meaning='Просмотр цветового GeoTIFF/COG поставщика. Без расчёта температуры и спектральных признаков.'),
+diff --git a/arktika/service.py b/arktika/service.py
+index 57033b9..6d31d6c 100644
+--- a/arktika/service.py
++++ b/arktika/service.py
+@@ -223 +223,2 @@ class App:
+-        return result
++        priority={'running':0,'queued':1,'error':2,'paused':3,'done':4}
++        return [row for _,row in sorted(enumerate(result),key=lambda pair:(priority.get(pair[1]['state'],5),-pair[0]))]
+diff --git a/arktika/store.py b/arktika/store.py
+index a6b4912..4dcb0a5 100644
+--- a/arktika/store.py
++++ b/arktika/store.py
+@@ -122 +122 @@ class Store:
+-            return [dict(r) for r in self.conn.execute('SELECT * FROM jobs ORDER BY created,id')]
++            return [dict(r) for r in self.conn.execute('SELECT * FROM jobs ORDER BY created,rowid')]
+diff --git a/arktika/workstation.py b/arktika/workstation.py
+index cf78be5..b66a998 100644
+--- a/arktika/workstation.py
++++ b/arktika/workstation.py
+@@ -20,0 +21 @@ from .catalog import catalog_sessions, describe_session
++from .archive import register_composite, build_composite
+@@ -28 +29 @@ class Workstation(AnalysisMixin, App):
+-  self.context_cache={};self.done_jobs=set()
++  self.context_cache={};self.done_jobs={};self.registration_errors={}
+@@ -30,0 +32 @@ class Workstation(AnalysisMixin, App):
++  self.sync_downloads()
+@@ -47 +49 @@ class Workstation(AnalysisMixin, App):
+- def register_file(self,path):
++ def register_file(self,path,asset=None):
+@@ -49 +51 @@ class Workstation(AnalysisMixin, App):
+-  if not m:return None
++  if not m:return register_composite(self,path,asset)
+@@ -71,0 +74 @@ class Workstation(AnalysisMixin, App):
++  known={str(Path(j['path']).resolve()):self.store.asset(j['asset_id']) for j in self.store.jobs()}
+@@ -76 +79 @@ class Workstation(AnalysisMixin, App):
+-   if not f.is_file() or not FILE_PATTERN.fullmatch(f.name):continue
++   if not f.is_file() or f.suffix.lower() not in ('.tif','.tiff'):continue
+@@ -78,3 +81,4 @@ class Workstation(AnalysisMixin, App):
+-    if self.register_file(f):found+=1
+-   except (OSError,rasterio.errors.RasterioError) as e:skipped.append(f.name)
+-  self.log('Импорт GeoTIFF: {} файлов; ошибок чтения: {}. Файлы не перемещены.'.format(found,len(skipped)))
++    if self.register_file(f,known.get(str(f.resolve()))):found+=1
++    else:skipped.append(f.name)
++   except (ValueError,OSError,rasterio.errors.RasterioError):skipped.append(f.name)
++  self.log('Импорт GeoTIFF: {} файлов; не зарегистрировано: {}. Файлы не перемещены.'.format(found,len(skipped)))
+@@ -84,3 +88,26 @@ class Workstation(AnalysisMixin, App):
+-   if job['state']=='done' and job['id'] not in self.done_jobs:
+-    try:self.register_file(job['path']);self.done_jobs.add(job['id'])
+-    except (OSError,rasterio.errors.RasterioError):pass
++   if job['state']!='done':continue
++   try:
++    path=Path(job['path']);stat=path.stat();signature=(str(path),stat.st_size,stat.st_mtime_ns)
++    if self.done_jobs.get(job['id'])==signature:continue
++    asset=self.store.asset(job['asset_id'])
++    if asset and asset.get('category') in ('channel','rgb'):
++     try:
++      if not self.register_file(path,asset):raise ValueError('Не удалось определить аппарат и срок файла.')
++      self.registration_errors.pop(job['id'],None)
++     except (ValueError,rasterio.errors.RasterioError):
++      self.registration_errors[job['id']]='GeoTIFF не распознан для карты: проверьте цветовые полосы, геопривязку и метаданные срока.'
++    self.done_jobs[job['id']]=signature
++   except OSError:
++    self.done_jobs.pop(job['id'],None)
++ def jobs(self):
++  rows=super().jobs();scenes={(s['platform'],s['time']):s for s in self.scenes()}
++  for row in rows:
++   local=scenes.get((row['platform'],row['time']),{})
++   composite=next((c for c in local.get('composites',[]) if c.get('asset_id')==row['asset_id']),None)
++   row['scene_id']=local.get('id')
++   row['composite_id']=composite['id'] if composite else None
++   asset=self.store.asset(row['asset_id']) or {}
++   row['channel']=asset.get('channel')
++   row['can_open']=row['state']=='done' and Path(row['path']).is_file() and bool(composite or (row['category']=='channel' and any(c['channel']==row['channel'] for c in local.get('channels',[]))))
++   row['map_error']=self.registration_errors.get(row['id'],'')
++  return rows
+@@ -92,2 +119,3 @@ class Workstation(AnalysisMixin, App):
+-  rows=[s for s in rows if s['channels']]
+-  return [dict(id=s['id'],platform=s['platform'],time=s['time'],time_assumed=s.get('time_assumed',True),channels=[{k:v for k,v in c.items() if k!='path'} for c in sorted(s['channels'].values(),key=lambda x:x['channel'])]) for s in rows if not platform or s['platform']==platform]
++   scene['composites']={key:c for key,c in scene.get('composites',{}).items() if Path(c['path']).is_file() and c.get('asset_id') not in self.registration_errors}
++  rows=[s for s in rows if s['channels'] or s['composites']]
++  return [dict(id=s['id'],platform=s['platform'],time=s['time'],time_assumed=s.get('time_assumed',True),composites=[{k:v for k,v in c.items() if k!='path'} for c in sorted(s['composites'].values(),key=lambda c:(c['crs']!='EPSG:4326',c['size'],c['id']))],channels=[{k:v for k,v in c.items() if k!='path'} for c in sorted(s['channels'].values(),key=lambda x:x['channel'])]) for s in rows if not platform or s['platform']==platform]
+@@ -110,0 +139 @@ class Workstation(AnalysisMixin, App):
++  result['local_composites']=(local or {}).get('composites',[])
+@@ -112,0 +142,2 @@ class Workstation(AnalysisMixin, App):
++   if asset['id'] in self.registration_errors:asset['map_error']=self.registration_errors[asset['id']]
++   asset['composite_id']=next((c['id'] for c in result['local_composites'] if c.get('asset_id')==asset['id']),None)
+@@ -117 +148 @@ class Workstation(AnalysisMixin, App):
+-  scene=self.scene(data['scene']);request={k:data[k] for k in ('product','channel','preset','width','display_min','display_max') if k in data};cal=json.loads(json.dumps(self.cal))
++  scene=self.scene(data['scene']);request={k:data[k] for k in ('product','channel','preset','width','display_min','display_max','composite') if k in data};cal=json.loads(json.dumps(self.cal))
+@@ -119 +150 @@ class Workstation(AnalysisMixin, App):
+-   result=build_product(scene,self.product_root,request,cal,self.cancel,self.log);self.log('Продукт готов: '+result['title']);return result
++   result=build_composite(scene,self.product_root,request,self.cancel,self.log) if request.get('product')=='archive_rgb' else build_product(scene,self.product_root,request,cal,self.cancel,self.log);self.log('Продукт готов: '+result['title']);return result
+@@ -154,0 +186 @@ class Workstation(AnalysisMixin, App):
++  if product.get('display_only'):raise ValueError('Готовая RGB-композиция содержит цвета, а не исходные каналы. Для численного анализа откройте поканальный GeoTIFF.')
