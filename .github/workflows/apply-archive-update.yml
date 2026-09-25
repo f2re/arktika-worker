@@ -1,0 +1,36 @@
+name: Apply reviewed archive update
+on:
+  push:
+    branches: [fix/archive-rgb-and-dialogs]
+    paths: [.github/workflows/apply-archive-update.yml]
+permissions:
+  contents: write
+jobs:
+  apply:
+    if: github.repository == 'f2re/arktika-worker' && github.ref == 'refs/heads/fix/archive-rgb-and-dialogs'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/archive-rgb-and-dialogs
+      - name: Verify and apply prepared source changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Correct a transport-only patch-header space, then verify the exact local patch bytes.
+          sed -i 's/^ diff --git /diff --git /' .delivery/archive-core.patch
+          printf '%s\n' \
+            '489536db3b3c93048a74137e9750b4450366deaaccc8a8abf01cba00e1eceec9  .delivery/archive-core.patch' \
+            '51b05072646ad3b78a12e87b4f3ba9cd8c787388cebfede74bdab6df053d9e3a  .delivery/archive-ui.patch' \
+            'aacc958f460e4fd3ca7a0e8a0ae9a2b33f20c44d2d7f46ed4db19781aac9af27  .delivery/archive-tests.patch' \
+            '746177d7df5f3d362417dd48b57f99de775a15d7b81ab8dc89d76df0e777bc68  .delivery/archive-docs.patch' | sha256sum --check
+          git apply --index --unidiff-zero --check .delivery/archive-*.patch
+          git apply --index --unidiff-zero .delivery/archive-*.patch
+          python scripts/manifest.py --check
+          python -m compileall -q arktika server.py scripts tests
+          git diff --cached --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'Исправить архивные RGB/COG, очередь загрузок и прокрутку окон'
+          git push origin HEAD:fix/archive-rgb-and-dialogs
