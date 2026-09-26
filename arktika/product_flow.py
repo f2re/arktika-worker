@@ -26,6 +26,10 @@ class ProductFlowMixin:
                         chosen = None
                         legacy = {'mode':'unknown'}
                     else:
+                        if chosen.get('source_sha256'):
+                            from .download import digest
+                            if digest(entry['path']) != chosen['source_sha256']:
+                                raise ValueError('Исходник изменился: повторите опорную калибровку.')
                         channels[ch] = copy.deepcopy(chosen)
                         continue
                 else:

@@ -4,7 +4,7 @@ import numpy as np
 import rasterio
 from pyproj import Transformer
 from .geo import densify_route
-from .processing import calibration,CalibrationError
+from .processing import calibration,CalibrationError,apply_scale
 
 def route_profile(scene,points,cal,step_km=25,speed_kmh=300,departure='',max_age_minutes=60):
  rows=densify_route(points,step_km,speed_kmh,departure);units={};obs=dt.datetime.fromisoformat(scene['time'].replace('Z','+00:00'))
@@ -17,7 +17,9 @@ def route_profile(scene,points,cal,step_km=25,speed_kmh=300,departure='',max_age
    units[ch]=dict(unit=unit,calibration=status)
    for r,c,v in zip(rows,coords,ds.sample(coords,indexes=1,masked=True)):
     inside=ds.bounds.left<=c[0]<ds.bounds.right and ds.bounds.bottom<c[1]<=ds.bounds.top
-    valid=inside and not np.ma.is_masked(v[0]) and np.isfinite(float(v[0]));r.setdefault('channels',{})[ch]=float(v[0])*scale+offset if valid else None
+    valid=inside and not np.ma.is_masked(v[0]) and np.isfinite(float(v[0]))
+    value=apply_scale(float(v[0]),ch,cal,scale,offset) if valid else float('nan')
+    r.setdefault('channels',{})[ch]=value if np.isfinite(value) else None
  for r in rows:
   eta=dt.datetime.fromisoformat(r['eta'].replace('Z','+00:00')) if r['eta'] else obs;age=(eta-obs).total_seconds()/60
   r.update(observation_time=scene['time'],observation_age_minutes=age,forecast=False,missing=all(v is None for v in r['channels'].values()))
