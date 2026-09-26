@@ -1,13 +1,12 @@
 name: Complete reviewed product sources
 on:
   push:
-    branches: [fix/product-first-calibration]
-    paths: [.delivery/complete_product.py]
+    branches: [fix/product-flow-finish]
 permissions:
   contents: write
 jobs:
   apply:
-    if: github.repository == 'f2re/arktika-worker' && github.ref == 'refs/heads/fix/product-first-calibration'
+    if: github.repository == 'f2re/arktika-worker' && github.ref == 'refs/heads/fix/product-flow-finish'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -29,4 +28,4 @@ jobs:
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -u
           git commit -m 'Implement product-first workflow and scoped radiometric scales'
-          git push origin HEAD:refs/heads/fix/product-first-calibration
+          git push origin HEAD:refs/heads/fix/product-flow-finish
