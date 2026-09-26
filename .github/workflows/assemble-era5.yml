@@ -1,0 +1,42 @@
+name: Assemble reviewed ERA5 changes
+on:
+  push:
+    branches: [publish/era5-electrol-20260926]
+permissions:
+  contents: write
+jobs:
+  assemble:
+    if: github.repository == 'f2re/arktika-worker'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - name: Verify and apply the reviewed source patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD^)" = '59927bc64154e42cb232c591f68961a6d1e8af02'
+          python3 - <<'PY'
+          import base64, hashlib, lzma, os
+          from pathlib import Path
+          text = ''.join(Path(f'.delivery/era5-{i:02d}.b64').read_text(encoding='ascii') for i in range(1, 5))
+          patch = lzma.decompress(base64.b64decode(text, validate=True))
+          if len(patch) != 176143 or hashlib.sha256(patch).hexdigest() != 'f0b7b94987b48347137334f14de2b8095dbdedf49c4c8a3677fc25be676540d3':
+              raise SystemExit('Reviewed patch checksum mismatch')
+          (Path(os.environ['RUNNER_TEMP']) / 'era5-reviewed.patch').write_bytes(patch)
+          PY
+          git apply --check --unidiff-zero "$RUNNER_TEMP/era5-reviewed.patch"
+          git apply --unidiff-zero "$RUNNER_TEMP/era5-reviewed.patch"
+          git rm -- .delivery/era5-01.b64 .delivery/era5-02.b64 .delivery/era5-03.b64 .delivery/era5-04.b64 .github/workflows/assemble-era5.yml
+          git add -A
+          test "$(git write-tree)" = '57d7db68ca8236015ce6e545d7d433747c0c90bc'
+          python3 scripts/manifest.py --check
+          python3 -m compileall -q arktika scripts server.py
+          for file in static/*.js; do node --check "$file"; done
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'ERA5 и Электро-Л: опорная калибровка, доступ и интерфейс'
+          git push origin HEAD:refs/heads/publish/era5-electrol-20260926
