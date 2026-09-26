@@ -95,11 +95,11 @@ class Handler(BaseHTTPRequestHandler):
                 self.send(303,b'',extra={'Location':'/'})
             except Exception as e:self.error(e)
             return
-        if path in ('/','/app.js','/style.css','/icon.svg','/favicon.ico','/studio.js','/catalog.js','/catalog.css','/product_flow.js'):
+        if path in ('/','/app.js','/style.css','/icon.svg','/favicon.ico','/studio.js','/catalog.js','/catalog.css','/product_flow.js','/era5.js'):
             if not self.gate(False):return
-            names={'/':'index.html','/app.js':'app.js','/style.css':'style.css','/icon.svg':'icon.svg','/favicon.ico':'icon.svg','/studio.js':'studio.js','/product_flow.js':'product_flow.js','/catalog.js':'catalog.js','/catalog.css':'catalog.css'}
+            names={'/era5.js':'era5.js','/':'index.html','/app.js':'app.js','/style.css':'style.css','/icon.svg':'icon.svg','/favicon.ico':'icon.svg','/studio.js':'studio.js','/product_flow.js':'product_flow.js','/catalog.js':'catalog.js','/catalog.css':'catalog.css'}
             p=ROOT/'static'/names[path]
-            ctype={'index.html':'text/html; charset=utf-8','app.js':'application/javascript; charset=utf-8','studio.js':'application/javascript; charset=utf-8','product_flow.js':'application/javascript; charset=utf-8','catalog.js':'application/javascript; charset=utf-8','catalog.css':'text/css; charset=utf-8','style.css':'text/css; charset=utf-8','icon.svg':'image/svg+xml'}[p.name]
+            ctype={'era5.js':'application/javascript; charset=utf-8','index.html':'text/html; charset=utf-8','app.js':'application/javascript; charset=utf-8','studio.js':'application/javascript; charset=utf-8','product_flow.js':'application/javascript; charset=utf-8','catalog.js':'application/javascript; charset=utf-8','catalog.css':'text/css; charset=utf-8','style.css':'text/css; charset=utf-8','icon.svg':'image/svg+xml'}[p.name]
             self.send(200,p.read_bytes(),ctype);return
         if path=='/health':
             if self.gate(False):self.send(200,{'app':'arktika-web','version':'0.2.2'})
@@ -108,7 +108,9 @@ class Handler(BaseHTTPRequestHandler):
         try:
             q={k:v[-1] for k,v in parse_qs(urlsplit(self.path).query).items()}
             app=self.server.app
-            if path=='/api/registry':result=registry()
+            if path=='/api/era5/state':result=app.era5_state()
+            elif path=='/api/era5/report':result=app.era5_report(q.get('id'))
+            elif path=='/api/registry':result=registry()
             elif path=='/api/guides':result=GUIDES
             elif path=='/api/profiles':result={'profiles':app.profiles()}
             elif path=='/api/scenes':result={'scenes':app.scenes(q.get('date',''),q.get('platform',''))}
@@ -173,7 +175,12 @@ class Handler(BaseHTTPRequestHandler):
                     self.send(401,{'error':'Неверный ключ запуска. Откройте ссылку из окна сервера.'});return
                 self.send(200,{'ok':True},extra={'Set-Cookie':'arktika_session='+self.server.key+'; HttpOnly; SameSite=Strict; Path=/'});return
             app=self.server.app;result={'ok':True}
-            if path=='/api/product-plan':result=app.product_plan(data)
+            if path=='/api/era5/credentials':result=app.era5_credentials(data)
+            elif path=='/api/era5/plan':result=app.era5_plan(data)
+            elif path=='/api/era5/start':result=app.era5_start(data)
+            elif path=='/api/era5/coefficients':result=app.era5_coefficient_download(data)
+            elif path=='/api/era5/apply':result=app.era5_apply(data)
+            elif path=='/api/product-plan':result=app.product_plan(data)
             elif path=='/api/scale/inventory':result=app.scale_inventory(data)
             elif path=='/api/scale/preview':result=app.scale_proposal(data)
             elif path=='/api/scale/save':result=app.save_scale(data)

@@ -8,7 +8,7 @@ from affine import Affine
 from .service import App,dto
 from .auth import AuthClient
 from .products import registry
-from .processing import build_product,validate_calibration,calibration
+from .processing import build_product,validate_calibration,calibration,apply_scale
 from .geo import grid,map_context,project_points,solar_elevation
 from .routes import route_profile
 from .download import atomic_json,digest
@@ -20,7 +20,8 @@ from .interpretation import spectral, profile_diagnostics
 from .catalog import catalog_sessions, describe_session
 from .archive import register_composite, build_composite
 from .product_flow import ProductFlowMixin
-class Workstation(ProductFlowMixin, AnalysisMixin, App):
+from .auto_calibration import AutoCalibrationMixin
+class Workstation(AutoCalibrationMixin, ProductFlowMixin, AnalysisMixin, App):
  def __init__(self,state_dir,download_dir=None,token='',config=None,client=None):
   self.config=config or {};super().__init__(state_dir,download_dir,token,client or AuthClient(token,self.config.get('oauth')))
   with self.store.lock,self.store.conn:
@@ -200,7 +201,8 @@ class Workstation(ProductFlowMixin, AnalysisMixin, App):
     val=next(ds.sample([(x,y)],indexes=1,masked=True))[0];ok=inside and not np.ma.is_masked(val) and np.isfinite(float(val))
     try:s,o,u,status,ref=calibration(ds,int(ch),p['calibration_config'])
     except ValueError:s,o,u,status,ref=1,0,'DN','unknown','Нет калибровки этого канала'
-    values.append(dict(channel=int(ch),value=float(val)*s+o if ok else None,unit=u,calibration=status))
+    calibrated=apply_scale(float(val),int(ch),p['calibration_config'],s,o) if ok else float('nan')
+    values.append(dict(channel=int(ch),value=calibrated if np.isfinite(calibrated) else None,unit=u,calibration=status))
   ix=min(g['width']-1,int(float(data['x'])));iy=min(g['height']-1,int(float(data['y'])))
   with rasterio.open(self.artifact(p['id'],'quality.tif')) as ds:quality=int(ds.read(1,window=((iy,iy+1),(ix,ix+1)))[0,0])
   with rasterio.open(self.artifact(p['id'],'display.tif')) as ds:display_rgba=ds.read(window=((iy,iy+1),(ix,ix+1)))[:,0,0].tolist()

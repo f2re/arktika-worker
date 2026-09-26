@@ -25,6 +25,9 @@ def validate_calibration(config):
   for key,c in config['channels'].items():
    if str(key) not in {str(i) for i in range(4,11)} or not isinstance(c,dict) or c.get('units')!='K' or c.get('status') not in ('metadata','declared','assumed'):raise CalibrationError('Неверная шкала ИК-канала.')
    affine_values(c.get('scale'),c.get('offset'))
+   if c.get('enforce_valid_dn'):
+    bounds=c.get('valid_dn')
+    if not isinstance(bounds,list) or len(bounds)!=2 or not all(isinstance(v,(int,float)) and not isinstance(v,bool) and math.isfinite(v) for v in bounds) or bounds[0]>=bounds[1]:raise CalibrationError('Неверный диапазон опорной калибровки.')
  if mode=='declared':
   if not isinstance(config.get('reference'),str) or not config['reference'].strip() or not isinstance(config.get('channels'),dict) or not config['channels']:raise CalibrationError('Нужны источник и коэффициенты калибровки.')
   for ch,c in config['channels'].items():
@@ -56,6 +59,15 @@ def calibration(ds,ch,config):
  if c:return c['scale'],c['offset'],'K','metadata',c['reference']
  return 1.,0.,'DN','unknown','Единицы не объявлены'
 
+def apply_scale(values,ch,config,scale,offset):
+ """Одна область применимости для растра, точки и маршрута."""
+ a=np.asarray(values,dtype=float);result=a*scale+offset
+ entry=config.get('channels',{}).get(str(ch),{})
+ if entry.get('enforce_valid_dn'):
+  lo,hi=entry['valid_dn'];result=np.where((a>=lo)&(a<=hi),result,np.nan)
+ return float(result) if result.ndim==0 else result
+
+
 def read_grid(path,ch,g,cal,kelvin_required=False):
  with rasterio.open(path) as ds:
   if not ds.crs or ds.count!=1:raise ValueError('Нужен одноканальный GeoTIFF с системой координат.')
@@ -63,8 +75,8 @@ def read_grid(path,ch,g,cal,kelvin_required=False):
   if kelvin_required and unit!='K':raise CalibrationError('Для продукта нужна яркостная температура. Настройте температурную шкалу для необходимых каналов.')
   out=np.full((g['height'],g['width']),np.nan,dtype='float32')
   reproject(rasterio.band(ds,1),out,src_transform=ds.transform,src_crs=ds.crs,src_nodata=ds.nodata,dst_transform=g['transform'],dst_crs=g['crs'],dst_nodata=np.nan,resampling=Resampling.nearest,num_threads=1,warp_mem_limit=128)
-  out=out*scale+offset
-  return out,dict(channel=ch,units=unit,status=status,reference=reference,scale=scale,offset=offset,source_crs=ds.crs.to_string(),source_shape=[ds.height,ds.width])
+  out=apply_scale(out,ch,cal,scale,offset).astype('float32')
+  return out,dict(channel=ch,units=unit,status=status,reference=reference,scale=scale,offset=offset,source_crs=ds.crs.to_string(),source_shape=[ds.height,ds.width],valid_dn=cal.get('channels',{}).get(str(ch),{}).get('valid_dn') if cal.get('channels',{}).get(str(ch),{}).get('enforce_valid_dn') else None)
 def stretch(a,lo,hi,gamma=1):
  if not hi>lo or gamma<=0:raise ValueError('Неверная цветовая шкала.')
  return np.power(np.clip((a-lo)/(hi-lo),0,1),1/gamma)

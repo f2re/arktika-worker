@@ -67,3 +67,20 @@
 `GET /analysis-export/<id>` — JSON анализа с происхождением и допущениями. `POST /api/project-points` — `{product,points:[[lon,lat],...]}`, возвращает узлы и геодезическую линию в координатах карты. `POST /api/route` дополнительно принимает profile_id и altitude_m. `POST /api/settings` поддерживает view_settings с preset/product/channel.
 
 Все перечисленные API сохраняют проверку локальной сессии; POST требует `X-Arktika-Request`. Методика кандидатов не превращается в прогноз через имя endpoint.
+
+## ERA5 и модельно-опорная калибровка (эксперимент)
+
+Все маршруты используют прежнюю локальную сессию и защиту Origin. Секреты в ответах не возвращаются.
+
+| Метод | Маршрут | Вход / результат |
+|---|---|---|
+| GET | `/api/era5/state` | Готовность библиотек/RTTOV/коэффициентов, провайдер без реквизитов, стадия операции |
+| POST | `/api/era5/credentials` | `{text, format: "auto"|"token"}` либо `{clear:true}`; только память процесса |
+| POST | `/api/era5/plan` | `{scene, channels:[9,10], area:[80,0,60,40], provider:"cds"|"gdex"}`; точные сроки, поля и уровни |
+| POST | `/api/era5/coefficients` | `{acknowledged:true}`; получение одного файла из ограниченного архива NWP SAF |
+| POST | `/api/era5/start` | Поля плана; `data_only:true` только для загрузки. Для расчёта: `zenith_deg`, `constant_angle_acknowledged:true`, `acknowledged:true`, `allow_coefficient_download:true` |
+| GET | `/api/era5/report?id=…` | Завершённый отчёт: источники, хеши, опоры, диапазоны и групповая проверка; без локальных путей/реквизитов |
+| POST | `/api/era5/apply` | `{id,scene,channels:[9,10],acknowledged:true}`; только прошедшие проверку каналы и только этот срок |
+| POST | `/api/cancel` | Существующая отмена; останавливает дочерний процесс получения ERA5 или RTTOV |
+
+Коэффициенты сохраняются с `status=assumed` и `enforce_valid_dn=true`. За диапазоном опор растр становится прозрачным, точка/маршрут возвращают отсутствие значения. Это не нулевой сигнал и не ясное небо. Полная инструкция — `docs/ERA5.html`.

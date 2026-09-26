@@ -25,3 +25,9 @@ Thumbs.db
 
 browser-results/
 .delivery/
+
+# Учётные данные внешних источников
+.netrc
+.netrc.*
+.cdsapirc
+.cdsapirc.*
