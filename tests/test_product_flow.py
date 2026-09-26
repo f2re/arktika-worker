@@ -179,6 +179,27 @@ class ProductFlowTests(unittest.TestCase):
     def test_scale_inventory_redacts_local_path(self):
         result=self.app.scale_inventory({'scene':self.scene['id']})
         self.assertNotIn(str(self.root),json.dumps(result));self.assertEqual(len(result['channels']),7)
+    def test_legacy_partial_declaration_keeps_other_channel_metadata(self):
+        fixture(self.local,units=True)
+        self.app.cal=dict(mode='declared',reference='SYNTHETIC source',channels={'9':dict(scale=1,offset=0,units='K')})
+        p=self.plan()
+        self.assertEqual(p['status'],'ready')
+        self.assertEqual(p['calibration']['7']['status'],'metadata')
+        self.assertEqual(p['calibration']['9']['status'],'declared')
+    def test_auto_preview_really_ignores_saved_override(self):
+        fixture(self.local,units=True)
+        self.app.save_scale(self.scale())
+        before=copy.deepcopy(self.app.store.setting('scale_profiles'))
+        d=self.scale();d.update(method='auto',product='micro24',preset='barents')
+        result=self.app.preview_scale_image(d)
+        self.assertEqual(result['status'],'metadata')
+        self.assertEqual(before,self.app.store.setting('scale_profiles'))
+        self.assertEqual(self.app.products(),[])
+    def test_nontext_reference_rejected(self):
+        for reference in (None,True,42,{},[]):
+            d=self.scale();d['reference']=reference
+            with self.subTest(reference=reference),self.assertRaises(ValueError):
+                self.app.save_scale(d)
     def test_motion_uses_both_scoped_scales(self):
         second=dict(self.app.scene(self.scene['id']),id='other',time='2026-01-01T00:15:00Z')
         first=self.app.scene(self.scene['id'])

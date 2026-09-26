@@ -39,7 +39,7 @@ def main():
             with sync_playwright() as pw:
                 launch={'headless':True}
                 if args.executable:launch['executable_path']=args.executable
-                browser=pw.chromium.launch(**launch);page=browser.new_page(viewport=dict(width=1440,height=960))
+                browser=pw.chromium.launch(**launch);context=browser.new_context(viewport=dict(width=1440,height=960));page=context.new_page()
                 page.on('pageerror',lambda e:report['browser_errors'].append(str(e)))
                 def wait(expression,timeout=45):
                     end=time.monotonic()+timeout
@@ -75,10 +75,13 @@ def main():
                     shot('products-ready.png')
                     page.locator('#product').select_option('phase')
                     check('Повторного запроса шкалы нет','()=>S.product?.product==="phase"&&!S.busy&&!UI.activeBuild&&!document.querySelector("#calibrationDialog").open')
-                    page.locator('#calibrationOpen').click();page.locator('#calMode').select_option('anchors')
+                    page.locator('#calibrationOpen').click()
+                    check('Настройка из продукта выбирает его каналы, а не старый канал 4','()=>[...document.querySelectorAll("#scaleChannels input:checked")].map(e=>Number(e.value)).join(",")=="7,9,10"')
+                    page.locator('#calMode').select_option('anchors')
                     for sel,val in (('#scaleDN1','100'),('#scaleT1','220'),('#scaleDN2','500'),('#scaleT2','300'),('#scaleReference','SYNTHETIC arithmetic example; not observations')):page.locator(sel).fill(val)
                     check('Две опоры пересчитывают формулу','()=>document.querySelector("#scalePreview").textContent.includes("0,2")&&document.querySelector("#scalePreview").textContent.includes("200")')
                     shot('scale-two-points.png')
+                    page.locator('#scalePreview').scroll_into_view_if_needed();shot('scale-preview.png')
                     page.locator('#scaleDN2').fill('100')
                     check('Вырожденные опоры не принимаются','()=>!document.querySelector("#scaleError").hidden&&document.querySelector("#scalePreview").childElementCount===0')
                     page.locator('#calibrationDialog [data-close]').click()
@@ -88,7 +91,7 @@ def main():
                     wait('()=>CATALOG.rows.length===1&&S.scene===null')
                     page.evaluate('()=>left("product")');page.locator('#product').select_option('micro24')
                     check('Без срока открывается его выбор с сохранённой задачей','()=>PRODUCT_FLOW.awaitingTime?.product==="micro24"&&!document.querySelector("#leftPanel").hidden')
-                    page.locator('.catalog-card header').click()
+                    page.locator('.catalog-card button.session').click()
                     check('Продукт сам докачивает ровно три нужных канала','()=>S.product?.product==="micro24"&&S.product.time==="2026-01-02T00:00:00Z"&&!S.busy&&!UI.activeBuild')
                     assert len(app.store.jobs())==3 and transport.calls>0
                     check('Метаданные K используются без ручной настройки','()=>S.product.calibration_status==="metadata"&&!document.querySelector("#calibrationDialog").open')

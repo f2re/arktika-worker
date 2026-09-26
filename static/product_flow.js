@@ -128,11 +128,19 @@ async function showScaleDialog(required){
   const serial=++PRODUCT_FLOW.scaleRevision,scene=S.scene.id;
   const inv=await api('/api/scale/inventory',{scene});if(serial!==PRODUCT_FLOW.scaleRevision||S.scene?.id!==scene)return;
   PRODUCT_FLOW.scaleScene=scene;PRODUCT_FLOW.scaleInventory=inv;
+  if(!required?.length){
+    const id=$('#product').value,spec=S.registry.products.find(p=>p.id===id);
+    required=id==='cth'?[7,9,10]:id==='channel'?[Number($('#channel').value)]:(spec?.channels||[]);
+  }
+  required=required.filter(ch=>inv.channels.some(c=>c.channel===ch));
+  if(!required.length&&inv.channels.length)required=[inv.channels[0].channel];
   const dialog=$('#calibrationDialog');dialog.querySelector('.dialog-head h2').textContent='Температурная шкала';
   const body=dialog.querySelector('.dialog-body');body.innerHTML=`<p class="hint">${escape(inv.platform+' · '+inv.time.replace('T',' ').replace('Z',' UTC'))}</p><fieldset id="scaleChannels"><legend>Каналы с общей настройкой</legend>${inv.channels.map(c=>`<label class="check"><input type="checkbox" value="${c.channel}" ${(required?.length?required.includes(c.channel):c.channel===Number($('#channel').value))?'checked':''}>${c.channel} · ${escape(c.scale?.status==='metadata'?'шкала из метаданных':c.scale?.status==='assumed'?'исследовательская шкала':c.scale?.status==='declared'?'заданы коэффициенты':'единицы не объявлены')}</label>`).join('')}</fieldset><button id="scaleAll" class="text-button">Выбрать все ИК-каналы</button><label>Способ<select id="calMode"><option value="unknown">Автоматически из метаданных</option><option value="assumed">Исследовательская линейная шкала</option><option value="anchors">По двум опорным температурам</option><option value="matched">По сопоставленным измерениям CSV</option><option value="declared">Коэффициенты из документа поставщика</option></select></label><p id="scaleCaution" class="notice" hidden>Это исследовательское приближение. Необъявленные DN нельзя признать кельвинами по внешнему виду снимка. Шкала применяется только к отмеченным каналам.</p><div id="scaleLinear" hidden><div class="row"><label>Масштаб a<input id="scaleA" type="number" step="any" value="1"></label><label>Сдвиг b, K<input id="scaleB" type="number" step="any" value="0"></label></div><div id="scaleSliders"><label>Масштаб<input id="scaleARange" type="range" min="0.01" max="2" step="0.01" value="1"></label><label>Сдвиг<input id="scaleBRange" type="range" min="-100" max="100" step="0.5" value="0"></label></div><p class="micro">Начальное a=1, b=0 — проверяемое допущение DN=K, не найденные коэффициенты прибора.</p></div><div id="scaleAnchors" hidden><div class="row"><label>DN первой опоры<input id="scaleDN1" type="number" step="any"></label><label>Её Tя, K<input id="scaleT1" type="number" step="any"></label></div><div class="row"><label>DN второй опоры<input id="scaleDN2" type="number" step="any"></label><label>Её Tя, K<input id="scaleT2" type="number" step="any"></label></div><p class="micro">Пример арифметики, не измерение: 100 → 220 K и 500 → 300 K дают a=0,2 и b=200 K. Опоры берите из сопоставленного канала, не из температуры воздуха у земли.</p></div><div id="scaleMatched" hidden><label>Сопоставленные пары<input id="scaleFile" type="file" accept=".csv,text/csv"></label><label>dn,temperature_k (или temperature_c), необязательно group<textarea id="scalePairs" rows="4" placeholder="dn,temperature_k,group"></textarea></label><p class="micro">Не менее 6 пар. group — независимый участок или срок; при 3 группах дополнительно проверяется перенос на исключённую группу.</p></div><label>Источник коэффициентов или опор<input id="scaleReference" placeholder="Прибор, канал, срок, документ / метод сопоставления"></label><label>Применение<select id="scaleScope"><option value="scene">Только выбранный срок</option><option value="platform">Этот аппарат, в том числе последующие сроки</option></select></label><p id="scaleScopeNote" class="notice" hidden>Межсрочная стабильность не подтверждена. Коэффициенты другого аппарата не используются.</p><p id="scaleError" class="error-text" role="alert" hidden></p><div id="scalePreview" aria-live="polite"></div><button id="scaleImageButton" class="tonal full">Посмотреть продукт без сохранения</button><div id="scaleImageResult"></div><a class="export-link" href="/docs/CALIBRATION.html" target="_blank" rel="noopener">Как выбрать опоры и проверить результат</a>`;
   let footer=dialog.querySelector('.dialog-footer');if(!footer){footer=document.createElement('div');footer.className='dialog-footer';dialog.append(footer);}
   footer.innerHTML='<button id="saveCalibration" class="primary full">Применить и пересчитать</button>';
-  const current=inv.channels.find(c=>c.channel===Number($('#channel').value))?.scale;
+  const selectedScales=inv.channels.filter(c=>required.includes(c.channel)).map(c=>c.scale);
+  const firstScale=selectedScales[0];
+  const current=firstScale&&selectedScales.every(c=>c&&c.scale===firstScale.scale&&c.offset===firstScale.offset&&c.status===firstScale.status)?firstScale:null;
   if(current){$('#scaleA').value=current.scale;$('#scaleB').value=current.offset;$('#scaleReference').value=current.reference||'';}
   $('#calMode').value=current?.status==='assumed'?'assumed':current?.status==='declared'?'declared':'unknown';
   $('#scaleAll').onclick=()=>{$$('#scaleChannels input').forEach(e=>e.checked=true);previewScale();};
@@ -157,6 +165,15 @@ async function showScaleDialog(required){
   if(!dialog.open)dialog.showModal();scaleMethod();
 }
 function installProductFlow(){
+  // A remembered product owns the primary time-selection action, not the catalog's previous bundle.
+  $('#sessions').addEventListener('click',event=>{
+    if(!PRODUCT_FLOW.awaitingTime)return;
+    const button=event.target.closest('button.session');if(!button)return;
+    const row=CATALOG.rows.find(r=>sessionKey(r)===button.dataset.key);if(!row)return;
+    event.preventDefault();event.stopImmediatePropagation();
+    const scene=S.scenes.find(s=>s.id===row.local_id)||{id:row.platform+'_'+row.time.replace(/[-:TZ]/g,''),platform:row.platform,time:row.time,channels:[],composites:[]};
+    selectScene(scene);left('product');
+  },true);
   const feedback=document.createElement('section');feedback.id='productFeedback';feedback.className='product-feedback';feedback.setAttribute('role','status');feedback.hidden=true;$('#taskGrid').after(feedback);
   const height=document.createElement('option');height.value='cth';height.textContent='Высота облака в точке · по профилю';$('#product').append(height);
   const button=$('#calibrationOpen'),replacement=button.cloneNode(true);button.replaceWith(replacement);replacement.onclick=()=>showScaleDialog().catch(e=>flowMessage(e.message));

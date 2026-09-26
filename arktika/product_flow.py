@@ -31,7 +31,7 @@ class ProductFlowMixin:
                 else:
                     legacy = self.cal
                 with rasterio.open(entry['path']) as ds:
-                    if legacy.get('mode') in ('assumed','declared'):
+                    if legacy.get('mode') == 'assumed' or (legacy.get('mode') == 'declared' and ch in legacy.get('channels',{})):
                         a,b,u,s,r = calibration(ds,int(ch),legacy)
                         if u == 'K':
                             channels[ch] = dict(scale=a,offset=b,units=u,status=s,reference=r,method='legacy')
@@ -123,8 +123,11 @@ class ProductFlowMixin:
             return dict(method='auto')
         else:
             raise ValueError('Неизвестный способ настройки шкалы.')
+        reference=data.get('reference','')
+        if not isinstance(reference,str):
+            raise ValueError('Источник коэффициентов должен быть текстом.')
         result.update(units='K',status='declared' if method=='declared' else 'assumed',
-                      reference=str(data.get('reference','')).strip()[:500])
+                      reference=reference.strip()[:500])
         if method in ('declared','two_anchors','matched_pairs') and not result['reference']:
             raise ValueError('Укажите источник коэффициентов или опорных температур.')
         if not result['reference']:
@@ -168,9 +171,19 @@ class ProductFlowMixin:
             raise ValueError('Выберите скачанные ИК-каналы.')
         cal,_=self.radiometry_config(scene)
         for ch in selected:
-            if proposal['method']!='auto':
-                cal['channels'][str(ch)]=proposal
-                cal['blocked']=[k for k in cal['blocked'] if k!=str(ch)]
+            key=str(ch)
+            cal['blocked']=[k for k in cal['blocked'] if k!=key]
+            if proposal['method']=='auto':
+                cal['channels'].pop(key,None)
+                entry=scene['channels'][key]
+                try:
+                    with rasterio.open(entry['path']) as ds:
+                        match=metadata_scale(ds,entry.get('raster_bands'))
+                    if match:cal['channels'][key]=match
+                except ValueError:
+                    cal['blocked'].append(key)
+            else:
+                cal['channels'][key]=proposal
         product=data.get('product','channel')
         if product not in RECIPES and product not in ('channel','phase','difference','indicators'):
             product='channel'
