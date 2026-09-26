@@ -15,9 +15,16 @@ class CalibrationError(ValueError):pass
 
 def validate_calibration(config):
  if not isinstance(config,dict):raise CalibrationError('Калибровка должна быть JSON-объектом.')
- if set(config)-{'mode','reference','channels'}:raise CalibrationError('Неизвестные поля калибровки.')
+ if set(config)-({'mode','reference','channels','blocked'} if config.get('mode')=='custom' else {'mode','reference','channels'}):raise CalibrationError('Неизвестные поля калибровки.')
  mode=config.get('mode','unknown')
- if mode not in ('unknown','assumed','declared'):raise CalibrationError('Неизвестный режим калибровки.')
+ if mode not in ('unknown','assumed','declared','custom'):raise CalibrationError('Неизвестный режим калибровки.')
+ if mode=='custom':
+  from .radiometry import affine_values
+  if not isinstance(config.get('channels'),dict):raise CalibrationError('Нужен словарь шкал каналов.')
+  if not isinstance(config.get('blocked',[]),list) or any(str(ch) not in {str(i) for i in range(4,11)} for ch in config.get('blocked',[])):raise CalibrationError('Неверные заблокированные шкалы.')
+  for key,c in config['channels'].items():
+   if str(key) not in {str(i) for i in range(4,11)} or not isinstance(c,dict) or c.get('units')!='K' or c.get('status') not in ('metadata','declared','assumed'):raise CalibrationError('Неверная шкала ИК-канала.')
+   affine_values(c.get('scale'),c.get('offset'))
  if mode=='declared':
   if not isinstance(config.get('reference'),str) or not config['reference'].strip() or not isinstance(config.get('channels'),dict) or not config['channels']:raise CalibrationError('Нужны источник и коэффициенты калибровки.')
   for ch,c in config['channels'].items():
@@ -39,18 +46,21 @@ def calibration(ds,ch,config):
   c=config.get('channels',{}).get(str(ch))
   if not c:raise CalibrationError('Нет коэффициентов канала '+str(ch))
   return float(c['scale']),float(c['offset']),'K','declared',config['reference']
- unit=(ds.units[0] or ds.tags(1).get('units') or ds.tags().get('units') or '').strip().lower()
- if unit in ('k','kelvin','kelvins'):
-  scale,offset=float(ds.scales[0]),float(ds.offsets[0])
-  if not math.isfinite(scale) or not math.isfinite(offset) or scale<=0:raise CalibrationError('Недопустимые scale/offset в GeoTIFF.')
-  return scale,offset,'K','metadata','Единицы объявлены в GeoTIFF'
+ if mode=='custom' and str(ch) in config.get('blocked',[]):return 1.,0.,'DN','unknown','Противоречивые метаданные: автоматическая шкала отключена'
+ if mode=='custom' and str(ch) in config['channels']:
+  c=config['channels'][str(ch)]
+  return float(c['scale']),float(c['offset']),'K',c['status'],c.get('reference','')
+ from .radiometry import metadata_scale
+ try:c=metadata_scale(ds)
+ except ValueError as exc:raise CalibrationError(str(exc)) from exc
+ if c:return c['scale'],c['offset'],'K','metadata',c['reference']
  return 1.,0.,'DN','unknown','Единицы не объявлены'
 
 def read_grid(path,ch,g,cal,kelvin_required=False):
  with rasterio.open(path) as ds:
   if not ds.crs or ds.count!=1:raise ValueError('Нужен одноканальный GeoTIFF с системой координат.')
   scale,offset,unit,status,reference=calibration(ds,ch,cal)
-  if kelvin_required and unit!='K':raise CalibrationError('Для продукта нужна яркостная температура. Настройте калибровку или явно включите исследовательское допущение DN=K.')
+  if kelvin_required and unit!='K':raise CalibrationError('Для продукта нужна яркостная температура. Настройте температурную шкалу для необходимых каналов.')
   out=np.full((g['height'],g['width']),np.nan,dtype='float32')
   reproject(rasterio.band(ds,1),out,src_transform=ds.transform,src_crs=ds.crs,src_nodata=ds.nodata,dst_transform=g['transform'],dst_crs=g['crs'],dst_nodata=np.nan,resampling=Resampling.nearest,num_threads=1,warp_mem_limit=128)
   out=out*scale+offset

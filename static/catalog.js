@@ -79,14 +79,16 @@ function renderCatalog(){
   $('#sessions').innerHTML=rows.slice(0,CATALOG.visible).map(row=>{
     const plan=catalogPlan(row),key=sessionKey(row),busy=CATALOG.downloading.has(key);
     const title=row.platform==='ARCM1'?'Арктика-М1':'Арктика-М2';
-    const action=plan.rgb?(plan.ready?'Открыть RGB':plan.ids.length?'Скачать и открыть RGB':plan.waiting.length?'Загружается':'Нет готового RGB'):plan.ready?'Открыть':plan.ids.length?(plan.canOpen&&!plan.absent.length&&!plan.blocked.length?'Скачать и открыть':'Скачать доступные'):plan.waiting.length?'Загружается':'Нет набора';
+    const canPreview=!plan.rgb&&row.local_channels.length>0;
+    const action=canPreview&&!plan.ready?'Открыть доступное':plan.rgb?(plan.ready?'Открыть RGB':plan.ids.length?'Скачать и открыть RGB':plan.waiting.length?'Загружается':'Нет готового RGB'):plan.ready?'Открыть':plan.ids.length?(plan.canOpen&&!plan.absent.length&&!plan.blocked.length?'Скачать и открыть':'Скачать доступные'):plan.waiting.length?'Загружается':'Нет набора';
     const channels=(row.channel_inventory||[]).map(c=>`<span class="catalog-channel ${escape(c.state)}" title="Канал ${c.channel}: ${escape(catalogStates[c.state]||c.state)}" aria-label="Канал ${c.channel}: ${escape(catalogStates[c.state]||c.state)}">${c.channel}</span>`).join('');
-    return `<article class="catalog-card ${row.local_id===S.scene?.id?'selected':''}" data-session="${escape(key)}"><header><strong><time>${escape(row.time.slice(11,19))}</time> UTC</strong><span>${title}</span></header>${plan.rgb?`<p class="archive-caption">${escape(plan.image?.level||'RGB / COG')} · готовые цвета</p>`:`<div class="catalog-channels" aria-label="Состав каналов">${channels}</div>`}<p class="catalog-completeness">${escape(catalogPlanText(plan))}</p>${row.no_uri&&!row.local_id?'<p class="error-text">Есть запись, но нет ссылок на файлы.</p>':''}<div class="catalog-actions"><button class="session primary" data-key="${escape(key)}" ${busy||(!plan.ready&&!plan.ids.length)?'disabled':''}>${busy?'Добавление…':action}</button><button class="catalog-files text-button" data-key="${escape(key)}">${row.count?'Файлы · '+row.count:row.local_channels.length?'Каналы · '+row.local_channels.length:'Запись'}</button></div>${plan.ids.length?`<small>К загрузке: ${plan.ids.length} · ${escape(catalogSize(plan))}</small>`:''}</article>`;
+    return `<article class="catalog-card ${row.local_id===S.scene?.id?'selected':''}" data-session="${escape(key)}"><header><strong><time>${escape(row.time.slice(11,19))}</time> UTC</strong><span>${title}</span></header>${plan.rgb?`<p class="archive-caption">${escape(plan.image?.level||'RGB / COG')} · готовые цвета</p>`:`<div class="catalog-channels" aria-label="Состав каналов">${channels}</div>`}<p class="catalog-completeness">${escape(catalogPlanText(plan))}</p>${row.no_uri&&!row.local_id?'<p class="error-text">Есть запись, но нет ссылок на файлы.</p>':''}<div class="catalog-actions"><button class="session primary" data-key="${escape(key)}" ${busy||(!plan.ready&&!plan.ids.length&&!canPreview)?'disabled':''}>${busy?'Добавление…':action}</button><button class="catalog-files text-button" data-key="${escape(key)}">${row.count?'Файлы · '+row.count:row.local_channels.length?'Каналы · '+row.local_channels.length:'Запись'}</button></div>${plan.ids.length?`<small>К загрузке: ${plan.ids.length} · ${escape(catalogSize(plan))}</small>`:''}</article>`;
   }).join('');
   $$('#sessions button.session').forEach(b=>b.onclick=()=>{
     const row=CATALOG.rows.find(r=>sessionKey(r)===b.dataset.key);if(!row)return;
-    if(catalogPlan(row).ready)openCatalogScene(row);else queueCatalog(row).catch(e=>catalogError(e.message));
+    if(row.local_id&&!catalogPlan(row).rgb)openCatalogScene(row,['all','ir'].includes($('#catalogTask').value)?'channel':$('#catalogTask').value,['all','ir'].includes($('#catalogTask').value)?(row.local_channels.includes(9)?9:row.local_channels[0]):Number($('#catalogChannel').value));else if(catalogPlan(row).ready)openCatalogScene(row);else queueCatalog(row).catch(e=>catalogError(e.message));
   });
+  $$('#sessions .catalog-card header').forEach(header=>{header.tabIndex=0;header.setAttribute('role','button');header.setAttribute('aria-label','Выбрать срок');const choose=()=>{const row=CATALOG.rows.find(r=>sessionKey(r)===header.closest('[data-session]').dataset.session);if(!row)return;const scene=S.scenes.find(s=>s.id===row.local_id)||{id:row.platform+'_'+row.time.replace(/[-:TZ]/g,''),platform:row.platform,time:row.time,channels:[],composites:[]};selectScene(scene);left('product');};header.onclick=choose;header.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();choose();}};});
   $$('#sessions .catalog-files').forEach(b=>b.onclick=()=>{
     const row=CATALOG.rows.find(r=>sessionKey(r)===b.dataset.key);if(row)showFiles(row).catch(e=>catalogError(e.message));
   });
@@ -139,6 +141,7 @@ async function loadDay(){
     }
     S.scenes=local.scenes;S.catalog=rows;CATALOG.rows=rows;CATALOG.coverage=first.coverage;CATALOG.error='';
     if(first.bundles)CATALOG.bundles=first.bundles;
+    if(S.scene){const fresh=S.scenes.find(s=>s.id===S.scene.id);if(fresh){S.scene=fresh;productHint();}else if(S.scene.time.slice(0,10)!==day){S.scene=null;}}
     renderCatalog();if(typeof timeStrip==='function')timeStrip();
     if(CATALOG.pending){
       const pending=CATALOG.pending,row=rows.find(r=>sessionKey(r)===pending.key);

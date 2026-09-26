@@ -216,6 +216,7 @@ def main():
                 page.locator('#routeProfile').select_option('')
                 page.locator('#calibrationOpen').click()
                 page.locator('#calMode').select_option('assumed')
+                page.locator('#scaleAll').click()
                 page.locator('#saveCalibration').click();page.locator('#confirmYes').click()
                 wait_js('()=>S.product&&S.product.calibration_status==="assumed"&&!S.busy&&!UI.activeBuild')
                 check('Исследовательское допущение сохранено', '()=>S.product.calibration_status==="assumed"')

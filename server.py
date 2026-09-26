@@ -95,11 +95,11 @@ class Handler(BaseHTTPRequestHandler):
                 self.send(303,b'',extra={'Location':'/'})
             except Exception as e:self.error(e)
             return
-        if path in ('/','/app.js','/style.css','/icon.svg','/favicon.ico','/studio.js','/catalog.js','/catalog.css'):
+        if path in ('/','/app.js','/style.css','/icon.svg','/favicon.ico','/studio.js','/catalog.js','/catalog.css','/product_flow.js'):
             if not self.gate(False):return
-            names={'/':'index.html','/app.js':'app.js','/style.css':'style.css','/icon.svg':'icon.svg','/favicon.ico':'icon.svg','/studio.js':'studio.js','/catalog.js':'catalog.js','/catalog.css':'catalog.css'}
+            names={'/':'index.html','/app.js':'app.js','/style.css':'style.css','/icon.svg':'icon.svg','/favicon.ico':'icon.svg','/studio.js':'studio.js','/product_flow.js':'product_flow.js','/catalog.js':'catalog.js','/catalog.css':'catalog.css'}
             p=ROOT/'static'/names[path]
-            ctype={'index.html':'text/html; charset=utf-8','app.js':'application/javascript; charset=utf-8','studio.js':'application/javascript; charset=utf-8','catalog.js':'application/javascript; charset=utf-8','catalog.css':'text/css; charset=utf-8','style.css':'text/css; charset=utf-8','icon.svg':'image/svg+xml'}[p.name]
+            ctype={'index.html':'text/html; charset=utf-8','app.js':'application/javascript; charset=utf-8','studio.js':'application/javascript; charset=utf-8','product_flow.js':'application/javascript; charset=utf-8','catalog.js':'application/javascript; charset=utf-8','catalog.css':'text/css; charset=utf-8','style.css':'text/css; charset=utf-8','icon.svg':'image/svg+xml'}[p.name]
             self.send(200,p.read_bytes(),ctype);return
         if path=='/health':
             if self.gate(False):self.send(200,{'app':'arktika-web','version':'0.2.2'})
@@ -173,7 +173,12 @@ class Handler(BaseHTTPRequestHandler):
                     self.send(401,{'error':'Неверный ключ запуска. Откройте ссылку из окна сервера.'});return
                 self.send(200,{'ok':True},extra={'Set-Cookie':'arktika_session='+self.server.key+'; HttpOnly; SameSite=Strict; Path=/'});return
             app=self.server.app;result={'ok':True}
-            if path=='/api/calibration':result=app.set_calibration(data)
+            if path=='/api/product-plan':result=app.product_plan(data)
+            elif path=='/api/scale/inventory':result=app.scale_inventory(data)
+            elif path=='/api/scale/preview':result=app.scale_proposal(data)
+            elif path=='/api/scale/save':result=app.save_scale(data)
+            elif path=='/api/scale/image':result=app.preview_scale_image(data)
+            elif path=='/api/calibration':result=app.set_calibration(data)
             elif path=='/api/local/import':app.start('Импорт локальных GeoTIFF',lambda:app.scan_local(data['path']))
             elif path=='/api/process':app.prepare(data)
             elif path=='/api/coordinates':result=app.coordinates(data)
