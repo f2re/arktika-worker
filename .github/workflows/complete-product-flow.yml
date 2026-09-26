@@ -23,8 +23,11 @@ jobs:
       - run: python -m compileall -q arktika server.py
       - run: node --check static/product_flow.js && node --check static/studio.js && node --check static/catalog.js
       - run: python scripts/manifest.py --check
-      - name: Commit reviewed sources to the same branch
+      - name: Commit source files only; do not modify workflows with this token
         run: |
+          git restore --source=HEAD -- .github
+          python scripts/manifest.py
+          python scripts/manifest.py --check
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -u
