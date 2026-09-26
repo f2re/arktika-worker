@@ -10,8 +10,8 @@ const UI = {
 const original = {setMap, showProduct, selectScene, registerEvents, productHint, clearMapProduct, setDate};
 const icon = name => `<svg class="icon" aria-hidden="true"><use href="#i-${escape(name)}"/></svg>`;
 const readableDate = day => new Date(day+'T12:00:00Z').toLocaleDateString('ru-RU', {day:'numeric',month:'long',year:'numeric',timeZone:'UTC'}).replace(' г.','');
-const displayCal = {not_applicable:'RGB',unknown:'DN', assumed:'DN ≈ K', declared:'K', metadata:'K'};
-const sourceCal = {not_applicable:'Готовые цвета поставщика — не физические каналы',unknown:'Единицы не объявлены',assumed:'DN = K: допущение',declared:'Задана калибровка',metadata:'Калибровка GeoTIFF'};
+const displayCal = {not_applicable:'RGB',unknown:'DN', assumed:'K · прибл.', declared:'K', metadata:'K'};
+const sourceCal = {not_applicable:'Готовые цвета поставщика — не физические каналы',unknown:'Единицы не объявлены',assumed:'Исследовательская температурная шкала',declared:'Задана калибровка',metadata:'Калибровка GeoTIFF'};
 
 // Сохраняем существующие элементы и контракты API, группируя дополнительные
 // параметры по задаче. Профиль не является условием просмотра снимка.
@@ -287,7 +287,7 @@ setDate = function(day) {
   if(!/^\d{4}-\d{2}-\d{2}$/.test(day)) return toast('Введите полную дату.');
   const test=new Date(day+'T00:00:00Z');
   if(!Number.isFinite(test.getTime())||test.toISOString().slice(0,10)!==day) return toast('Такой даты нет.');
-  UI.contextEpoch++;UI.mapSequence++;clearTimeout(UI.buildTimer);UI.wantedBuild=null;invalidatePoint();invalidateRoute();
+  cancelProductFlow();UI.contextEpoch++;UI.mapSequence++;clearTimeout(UI.buildTimer);UI.wantedBuild=null;invalidatePoint();invalidateRoute();
   if(S.product) clearMapProduct();
   $('#dateCaption').textContent=readableDate(day);$('#timeCaption').textContent='UTC';
   original.setDate(day);
@@ -337,6 +337,7 @@ const TASKS=[
   {id:'difference',icon:'layers',name:'Разности',hint:'Оконный контраст'},
   {id:'phase',icon:'snow',name:'Признаки фазы',hint:'Исследовательские правила'},
   {id:'motion',icon:'satellite',name:'Динамика',hint:'Два срока'},
+  {id:'cth',icon:'height',name:'Высота облака',hint:'В точке · по профилю'},
 ];
 
 function tasks() {
@@ -350,10 +351,10 @@ function tasks() {
 }
 
 productHint = function() {
-  original.productHint();drawChannelChips();
+  original.productHint();drawChannelChips();syncProductChoices();
   const composites=S.scene?.composites||[];
   if($('#compositeSource')){const selected=UI.compositeId;$('#compositeSource').innerHTML=composites.map(c=>`<option value="${escape(c.id)}">${escape(c.level+' · '+c.crs)}</option>`).join('');if(composites.some(c=>c.id===selected))$('#compositeSource').value=selected;UI.compositeId=$('#compositeSource').value;$('#compositeSourceLabel').hidden=$('#product').value!=='archive_rgb'||composites.length<2;}
-  for(const option of $$('#product option')){const spec=S.registry.products.find(p=>p.id===option.value);option.disabled=option.value==='archive_rgb'?!composites.length:!S.scene?.channels.length||Boolean(spec?.channels?.some(ch=>!S.scene.channels.some(c=>c.channel===ch)));}
+  for(const option of $$('#product option'))option.disabled=false;
   const guide=UI.guides[$('#product').value];
   if(guide&&$('#product').value!=='channel')$('#productHint').textContent=guide.purpose;
   const have=new Set((S.scene?.channels||[]).map(c=>c.channel));
@@ -363,14 +364,14 @@ productHint = function() {
     const missing=required.filter(ch=>!have.has(ch));
     const active=id===$('#product').value&&(id!=='channel'||Number($('#channel').value)===9);
     button.classList.toggle('active',active);
-    button.disabled=id==='motion'?S.scenes.length<2:!S.scene||missing.length>0;
+    button.disabled=false;
     button.title=missing.length?'Нужны каналы: '+missing.join(', '):!S.scene?'Сначала откройте снимок':'';
     button.setAttribute('aria-pressed',String(active));
   }
   const item=S.registry.products.find(p=>p.id===$('#product').value);
   const needed=item?.id==='channel'?[Number($('#channel').value)]:(item?.channels||[]);
   const missing=needed.filter(ch=>!have.has(ch));
-  if(S.scene&&missing.length)$('#productHint').textContent='Для этого продукта скачайте каналы '+missing.join(', ')+'. Откройте «Каналы и файлы» выбранного срока.';
+  if(S.scene&&missing.length)$('#productHint').textContent='При выборе продукта нужные каналы '+missing.join(', ')+' будут найдены и скачаны автоматически.';
   const unit=S.product?.product==='channel'&&Number(S.product.request.channel)===Number($('#channel').value)?(S.product.legend.units==='K'?'°C':S.product.legend.units):'исходные единицы';
   for(const [id,title] of [['#displayMin','От'],['#displayMax','До']]){
     const label=$(id).closest('label');if(label.firstChild.nodeType===Node.TEXT_NODE)label.firstChild.textContent=title+', '+unit;
@@ -392,7 +393,7 @@ function buildRequest() {
   return body;
 }
 
-function requestBuild() {
+function submitProductBuild() {
   cancelCatalogOpen();
   const request=buildRequest();
   if(!request){left('catalog');return;}
@@ -442,7 +443,7 @@ showProduct = async function(p) {
   S.product=p;$('#calibrationState').textContent=p.display_only?'RGB':displayCal[p.calibration_status]||'DN';$('#calibrationOpen').disabled=Boolean(p.display_only);if(p.display_only)UI.compositeId=p.request.composite;$('#preset').value=p.grid.preset;$('#product').value=p.product;$('#channel').value=p.request.channel||9;
   $('#mapTitle').textContent=p.title.replace('Круглосуточная микрофизика','Микрофизика · 24 ч').replace('Интегральная карта спектральных признаков','Спектральные признаки');
   $('#mapSubtitle').textContent=p.platform+' · '+p.time;
-  $('#productTag').textContent=(p.platform==='ARCM1'?'Арктика-М1':'Арктика-М2')+' · '+p.time.slice(11,16)+' UTC'+(p.calibration_status==='assumed'?' · DN ≈ K':'');
+  $('#productTag').textContent=(p.platform==='ARCM1'?'Арктика-М1':'Арктика-М2')+' · '+p.time.slice(11,16)+' UTC'+(p.calibration_status==='assumed'?' · исследовательская шкала':'');
   $('#raster').setAttribute('href','/artifact/'+p.id+'/map.png');
   $('#nightRaster').setAttribute('href','/artifact/'+p.id+'/night.png');
   $('#exportProduct').disabled=false;$('#scienceBanner').textContent='';
@@ -451,6 +452,7 @@ showProduct = async function(p) {
   if(view){S.view=view;$('#map').setAttribute('viewBox',view.join(' '));}
   await redrawRouteDraft();
   if(oldPoint)await inspectAt(oldPoint.x,oldPoint.y);
+  productFlowShown(p);
 };
 
 function interpretedGuide(product) {return (S.product?.legend?.interpretation && S.product.product===product?S.product.legend.interpretation:UI.guides[product])||{};}
@@ -470,7 +472,7 @@ drawLegend = function(l) {
   const value=v=>temperature&&v!==null?v-273.15:v;
   const unit=temperature?'°C':l.units;
   let html=`<h3>${escape(guide.title||l.title)}</h3><p class="hint">${escape(guide.purpose||l.meaning||'')}</p>`;
-  if(l.status==='assumed')html+=`<div class="caveat">${icon('tune')}<span>DN = K — принятое допущение</span></div>`;
+  if(l.status==='assumed')html+=`<div class="caveat">${icon('tune')}<span>Исследовательская шкала — не калибровка поставщика</span></div>`;
   html+=legendSwatches(guide);
   let miniature='';
   if(l.palette) {
@@ -776,7 +778,7 @@ function renderRoute(r, requested) {
   if(channels.length>1)html+=`<label>Канал на графике и в таблице<select id="routeChannel">${channels.map(c=>`<option value="${escape(c)}" ${c===ch?'selected':''}>Канал ${escape(c)} · ${escape(routeUnit(r,c))}</option>`).join('')}</select></label>`;
   if(unit==='DN')html+='<p class="hint">Изменение сигнала вдоль маршрута. Это не температура воздуха и не высота облаков.</p>';
   else html+='<p class="hint">Яркостная температура канала, не температура воздуха на высоте маршрута.</p>';
-  if(r.units[ch].calibration==='assumed')html+='<p class="caveat">DN = K — исследовательское допущение, не подтверждённая калибровка.</p>';
+  if(r.units[ch].calibration==='assumed')html+='<p class="caveat">Исследовательская температурная шкала, не подтверждённая калибровка.</p>';
   html+=routeChart(r,ch);
   if(missing)html+=`<p class="caveat">Нет данных канала ${escape(ch)} в ${missing} из ${r.samples.length} выборок. Разрывы графика не заполнены.</p>`;
   if(timing){const old=r.samples.filter(x=>x.observation_age_minutes>60).length,later=r.samples.filter(x=>x.observation_age_minutes<0).length;html+=`<p class="hint">К прохождению: ${old} выборок со снимком старше 60 мин; ${later} — со снимком позже прохождения. Это наблюдение, не прогноз.</p>`;}
@@ -934,7 +936,7 @@ registerEvents = function() {
     if(e.key==='Escape'&&!$$('dialog').some(d=>d.open)){if(S.drawing)setDrawing(false);else $('#inspector').hidden=true;}
   });
   $('#calibrationDialog').addEventListener('close',()=>{if(UI.calSaved&&S.scene){UI.calSaved=false;clearRange();requestBuild();}});
-  setupDialogShells();tasks();installTooltips();
+  setupDialogShells();tasks();installProductFlow();installTooltips();
   const helpObserver=new MutationObserver(()=>{for(const a of $$('a[href^="/docs/"]')){const href=a.getAttribute('href');if(/\.md(?:#.*)?$/.test(href))a.setAttribute('href','/docs/index.html#'+href.split('/').at(-1).split('.')[0].toLowerCase());}});
   helpObserver.observe(document.body,{subtree:true,childList:true});
 };

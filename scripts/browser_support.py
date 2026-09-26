@@ -32,5 +32,5 @@ def mount(page, root, server, bridge=False):
         else setter.call(this,name,value);
       };
     }''')
-    for name in ('app.js','catalog.js','studio.js'):
+    for name in ('app.js','catalog.js','product_flow.js','studio.js'):
         page.add_script_tag(content=(root/'static'/name).read_text(encoding='utf-8'))

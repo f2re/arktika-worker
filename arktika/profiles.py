@@ -38,6 +38,8 @@ def cloud_top(data):
  roots=[];flat=[]
  for i in range(len(z)-1):
   if t[i]==t[i+1]==bt:flat.append([float(z[i]),float(z[i+1])]);continue
-  if t[i]!=t[i+1] and min(t[i],t[i+1])<=bt<=max(t[i],t[i+1]):roots.append(float(z[i]+(bt-t[i])/(t[i+1]-t[i])*(z[i+1]-z[i])))
+  if t[i]==bt:roots.append(float(z[i]));continue
+  if t[i+1]==bt:roots.append(float(z[i+1]));continue
+  if t[i]!=t[i+1] and min(t[i],t[i+1])<bt<max(t[i],t[i+1]):roots.append(float(z[i]+(bt-t[i])/(t[i+1]-t[i])*(z[i+1]-z[i])))
  roots=sorted(set(roots))
  return dict(candidate_heights_m=roots,ambiguous_layers_m=flat,has_solution=bool(roots or flat),ambiguous=len(roots)>1 or bool(flat),note='Сопоставление Tя с профилем, без поправки на прозрачность облака и атмосферное поглощение. Не полноценная карта ВГО.')

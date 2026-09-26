@@ -19,7 +19,8 @@ from .analysis_service import AnalysisMixin
 from .interpretation import spectral, profile_diagnostics
 from .catalog import catalog_sessions, describe_session
 from .archive import register_composite, build_composite
-class Workstation(AnalysisMixin, App):
+from .product_flow import ProductFlowMixin
+class Workstation(ProductFlowMixin, AnalysisMixin, App):
  def __init__(self,state_dir,download_dir=None,token='',config=None,client=None):
   self.config=config or {};super().__init__(state_dir,download_dir,token,client or AuthClient(token,self.config.get('oauth')))
   with self.store.lock,self.store.conn:
@@ -54,6 +55,7 @@ class Workstation(AnalysisMixin, App):
   with rasterio.open(path) as ds:
    if ds.count!=1 or not ds.crs:return None
    entry=dict(path=str(path),filename=path.name,channel=ch,crs=ds.crs.to_string(),size=path.stat().st_size,shape=[ds.height,ds.width],nodata=float(ds.nodata) if ds.nodata is not None and np.isfinite(ds.nodata) else None)
+  if asset and asset.get('raster_bands'):entry['raster_bands']=asset['raster_bands']
   identity=platform+'_'+m[2]
   with self.store.lock,self.store.conn:
    old=self.store.conn.execute('SELECT data FROM scenes WHERE id=?',(identity,)).fetchone()
@@ -87,9 +89,9 @@ class Workstation(AnalysisMixin, App):
   for job in self.store.jobs():
    if job['state']!='done':continue
    try:
-    path=Path(job['path']);stat=path.stat();signature=(str(path),stat.st_size,stat.st_mtime_ns)
+    path=Path(job['path']);stat=path.stat();asset=self.store.asset(job['asset_id'])
+    signature=(str(path),stat.st_size,stat.st_mtime_ns,json.dumps((asset or {}).get('raster_bands'),sort_keys=True))
     if self.done_jobs.get(job['id'])==signature:continue
-    asset=self.store.asset(job['asset_id'])
     if asset and asset.get('category') in ('channel','rgb'):
      try:
       if not self.register_file(path,asset):raise ValueError('Не удалось определить аппарат и срок файла.')
@@ -145,7 +147,7 @@ class Workstation(AnalysisMixin, App):
   result['records']=[{k:r.get(k) for k in ('id','time','time_original','time_assumed','bbox','geometry','level','gsd')} for r in records]
   return result
  def prepare(self,data):
-  scene=self.scene(data['scene']);request={k:data[k] for k in ('product','channel','preset','width','display_min','display_max','composite') if k in data};cal=json.loads(json.dumps(self.cal))
+  scene=self.scene(data['scene']);request={k:data[k] for k in ('product','channel','preset','width','display_min','display_max','composite') if k in data};cal=self.radiometry_config(scene)[0]
   def work():
    result=build_composite(scene,self.product_root,request,self.cancel,self.log) if request.get('product')=='archive_rgb' else build_product(scene,self.product_root,request,cal,self.cancel,self.log);self.log('Продукт готов: '+result['title']);return result
   self.start('Создание продукта',work)
@@ -246,7 +248,7 @@ class Workstation(AnalysisMixin, App):
   return out.getvalue().encode('utf-8-sig')
  def motion(self,data):
   from .motion import analyse
-  first=self.scene(data['first']);second=self.scene(data['second']);cal=json.loads(json.dumps(self.cal))
+  first=self.scene(data['first']);second=self.scene(data['second']);cal=self.radiometry_config(first)[0];cal_second=self.radiometry_config(second)[0]
   def work():
-   result=analyse(first,second,cal,data.get('preset','arctic'),int(data.get('channel',9)),self.cancel);atomic_json(self.store.root/'motion.json',result);self.log('Слежение завершено. Кандидаты вращения не являются подтверждёнными ПМЦ.');return result
+   result=analyse(first,second,cal,data.get('preset','arctic'),int(data.get('channel',9)),self.cancel,cal_second=cal_second);atomic_json(self.store.root/'motion.json',result);self.log('Слежение завершено. Кандидаты вращения не являются подтверждёнными ПМЦ.');return result
   self.start('Слежение по двум срокам',work)

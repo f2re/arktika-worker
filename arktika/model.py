@@ -160,6 +160,8 @@ def normalize_asset(raw, context=None, name=None):
     if size is not None and size < 0:
         size = None
     item_id = text(a.get('item_id') or c.get('id'))
+    raster_bands=a.get('raster:bands') or a.get('raster_bands') or []
+    if not isinstance(raster_bands,list):raster_bands=[]
     p = urlsplit(uri)
     # Обновлённая подписанная ссылка того же объекта не создаёт второй элемент.
     canonical = urlunsplit((p.scheme, p.netloc, p.path, '', ''))
@@ -171,6 +173,7 @@ def normalize_asset(raw, context=None, name=None):
             'level': level, 'time': date, 'time_original': text(date_original),
             'time_assumed': assumed, 'category': classify(a, level, uri, name, channel),
             'channel': channel, 'epsg': epsg, 'size': size,
+            'raster_bands': [{k:b[k] for k in ('unit','scale','offset','nodata','data_type') if k in b} for b in raster_bands if isinstance(b,dict)],
             'bands': bands, 'roles': a.get('roles') or [],
             'region': a.get('storage:region') or a.get('region') or 'ext-dc1',
             'access': text(a.get('access')) if a.get('access') == 'READABLE' else '',

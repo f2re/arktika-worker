@@ -78,7 +78,7 @@ def rotations(vectors,seconds,radius=75):
    candidates.append(dict(x=float(center[0]),y=float(-center[1]),angular_rate_s=float(omega),fit_score=score,status='candidate_rotation_not_pmc'))
  return candidates
 
-def analyse(first,second,cal,preset='arctic',channel=9,cancel=None):
+def analyse(first,second,cal,preset='arctic',channel=9,cancel=None,cal_second=None):
  if first['platform']!=second['platform']:raise ValueError('Для MVP нужны два срока одного аппарата.')
  seconds=(dt.datetime.fromisoformat(second['time'].replace('Z','+00:00'))-dt.datetime.fromisoformat(first['time'].replace('Z','+00:00'))).total_seconds()
  if not 300<=seconds<=7200:raise ValueError('Интервал между сроками: 5–120 минут; второй срок должен быть позже.')
@@ -86,7 +86,7 @@ def analyse(first,second,cal,preset='arctic',channel=9,cancel=None):
  from .download import digest
  paths=[first['channels'][str(channel)]['path'],second['channels'][str(channel)]['path']]
  hashes=[digest(path,cancel) for path in paths]
- g=grid(preset,512);a,ma=read_grid(first['channels'][str(channel)]['path'],channel,g,cal);b,mb=read_grid(second['channels'][str(channel)]['path'],channel,g,cal)
+ g=grid(preset,512);a,ma=read_grid(first['channels'][str(channel)]['path'],channel,g,cal);b,mb=read_grid(second['channels'][str(channel)]['path'],channel,g,cal_second if cal_second is not None else cal)
  if (ma['units'],ma['scale'],ma['offset'])!=(mb['units'],mb['scale'],mb['offset']):raise ValueError('Шкалы двух сроков различаются.')
  if cancel and cancel.is_set():
   from .network import Cancelled
