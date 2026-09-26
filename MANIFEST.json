@@ -75,7 +75,7 @@
     "scripts/build_docs.py": "5005f9078b3d7e92cb288051dd882b1bfb1f973c6f9d2ac9bd98d71abe7e3083",
     "scripts/catalog_browser_smoke.py": "c02420fa7ef95daa629cadbca1b50a7b40755e1bf68c498c46cce1b9b9206a4a",
     "scripts/manifest.py": "8b61587d949ebea5ff472def0a711fcc92d1952b6c4b2542b7820c00a6b33f93",
-    "scripts/product_browser_smoke.py": "e34ab580f97cf40658d9218d8c20bb9e44d1135f69b1c4734d94e5e4ed38f297",
+    "scripts/product_browser_smoke.py": "f703f4ccc3ae7f550aa7c4fdc935a48b5dd1cf8ec32be017a6b285504e06e147",
     "scripts/publish.py": "a1dc668735787f2acaa8c5a532b13ca3f14b1b5732ab1bf83d9a352c0bf4640e",
     "server.py": "f7368a2c7c0e530e49c9e2332d674fc3efe247b7f7d97ea0c4cffaf08daba136",
     "start.cmd": "037531cd582105db93a130c392355a8ba889a4d5bedc34513fec7042fbe10054",

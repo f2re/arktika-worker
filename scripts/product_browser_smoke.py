@@ -56,6 +56,7 @@ def main():
                     check('Начальный одиночный канал','()=>typeof S!=="undefined"&&S.product?.request.channel===4&&!S.busy&&!UI.activeBuild')
                     for ch in (5,6,7,8,9,10):app.register_file(scene['channels'][str(ch)]['path'])
                     check('Активный срок получает докачанные каналы без перевыбора','()=>S.scene.channels.length===7')
+                    page.locator('#catalogTask').select_option('all')
                     page.locator('#productRail').click()
                     check('Продукты и каналы остаются выбираемыми','()=>[...document.querySelectorAll("#product option,#channel option,#taskGrid button")].every(e=>!e.disabled)')
                     check('Неполный набор не блокирует уже доступное','()=>document.querySelector("#sessions button.session").textContent==="Открыть доступное"')
@@ -102,6 +103,10 @@ def main():
                     report['checks'].append(dict(name='HTML-методика доступна',passed=True))
                     assert not report['browser_errors'],report['browser_errors']
                 except Exception:
+                    try:
+                        report['flow_state']=page.evaluate('()=>({scene:S.scene?.id,product:S.product?.product,selected:document.querySelector("#product").value,pending:PRODUCT_FLOW.pending,active:UI.activeBuild,busy:S.busy,feedback:document.querySelector("#productFeedback")?.textContent,scale_error:document.querySelector("#scaleError")?.textContent})')
+                    except Exception:
+                        pass
                     shot('failure.png');raise
                 finally:browser.close()
         except Exception as exc:report['error']=str(exc).replace(server.key,'[SESSION]');raise
