@@ -10,6 +10,10 @@ from arktika.era5_runtime import ensure_runtime
 
 
 def main():
+    # Redirected Windows output may default to cp1252; Russian progress must not abort setup.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, 'reconfigure'):
+            stream.reconfigure(encoding='utf-8', errors='replace')
     parser=argparse.ArgumentParser()
     parser.add_argument('--state-dir',required=True,help='Папка состояния приложения')
     args=parser.parse_args()
