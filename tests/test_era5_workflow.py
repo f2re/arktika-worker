@@ -164,7 +164,7 @@ class WorkflowTests(unittest.TestCase):
     def test_rerun_signature_and_report_never_persist_secret(self):
         self.start()
         for file in (self.root/'state'/'era5').rglob('*.json'):
-            self.assertNotIn('SYNTHETIC-TOKEN-NOT-SECRET',file.read_text())
+            self.assertNotIn('SYNTHETIC-TOKEN-NOT-SECRET',file.read_text(encoding='utf-8'))
     def test_restart_marks_interrupted_and_preserves_progress(self):
         self.app._era5_job={'id':'test','status':'running','phase':'x','steps':[{'key':'era5','status':'running'}]};self.app._save_flow()
         del self.app._era5_credential

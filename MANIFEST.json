@@ -113,7 +113,7 @@
     "tests/test_catalog_integration.py": "8400e17ca75bec5cdc8cedf876a8cbbc8ac4d68270922f9e3008c494c201940a",
     "tests/test_era5.py": "6e7abdb4e899bf4063f51f1cfa1522044aed52c881465b980af565d19dc31794",
     "tests/test_era5_cli.py": "577cde689490e6fdefc8a2850b0d85dba201ccc5716e4584c492ff6a09d17b28",
-    "tests/test_era5_workflow.py": "02b1047698f38dc9a52fc3a19b82fd58ca9109bbd9e67dbe0bcd54363361e5d8",
+    "tests/test_era5_workflow.py": "ce534b0534275edaf987916dc51c4801528186e2bfea802cfcfe26fb4515dd3f",
     "tests/test_interpretation.py": "928f47511789a2090afb541d68b3055edc35af42e01ad2bb011a3a194bada40e",
     "tests/test_product_flow.py": "d6bee7e1b7630ac3e95c97d22219d00c68d3d0a6fc8b89e327c2f92762912071",
     "tests/test_publish.py": "9d6a170d42b08dc170c648098a95e7dad04a5e9659c26a6bf6bf2a15e92790b9",
