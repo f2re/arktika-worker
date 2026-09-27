@@ -20,6 +20,12 @@ from arktika.workstation import Workstation
 from arktika.download import digest,atomic_json
 from arktika.network import Cancelled
 from test_science import fixture
+from arktika.era5_calculation import calculate_reference
+
+def inprocess_calculation(scene,plan,options,root,credential,identity,runtime,cancel,progress):
+    # Same calculation as the child process, enabling controlled external test sources.
+    return calculate_reference(scene,plan,options,root,credential,identity,cancel,progress)
+
 
 NOW=dt.datetime(2026,9,26,tzinfo=dt.timezone.utc)
 HAS_XARRAY=bool(importlib.util.find_spec('xarray'))
@@ -204,8 +210,13 @@ class Application(unittest.TestCase):
     def test_invalid_report_id(self):
         with self.assertRaises(ValueError):self.app.era5_report('../../token')
     def test_engine_not_replaced_by_surface_temperature(self):
-        with patch('arktika.auto_calibration.readiness',return_value={'data_dependencies_missing':[],'pyrttov':False}):
-            with self.assertRaisesRegex(ValueError,'RTTOV'):self.app.era5_start({'scene':self.scene,'channels':[9],'acknowledged':True})
+        self.app.era5_credentials({'text':'SYNTHETIC','format':'token'})
+        with patch('arktika.era5_workflow.ensure_runtime',return_value={'missing':[],'pyrttov':False}),patch('arktika.era5_workflow.run_calculation') as calc:
+            calc.return_value={'status':'data_ready','era5_files':[]}
+            self.app.era5_start({'scene':self.scene,'channels':[9],'acknowledged':True});self.app.task.join(10)
+            self.assertTrue(calc.call_args.args[2]['data_only'])
+            self.assertEqual(self.app._era5_job['next_action'],'engine')
+            self.assertEqual(self.app._era5_job['status'],'data_ready')
     def test_apply_wrong_scene(self):
         with self.assertRaises(ValueError):self.app.era5_apply({'scene':self.scene,'id':'bad','channels':[9],'acknowledged':True})
     def test_apply_immutable_report_then_changed_file(self):
@@ -259,7 +270,7 @@ class EndToEnd(unittest.TestCase):
             def fake_forward(profiles,channels,*args):return np.array([[p['skin_k']-1]*len(channels) for p in profiles])
             ready={'data_dependencies_missing':[],'pyrttov':True,'coefficient':{'present':True}}
             try:
-                with patch('arktika.auto_calibration.readiness',return_value=ready),patch('arktika.auto_calibration.retrieve_plan',side_effect=fake_retrieve),patch('arktika.auto_calibration.forward_isolated',side_effect=fake_forward),patch('arktika.auto_calibration.download_coefficients',return_value={'present':True,'sha256':'SYNTHETIC COEFFICIENT'}):
+                with patch('arktika.era5_workflow.ensure_runtime',return_value={'missing':[],'pyrttov':True}),patch('arktika.era5_workflow.run_calculation',side_effect=inprocess_calculation),patch('arktika.era5_calculation.retrieve_plan',side_effect=fake_retrieve),patch('arktika.era5_calculation.forward_isolated',side_effect=fake_forward),patch('arktika.era5_calculation.download_coefficients',return_value={'present':True,'sha256':'SYNTHETIC COEFFICIENT'}):
                     result=app.era5_start(request);app.task.join(10)
                     self.assertFalse(app.busy)
                     report=app.era5_report(result['id']);self.assertEqual(report['status'],'ready',report)
@@ -277,7 +288,7 @@ class EndToEnd(unittest.TestCase):
             def wrong_time(plan,*args):
                 files=model_files(root,plan);files[0]['time']='2026-01-01T05:00:00Z';return files
             try:
-                with patch('arktika.auto_calibration.readiness',return_value={'data_dependencies_missing':[],'pyrttov':False}),patch('arktika.auto_calibration.retrieve_plan',side_effect=wrong_time):
+                with patch('arktika.era5_workflow.ensure_runtime',return_value={'missing':[],'pyrttov':False}),patch('arktika.era5_workflow.run_calculation',side_effect=inprocess_calculation),patch('arktika.era5_calculation.retrieve_plan',side_effect=wrong_time):
                     result=app.era5_start({'scene':scene,'channels':[9],'data_only':True});app.task.join(10)
                     report=app.era5_report(result['id']);self.assertEqual(report['status'],'error')
                     self.assertIn('час',report['message']);self.assertEqual(report['channels'],{})
@@ -345,6 +356,16 @@ class HTTPBoundary(unittest.TestCase):
     def test_static_js_and_html_not_md(self):
         status,headers,body=self.request('/era5.js');self.assertEqual(status,200);self.assertIn('javascript',headers['Content-Type'])
         status,headers,body=self.request('/docs/ERA5.html');self.assertEqual(status,200);self.assertIn('text/html',headers['Content-Type'])
+    def test_workflow_preflight_can_plan_without_channels(self):
+        status,headers,body=self.request('/api/era5/preflight',{'platform':'ARCM2','time':'2024-01-01T00:30:00Z','product':'night'})
+        data=json.loads(body);self.assertEqual(status,200);self.assertEqual(data['plan']['channels'],[4,9,10])
+        self.assertEqual(data['inventory']['ready'],[])
+    def test_workflow_mutations_require_session_and_same_origin(self):
+        import urllib.error
+        for path in ('/api/era5/setup','/api/era5/cancel','/api/era5/engine'):
+            for auth,origin,code in ((False,None,401),(True,'https://other.invalid',403)):
+                with self.assertRaises(urllib.error.HTTPError) as cm:self.request(path,{},auth=auth,origin=origin)
+                self.assertEqual(cm.exception.code,code)
     def test_planning_request_has_no_secrets(self):
         scene=self.app.scenes()[0]['id']
         status,headers,body=self.request('/api/era5/plan',{'scene':scene,'channels':[9,10]})

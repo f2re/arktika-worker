@@ -10,6 +10,23 @@ concurrency:
   group: checks-${{ github.ref }}
   cancel-in-progress: true
 jobs:
+  era5-install:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install --only-binary=:all: -r requirements.txt
+      - name: Install ERA5 through the same managed installer as the UI
+        run: python scripts/setup_era5.py --state-dir "${{ runner.temp }}/arktika-era5-setup"
+      - name: Reuse verified runtime without reinstalling
+        run: python scripts/setup_era5.py --state-dir "${{ runner.temp }}/arktika-era5-setup"
   python:
     strategy:
       fail-fast: false

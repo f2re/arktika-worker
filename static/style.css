@@ -305,3 +305,23 @@ dialog.fixed-dialog .table-scroll{max-height:none;overflow:visible}
 #queueDialog .dialog-body>.row{flex-wrap:wrap;align-items:stretch}
 #queueDialog .dialog-body>.row>button{white-space:normal;line-height:1.35;flex:1 1 130px}
 @media(max-width:600px){#queueDialog .dialog-body>.row>#downloadFolder{flex-basis:100%}#queueDialog .dialog-body>.row>button{font-size:12px;flex-basis:100px}.queue-item .pill{flex-shrink:0}}
+
+/* ERA5: действия и закрытие закреплены даже у динамически созданного окна. */
+.era5-dialog .era5-head{display:block}
+.era5-heading{display:flex;align-items:start;justify-content:space-between;gap:16px}
+.era5-heading>[data-close]{flex:0 0 40px;width:40px;height:40px;background:none;padding:8px}
+.era5-primary{display:flex;gap:10px;flex-wrap:wrap}
+.era5-primary .primary{flex:1;white-space:normal;line-height:1.4}
+#era5Next{font-size:13px;line-height:1.6;margin:10px 0 12px}
+.era5-head .micro{margin:10px 0 0}
+.era5-steps{list-style:none;padding:0;margin:0 0 20px}
+.era5-steps li{display:flex;gap:12px;align-items:start;padding:12px 0;border-bottom:1px solid var(--line)}
+.era5-step-number{flex:0 0 28px;height:28px;border-radius:50%;display:grid;place-items:center;background:var(--tonal);color:var(--primary);font-size:12px}
+.era5-steps li>div{flex:1;min-width:0}.era5-steps strong{font-size:13px}.era5-steps p{font-size:12px;color:var(--muted);line-height:1.6;margin:4px 0 0}
+.era5-stage-status{font-size:10px;color:var(--muted);white-space:nowrap;margin-top:4px}
+.era5-steps [data-status=done] .era5-step-number{background:#e8f2ee;color:#276855}
+.era5-steps [data-status=running] .era5-step-number{background:var(--primary);color:white}
+.era5-steps [data-status=error] .era5-step-number{background:#fff0f3;color:#a23b51}
+.era5-dialog section{margin:16px 0}.era5-dialog .dialog-footer{gap:12px;flex-wrap:wrap}
+.era5-dialog button{white-space:normal}
+@media(max-width:600px){.era5-stage-status{display:none}.era5-steps li{gap:9px}.era5-dialog .dialog-footer a{font-size:12px}.era5-dialog .dialog-footer button{font-size:12px}.era5-dialog .era5-head .micro{font-size:10px}}

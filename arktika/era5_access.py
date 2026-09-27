@@ -198,7 +198,7 @@ def retrieve_plan(plan, credential, folder, cancel=None, progress=lambda message
             if valid: validate_netcdf(target)
         except (OSError,ValueError,KeyError,ImportError): valid=False
         if not valid:
-            progress('ERA5: запрос {}/{} · {} · {}'.format(number,len(plan['requests']),item['group'],item['time']))
+            progress('ERA5: запрос {}/{} · {} · {}'.format(number,len(plan['requests']),{'pressure':'атмосфера, 37 уровней','surface':'поверхность и маски'}[item['group']],item['time']))
             part=folder/(key+'.part.nc')
             try:
                 run_worker({'provider':plan['provider'],'credential':credential,'item':item,'target':str(part)},cancel)

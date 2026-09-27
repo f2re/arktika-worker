@@ -1,110 +1,171 @@
-/* ERA5: секреты только в памяти сервера; задача и результат привязаны к сроку. */
+/* Один сценарий подготовки, привязанный к аппарату, сроку и продукту. */
 'use strict';
-const ERA5_UI={scene:null,channels:[],requestSerial:0,report:null,timer:null};
-const era5Dialog=document.createElement('dialog');era5Dialog.id='era5Dialog';era5Dialog.className='wide';
-era5Dialog.innerHTML=`<div class="dialog-head"><div><h2>Автокалибровка по ERA5</h2><p id="era5Scene"></p></div><button data-close aria-label="Закрыть автокалибровку">✕</button></div>
-<div class="dialog-body"><p class="notice">Спектральный аналог — МСУ-ГС «Электро-Л» №2. Результат исследовательский, не калибровка «Арктики» поставщиком.</p>
-<section><h3>1. Доступ к ERA5</h3><label>Источник<select id="era5Provider"><option value="cds">Copernicus CDS</option><option value="gdex">NCAR / GDEX</option></select></label>
-<label>Файл доступа .netrc или .cdsapirc<button id="era5ChooseFile" class="tonal" type="button">Выбрать файл доступа</button><input id="era5CredentialFile" class="visually-hidden" type="file" accept=".netrc,.cdsapirc,text/plain" tabindex="-1"></label>
-<p class="micro">CDS: персональный токен, не пароль NCAR. В .netrc для CDS токен находится в password записи cds.climate.copernicus.eu. Запись NCAR автоматически выберет GDEX.</p>
-<details><summary>Ввести токен CDS вместо файла</summary><label>Персональный токен<input id="era5Token" type="password" autocomplete="off"></label><button id="era5SaveToken" class="tonal">Подключить CDS</button></details>
-<div class="row"><span id="era5CredentialStatus" class="micro"></span><button id="era5ClearCredential" class="text-button">Удалить доступ</button></div></section>
-<section><h3>2. Опорная область</h3><p id="era5Channels" class="hint"></p><p class="micro">Начальная область — Баренцево / Норвежское моря. Выбираются открытая вода и малое покрытие облаками ERA5, а не холодные пиксели изображения.</p>
-<div class="row"><label>Север, °<input id="era5North" type="number" step="0.25" value="80"></label><label>Юг, °<input id="era5South" type="number" step="0.25" value="60"></label></div>
-<div class="row"><label>Запад, °<input id="era5West" type="number" step="0.25" value="0"></label><label>Восток, °<input id="era5East" type="number" step="0.25" value="40"></label></div>
-<button id="era5CheckPlan" class="tonal">Проверить состав запроса</button><div id="era5Plan" class="hint" aria-live="polite"></div></section>
-<section><h3>3. Расчёт опорного сигнала</h3><p id="era5Runtime" class="hint"></p><button id="era5GetCoefficients" class="tonal">Загрузить коэффициенты Электро-Л №2</button>
-<p class="micro">RTTOV 13.2 устанавливается один раз. Загрузка ERA5 не требует RTTOV. Архив коэффициентов ограничен 1 ГиБ; сохраняется только таблица Электро-Л.</p>
-<label>Зенитный угол наблюдения, °<input id="era5Zenith" type="number" min="0" max="70" step="0.1" placeholder="Из геометрии спутника"></label>
-<label class="check"><input id="era5GeometryAck" type="checkbox">Для этой небольшой области принимаю указанный угол постоянным.</label>
-<label class="check"><input id="era5ResearchAck" type="checkbox">Использовать исследовательский аналог Электро-Л; за диапазоном опор температуры не вычислять.</label>
-<p class="micro">Угол не определяется из температуры. Без этих подтверждений можно только синхронизировать ERA5. На текущие сроки ERA5 обычно ещё не опубликована.</p></section>
-<p id="era5Error" class="error-text" role="alert" hidden></p><p id="era5Progress" role="status" aria-live="polite"></p><div id="era5Report"></div>
-<a class="export-link" href="/docs/ERA5.html" target="_blank" rel="noopener">Установка, доступ и методика</a></div>
-<div class="dialog-footer"><button id="era5Cancel" hidden>Остановить</button><button id="era5Sync" class="tonal">Только загрузить ERA5</button><button id="era5Run" class="primary">Рассчитать шкалу</button></div>`;
+const ERA5_UI={scene:null,channels:[],task:null,requestSerial:0,generation:0,report:null,timer:null,refreshing:false,state:null,preflight:null};
+const era5Dialog=document.createElement('dialog');era5Dialog.id='era5Dialog';era5Dialog.className='wide fixed-dialog era5-dialog';
+era5Dialog.innerHTML=`<div class="dialog-head era5-head"><div class="era5-heading"><div><h2>Подготовка по ERA5</h2><p id="era5Scene"></p></div><button data-close aria-label="Закрыть автокалибровку">✕</button></div>
+<p id="era5Next" role="status">Проверяю готовность…</p><div class="era5-primary"><button id="era5Run" class="primary">Подготовить и рассчитать</button><button id="era5Cancel" hidden>Остановить</button></div><p class="micro">Исследовательская шкала по аналогу Электро-Л №2. Не калибровка поставщика.</p></div>
+<div class="dialog-body"><ol id="era5Steps" class="era5-steps" aria-label="Этапы подготовки"></ol>
+<p id="era5Error" class="error-text" role="alert" hidden></p>
+<section id="era5Access"><h3>Подключить доступ</h3><p class="hint">Загрузите файл доступа или вставьте токен CDS — подготовка продолжится автоматически. Реквизиты останутся только в памяти до остановки сервера.</p>
+<div class="row"><button id="era5ChooseFile" class="tonal">Выбрать .netrc / .cdsapirc</button><input id="era5CredentialFile" class="visually-hidden" type="file" tabindex="-1"></div>
+<label>Токен Copernicus CDS<input id="era5Token" type="password" autocomplete="off" placeholder="Персональный токен"></label><button id="era5SaveToken" class="tonal">Подключить и продолжить</button>
+<p class="micro"><a href="https://cds.climate.copernicus.eu/how-to-api" target="_blank" rel="noopener">Получить токен</a> · <a href="https://cds.climate.copernicus.eu/datasets/reanalysis-era5-pressure-levels?tab=download" target="_blank" rel="noopener">Условия атмосферных данных</a> · <a href="https://cds.climate.copernicus.eu/datasets/reanalysis-era5-single-levels?tab=download" target="_blank" rel="noopener">Условия поверхностных данных</a></p></section>
+<section id="era5EngineHelp" hidden><h3>Подключить RTTOV 13.2</h3><p class="hint">Таблица коэффициентов уже может быть загружена, но она не заменяет расчётчик. Получите RTTOV в NWP SAF, соберите Python-обёртку и укажите папку. ERA5 можно загрузить без него.</p>
+<a class="text-button" href="https://nwp-saf.eumetsat.int/site/software/rttov/download/" target="_blank" rel="noopener">Получить RTTOV и принять лицензию</a>
+<label>Папка установленного RTTOV<input id="era5EnginePath" placeholder="Например, /opt/rttov132"></label><button id="era5ConnectEngine" class="tonal">Проверить и подключить</button><p id="era5EngineMessage" class="hint"></p></section>
+<section id="era5GeometryHelp" hidden><h3>Угол наблюдения</h3><p class="hint">В этих данных угол не указан. Введите его из геометрии спутника. Для опорной области он будет принят постоянным; нулевой угол автоматически не подставляется.</p>
+<label>Зенитный угол, °<input id="era5Zenith" type="number" min="0" max="70" step="0.1" placeholder="Из геометрии наблюдения"></label></section>
+<div id="era5Report"></div>
+<details id="era5Advanced"><summary>Область, источник и подробности</summary><p id="era5Channels" class="hint"></p><p class="micro">По умолчанию — небольшой участок Норвежского моря. Используются открытая вода и малое покрытие облаками ERA5. Это не гарантирует наличие опор.</p>
+<div class="row"><label>Север, °<input id="era5North" type="number" step="0.25" value="76"></label><label>Юг, °<input id="era5South" type="number" step="0.25" value="70"></label></div>
+<div class="row"><label>Запад, °<input id="era5West" type="number" step="0.25" value="10"></label><label>Восток, °<input id="era5East" type="number" step="0.25" value="20"></label></div>
+<label>Источник<select id="era5Provider"><option value="cds">Copernicus CDS</option><option value="gdex">NCAR / GDEX</option></select></label><div class="row"><span id="era5CredentialStatus" class="micro"></span><button id="era5ClearCredential" class="text-button">Удалить доступ</button></div>
+<button id="era5CheckPlan" class="text-button">Обновить проверку</button><p id="era5Plan" class="hint"></p><p id="era5Runtime" class="hint"></p><button id="era5Setup" class="tonal">Установить библиотеки сейчас</button>
+<label class="check"><input id="era5TryRecent" type="checkbox">Проверить публикацию нового срока у источника, несмотря на обычную задержку.</label></details>
+<p id="era5Progress" class="micro" aria-live="polite"></p></div>
+<div class="dialog-footer"><a href="/docs/ERA5.html" target="_blank" rel="noopener">Как это работает</a><button id="era5Sync" class="tonal">Только загрузить ERA5</button></div>`;
 document.body.append(era5Dialog);
+era5Dialog.querySelector('[data-close]').onclick=()=>era5Dialog.close();
 function era5Error(text=''){const e=$('#era5Error');e.textContent=text;e.hidden=!text;}
 function era5Input(){
-  if(!ERA5_UI.scene||S.scene?.id!==ERA5_UI.scene)throw Error('Выбранный срок изменился. Откройте автокалибровку заново.');
-  return {scene:ERA5_UI.scene,channels:ERA5_UI.channels,provider:$('#era5Provider').value,
+  if(!ERA5_UI.task)throw Error('Выберите срок наблюдения.');
+  return {...ERA5_UI.task,channels:ERA5_UI.channels,provider:$('#era5Provider').value,
     area:['#era5North','#era5West','#era5South','#era5East'].map(id=>$(id).value===''?null:Number($(id).value)),
     zenith_deg:$('#era5Zenith').value===''?null:Number($('#era5Zenith').value),
-    constant_angle_acknowledged:$('#era5GeometryAck').checked,acknowledged:$('#era5ResearchAck').checked,
-    allow_coefficient_download:true};
+    constant_angle_acknowledged:$('#era5Zenith').value!=='',acknowledged:true,allow_coefficient_download:true,
+    try_recent:$('#era5TryRecent').checked};
+}
+function era5ContextCurrent(){return S.scene?.id===ERA5_UI.scene&&$('#product').value===ERA5_UI.task?.product&&(ERA5_UI.task.product!=='channel'||Number($('#channel').value)===ERA5_UI.task.channel);}
+function era5ShowSteps(state,preflight){
+  const r=state.runtime,j=state.job,own=j.scene===ERA5_UI.scene&&(!j.product||j.product===ERA5_UI.task?.product)||j.status==='setup_ready';
+  const inventory=preflight?.inventory;
+  const defaults=[
+    {key:'dependencies',title:'Библиотеки',status:r.data_dependencies_missing.length?'pending':'done',message:r.data_dependencies_missing.length?'Установятся при запуске. Системный Python не изменится.':'Импорт библиотек проверен.'},
+    {key:'channels',title:'Каналы снимка',status:!inventory||inventory.missing.length?'pending':'done',message:inventory?inventory.ready.length+'/'+ERA5_UI.channels.length+' готовы. '+(inventory.missing.length?'Остальные будут найдены и скачаны.':'Все нужные файлы прочитаны.'):'Проверка состава срока.'},
+    {key:'era5',title:'Данные ERA5',status:preflight?.next_action==='archive'?'waiting':'pending',message:preflight?.next_action==='archive'?'Этот срок ещё не ожидается в архиве.':'Запрос, загрузка и проверка переменных, времени и сетки.'},
+    {key:'engine',title:'RTTOV и геометрия',status:r.pyrttov&&$('#era5Zenith').value!==''?'pending':'waiting',message:!r.pyrttov?'Нужно подключить RTTOV. Это не мешает подготовке данных.':$('#era5Zenith').value===''?'Нужен подтверждённый угол. Данные можно подготовить сейчас.':'Коэффициенты загрузятся автоматически; работоспособность проверит расчёт.'},
+    {key:'calibration',title:'Шкала',status:'pending',message:'Расчёт опор и проверка диапазона; применение только после проверки.'}];
+  const steps=defaults.map(d=>own?(j.steps||[]).find(s=>s.key===d.key&&s.status!=='pending')||d:d);
+  const labels={done:'Готово',running:'В работе',waiting:'Нужно действие',error:'Не завершено',pending:'Далее',skipped:'Не требуется',cancelled:'Остановлено'};
+  $('#era5Steps').innerHTML=steps.map((s,i)=>`<li data-stage="${s.key}" data-status="${s.status}"><span class="era5-step-number">${s.status==='done'?'✓':i+1}</span><div><strong>${escape(s.title)}</strong><p>${escape(s.message||'')}</p></div><span class="era5-stage-status">${labels[s.status]||s.status}</span></li>`).join('');
+}
+async function era5Check(){
+  const generation=ERA5_UI.generation;
+  const result=await api('/api/era5/preflight',era5Input());
+  if(generation!==ERA5_UI.generation)return;
+  ERA5_UI.preflight=result;ERA5_UI.channels=result.plan.channels;
+  $('#era5Channels').textContent='Каналы продукта: '+result.plan.channels.join(', ')+'. Проверяются файлы выбранного аппарата и срока.';
+  $('#era5Plan').textContent=result.plan.requests.length+' подзапроса · '+result.plan.times.join(' / ')+'. Температура, влажность, озон и геопотенциал на 37 уровнях; поверхность и маски.';
+  return result;
 }
 async function era5Refresh(){
-  const state=await api('/api/era5/state');
-  const c=state.credentials;$('#era5CredentialStatus').textContent=c.present?(c.provider==='cds'?'CDS':'GDEX')+' · доступ в памяти до остановки сервера':'Доступ не задан. GDEX сначала запрашивается публично.';
-  const r=state.runtime;$('#era5Runtime').textContent=[r.pyrttov?'Обёртка RTTOV найдена':'RTTOV 13.2 не установлен',r.coefficient.present?'Коэффициенты Электро-Л загружены':'Таблица RTTOV ещё не загружена',r.data_dependencies_missing.length?'Нет зависимостей ERA5: '+r.data_dependencies_missing.join(', '):'Библиотеки ERA5 готовы'].join('. ')+'.';
-  $('#era5Run').disabled=state.busy;$('#era5Sync').disabled=state.busy;$('#era5GetCoefficients').disabled=state.busy||r.coefficient.present;
-  $('#era5Cancel').hidden=!state.busy;$('#era5ClearCredential').disabled=state.busy;
-  const j=state.job;$('#era5Progress').textContent=state.busy?(j.status==='running'?j.phase:state.operation):(j.status==='idle'?'':j.phase||j.status);
-  if(j.id&&j.status!=='running'&&j.scene===ERA5_UI.scene&&ERA5_UI.report?.id!==j.id){
-    ERA5_UI.report=await api('/api/era5/report?'+qs({id:j.id}));era5DrawReport(ERA5_UI.report);
-  }
-  return state;
+  if(ERA5_UI.refreshing)return;
+  ERA5_UI.refreshing=true;const generation=ERA5_UI.generation;
+  try{
+    const state=await api('/api/era5/state');if(generation!==ERA5_UI.generation)return;
+    ERA5_UI.state=state;const c=state.credentials,r=state.runtime,j=state.job,p=ERA5_UI.preflight;
+    const own=j.scene===ERA5_UI.scene&&(!j.product||j.product===ERA5_UI.task?.product),active=state.busy&&j.status==='running',context=era5ContextCurrent();
+    $('#era5CredentialStatus').textContent=c.present?(c.provider==='cds'?'CDS':'GDEX')+' · реквизиты в памяти, доступ проверится запросом':'Доступ не задан. GDEX сначала проверяется публично.';
+    $('#era5Runtime').textContent=(r.pyrttov?'Обёртка RTTOV загружается. ':'RTTOV 13.2 не подключён. ')+(r.coefficient.present?'Таблица коэффициентов на диске. ':'Таблица загрузится перед расчётом. ')+(r.data_dependencies_missing.length?'Библиотеки установятся автоматически: '+r.data_dependencies_missing.join(', '):'Библиотеки ERA5 проверены.');
+    let next=own&&!active&&j.next_action&&j.status!=='applied'?j.next_action:p?.next_action;
+    if(own&&!active&&j.status==='data_ready'&&!j.data_only){next=!r.pyrttov?'engine':$('#era5Zenith').value===''?'geometry':'start';}
+    if(!state.busy&&p?.next_action==='archive')next='archive';
+    if(!state.busy&&p?.next_action==='credentials'&&next!=='archive')next='credentials';
+    const message=!context?'Выбранный срок или продукт изменился. Результат относится к показанному сроку; откройте подготовку для нового выбора.':state.busy?(active?j.phase:state.operation):own&&j.status!=='idle'?j.phase:p?.message||'Проверяю готовность…';
+    $('#era5Next').textContent=message;$('#era5Progress').textContent=active?'Можно закрыть окно: подготовка продолжится. Возврат покажет тот же этап.':'';
+    $('#era5Access').hidden=next!=='credentials'&&(c.present&&c.provider===$('#era5Provider').value||$('#era5Provider').value==='gdex');
+    $('#era5EngineHelp').hidden=!(own&&j.status==='data_ready'&&j.next_action==='engine');
+    $('#era5GeometryHelp').hidden=!(r.pyrttov||own&&j.next_action==='geometry');
+    const button=$('#era5Run');button.disabled=state.busy||!context;
+    button.textContent=next==='archive'?'Выбрать архивный срок':next==='credentials'?'Подключить доступ':next==='engine'?'Подключить RTTOV':next==='geometry'?'Указать угол':next==='apply'?'Применить шкалу и открыть продукт':next==='queue'?'Открыть загрузки':next==='files'?'Открыть файлы':j.status==='data_ready'&&own?'Продолжить расчёт':j.status==='error'||j.status==='cancelled'||j.status==='interrupted'?'Повторить подготовку':'Подготовить и рассчитать';
+    button.dataset.action=next||'start';
+    $('#era5Cancel').hidden=!active;$('#era5Cancel').disabled=!active;
+    for(const id of ['#era5Sync','#era5ClearCredential','#era5Setup','#era5ConnectEngine','#era5ChooseFile','#era5SaveToken'])$(id).disabled=state.busy;
+    for(const id of ['#era5North','#era5South','#era5East','#era5West','#era5Provider','#era5Zenith','#era5TryRecent'])$(id).disabled=active;
+    era5ShowSteps(state,p);
+    if(own&&j.report_id&&j.status!=='running'&&ERA5_UI.report?.id!==j.report_id){
+      const report=await api('/api/era5/report?'+qs({id:j.report_id}));
+      if(generation===ERA5_UI.generation){ERA5_UI.report=report;era5DrawReport(report);}
+    }
+  }finally{ERA5_UI.refreshing=false;}
 }
 async function showEra5Dialog(required){
-  if(!S.scene){left('catalog');toast('Выберите срок наблюдения.');return;}
-  ERA5_UI.scene=S.scene.id;ERA5_UI.report=null;$('#era5Report').replaceChildren();era5Error();
-  const inv=await api('/api/scale/inventory',{scene:ERA5_UI.scene});
-  ERA5_UI.channels=(required||[]).filter(c=>inv.channels.some(i=>i.channel===c));
-  if(!ERA5_UI.channels.length){
-    const spec=S.registry.products.find(p=>p.id===$('#product').value);
-    const needed=$('#product').value==='cth'?[7,9,10]:$('#product').value==='channel'?[Number($('#channel').value)]:(spec?.channels||[]);
-    ERA5_UI.channels=needed.filter(c=>inv.channels.some(i=>i.channel===c));
-  }
-  if(!ERA5_UI.channels.length)throw Error('Для автокалибровки выберите продукт со скачанными ИК-каналами 4–10.');
-  $('#era5Scene').textContent=(inv.platform==='ARCM1'?'Арктика-М1':inv.platform==='ARCM2'?'Арктика-М2':inv.platform)+' · '+inv.time.replace('T',' ').replace('Z',' UTC');
-  $('#era5Channels').textContent='Каналы выбранного продукта: '+ERA5_UI.channels.join(', ')+'. Коэффициенты рассчитываются для каждого отдельно.';
-  $('#era5Plan').replaceChildren();$('#era5GeometryAck').checked=false;$('#era5ResearchAck').checked=false;
-  if($('#calibrationDialog').open)$('#calibrationDialog').close();
-  era5Dialog.showModal();
-  const state=await era5Refresh();if(state.credentials.provider)$('#era5Provider').value=state.credentials.provider;
-  clearInterval(ERA5_UI.timer);ERA5_UI.timer=setInterval(()=>{if(era5Dialog.open)era5Refresh().catch(e=>era5Error(e.message));},1500);
+  if(!S.scene){left('catalog');$('#catalogCalendar').open=true;toast('Выберите срок. Затем подготовка найдёт каналы автоматически.');return;}
+  cancelProductFlow();UI.wantedBuild=null;clearTimeout(UI.buildTimer);
+  if(ERA5_UI.scene!==S.scene.id)$('#era5Zenith').value='';
+  ERA5_UI.generation++;ERA5_UI.scene=S.scene.id;ERA5_UI.report=null;ERA5_UI.preflight=null;
+  ERA5_UI.task={scene:S.scene.id,platform:S.scene.platform,time:S.scene.time,product:$('#product').value,channel:Number($('#channel').value)||9,preset:$('#preset').value};
+  const spec=S.registry.products.find(p=>p.id===ERA5_UI.task.product);
+  const needed=ERA5_UI.task.product==='cth'?[7,9,10]:ERA5_UI.task.product==='channel'?[ERA5_UI.task.channel]:spec?.channels||required||[];
+  ERA5_UI.channels=needed.filter(c=>c>=4&&c<=10);if(!ERA5_UI.channels.length)throw Error('Выберите продукт с ИК-каналами 4–10. Для RGB температурная шкала не восстанавливается.');
+  $('#era5Scene').textContent=(S.scene.platform==='ARCM1'?'Арктика-М1':'Арктика-М2')+' · '+S.scene.time.replace('T',' ').replace('Z',' UTC');
+  $('#era5Report').replaceChildren();era5Error();$('#era5Run').disabled=true;$('#era5Next').textContent='Проверяю готовность…';
+  if($('#calibrationDialog').open)$('#calibrationDialog').close();if(!era5Dialog.open)era5Dialog.showModal();
+  const generation=ERA5_UI.generation;
+  const state=await api('/api/era5/state');if(generation!==ERA5_UI.generation)return;
+  if(state.credentials.provider)$('#era5Provider').value=state.credentials.provider;
+  try{await era5Check();await era5Refresh();}catch(e){era5Error(e.message);}
+  clearInterval(ERA5_UI.timer);ERA5_UI.timer=setInterval(()=>{if(era5Dialog.open)era5Refresh().catch(e=>era5Error(e.message));},1200);
 }
 function era5DrawReport(report){
   let html='<h3>Результат</h3><p class="hint">'+escape(report.message||'')+'</p>';
-  if(report.n_references!==undefined)html+='<p class="hint">Принято опор: '+report.n_references+'. Это модельные опоры, не эталонные измерения.</p>';
+  if(report.era5_files)html+='<p class="hint">Файлов ERA5 проверено: '+report.era5_files.length+'. Повторный запуск использует кэш.</p>';
   const passed=[];
   for(const [ch,row] of Object.entries(report.channels||{})){
-    if(row.status==='passed'){
-      const p=row.proposal;passed.push(Number(ch));html+=`<article class="reference-card"><h3>Канал ${escape(ch)} · прошёл внутреннюю проверку</h3><p>Tя = ${num(p.scale,6)} × DN + ${num(p.offset,3)} K</p><p>DN ${p.valid_dn.map(v=>num(v,2)).join('…')} · Tя ${p.valid_temperature_k.map(v=>num(v-273.15,1)).join('…')} °C</p><p>Групповое расхождение ${num(p.group_cv_rmse_k,2)} K · ${p.n} опор / ${p.groups} групп. Не полная погрешность прибора.</p></article>`;
-    }else html+=`<article class="reference-card"><h3>Канал ${escape(ch)} · не применяется</h3><p>${escape(row.reason)}</p></article>`;
+    if(row.status==='passed'){const p=row.proposal;passed.push(Number(ch));html+=`<article class="reference-card"><h3>Канал ${escape(ch)} · проверен</h3><p>Tя = ${num(p.scale,6)} × DN + ${num(p.offset,3)} K</p><p>Проверено: ${p.valid_temperature_k.map(v=>num(v-273.15,1)).join('…')} °C · ${p.n} опор. За этим диапазоном значения скрываются.</p><p>Расхождение на группах: ${num(p.group_cv_rmse_k,2)} K. Не полная погрешность прибора.</p></article>`;}
+    else html+=`<p class="hint">Канал ${escape(ch)}: ${escape(row.reason)}</p>`;
   }
-  if(report.assumptions)html+='<details><summary>Допущения и границы</summary>'+report.assumptions.map(t=>'<p class="micro">'+escape(t)+'</p>').join('')+'</details>';
-  html+=`<a class="export-link" href="/api/era5/report?${qs({id:report.id})}" download="era5-calibration.json">Сохранить отчёт и происхождение опор</a>`;
-  if(passed.length)html+='<button id="era5Apply" class="primary full">Применить к этому сроку и открыть продукт</button>';
+  html+=`<a class="export-link" href="/api/era5/report?${qs({id:report.id})}" download="era5-calibration.json">Сохранить отчёт</a>`;
+  if(passed.length)html+='<button id="era5Apply" class="primary full">Применить проверенные каналы</button>';
   $('#era5Report').innerHTML=html;
-  if(passed.length)$('#era5Apply').onclick=async()=>{
-    era5Error();try{
-      era5Input();if(!await ask('Применить модельно-опорную шкалу','Только каналы '+passed.join(', ')+', только этот срок. Вне проверенного диапазона пиксели будут скрыты. Спектральный аналог Электро-Л не является калибровкой Арктики поставщиком.'))return;
-      await api('/api/era5/apply',{id:report.id,scene:ERA5_UI.scene,channels:passed,acknowledged:true});era5Dialog.close();requestBuild();
-    }catch(e){era5Error(e.message);}
-  };
+  if(passed.length)$('#era5Apply').onclick=()=>era5Apply().catch(e=>era5Error(e.message));
 }
-$('#era5ChooseFile').onclick=()=>$('#era5CredentialFile').click();
-$('#era5CredentialFile').onchange=async()=>{
-  const sequence=++ERA5_UI.requestSerial;const f=$('#era5CredentialFile').files[0];$('#era5CredentialFile').value='';if(!f)return;
+async function era5Apply(){
+  if(!era5ContextCurrent())throw Error('Выбранный срок или продукт изменился. Эта шкала не будет применена к новому выбору.');
+  const report=ERA5_UI.report;const channels=Object.entries(report?.channels||{}).filter(([ch,r])=>r.status==='passed').map(([ch])=>Number(ch));
+  if(!channels.length)throw Error('Нет прошедших проверку каналов.');
+  await api('/api/era5/apply',{id:report.id,scene:ERA5_UI.scene,channels,acknowledged:true});era5Dialog.close();requestBuild();
+}
+async function era5Start(only=false){
+  era5Error();$('#era5Run').disabled=true;$('#era5Sync').disabled=true;try{if(!era5ContextCurrent())throw Error('Выбор изменился. Откройте подготовку для текущего срока.');await api('/api/era5/start',{...era5Input(),data_only:only});ERA5_UI.report=null;$('#era5Report').replaceChildren();await era5Refresh();}catch(e){era5Error(e.message);$('#era5Run').disabled=false;$('#era5Sync').disabled=false;}
+}
+$('#era5Run').onclick=async()=>{
   era5Error();try{
-    if(f.size>65536)throw Error('Файл доступа больше 64 КиБ.');const text=await f.text();if(sequence!==ERA5_UI.requestSerial)return;
-    const r=await api('/api/era5/credentials',{text,format:'auto'});if(sequence!==ERA5_UI.requestSerial)return;
-    $('#era5Provider').value=r.provider;await era5Refresh();
+    const action=$('#era5Run').dataset.action;
+    if(action==='archive'){
+      const date=ERA5_UI.preflight?.suggested_date;era5Dialog.close();left('catalog');$('#catalogCalendar').open=true;if(date)setDate(date);
+      toast('Ищу архивные снимки. Предложенная дата не означает подтверждённую публикацию ERA5.');
+      if(date){await loadDay();const current=await api('/api/state');if(!current.busy&&!S.scenes.length&&S.day===date)await api('/api/search',{date,platform:ERA5_UI.task.platform,scope:'day'});}return;
+    }
+    if(action==='credentials'){$('#era5Access').hidden=false;$('#era5Token').focus();return;}
+    if(action==='engine'){$('#era5EngineHelp').hidden=false;$('#era5EnginePath').focus();return;}
+    if(action==='geometry'){$('#era5GeometryHelp').hidden=false;$('#era5Zenith').focus();return;}
+    if(action==='queue'){$('#queueOpen').click();return;}
+    if(action==='files'){era5Dialog.close();await showFiles(ERA5_UI.task);return;}
+    if(action==='apply'){await era5Apply();return;}
+    await era5Start(false);
   }catch(e){era5Error(e.message);}
 };
-$('#era5SaveToken').onclick=async()=>{era5Error();const text=$('#era5Token').value;$('#era5Token').value='';try{await api('/api/era5/credentials',{text,format:'token'});$('#era5Provider').value='cds';await era5Refresh();}catch(e){era5Error(e.message);}};
-$('#era5ClearCredential').onclick=async()=>{era5Error();try{++ERA5_UI.requestSerial;await api('/api/era5/credentials',{clear:true});await era5Refresh();}catch(e){era5Error(e.message);}};
-$('#era5CheckPlan').onclick=async()=>{era5Error();try{const p=await api('/api/era5/plan',era5Input());$('#era5Plan').textContent=p.requests.length+' подзапроса; '+p.times.join(' / ')+'. Температура, влажность, озон и геопотенциал на 37 уровнях; поверхность и маски. '+p.notes.join(' ');}catch(e){era5Error(e.message);}};
-async function era5Start(dataOnly){era5Error();try{const input=era5Input();await api('/api/era5/start',{...input,data_only:dataOnly});ERA5_UI.report=null;$('#era5Report').replaceChildren();await era5Refresh();}catch(e){era5Error(e.message);}}
-$('#era5Sync').onclick=()=>era5Start(true);$('#era5Run').onclick=()=>era5Start(false);
-$('#era5GetCoefficients').onclick=async()=>{era5Error();try{if(!await ask('Получить таблицу Электро-Л №2','Будет прочитан официальный архив NWP SAF (лимит 1 ГиБ). Сохраняется только файл коэффициентов RTTOV.'))return;await api('/api/era5/coefficients',{acknowledged:true});await era5Refresh();}catch(e){era5Error(e.message);}};
-$('#era5Cancel').onclick=async()=>{try{await api('/api/cancel',{});await era5Refresh();}catch(e){era5Error(e.message);}};
-era5Dialog.addEventListener('close',()=>{clearInterval(ERA5_UI.timer);$('#era5Token').value='';});
+$('#era5Sync').onclick=()=>era5Start(true);
+$('#era5ChooseFile').onclick=()=>$('#era5CredentialFile').click();
+async function era5AccessSaved(r){$('#era5Provider').value=r.provider;await era5Check();await era5Refresh();if(ERA5_UI.preflight?.next_action==='start')await era5Start(false);}
+$('#era5CredentialFile').onchange=async()=>{
+  const sequence=++ERA5_UI.requestSerial;const file=$('#era5CredentialFile').files[0];$('#era5CredentialFile').value='';if(!file)return;era5Error();
+  try{if(file.size>65536)throw Error('Файл доступа больше 64 КиБ.');const text=await file.text();if(sequence!==ERA5_UI.requestSerial)return;const r=await api('/api/era5/credentials',{text,format:'auto'});if(sequence===ERA5_UI.requestSerial&&era5Dialog.open)await era5AccessSaved(r);}catch(e){era5Error(e.message);}
+};
+$('#era5SaveToken').onclick=async()=>{era5Error();const text=$('#era5Token').value;$('#era5Token').value='';try{await era5AccessSaved(await api('/api/era5/credentials',{text,format:'token'}));}catch(e){era5Error(e.message);}};
+$('#era5ClearCredential').onclick=async()=>{era5Error();try{++ERA5_UI.requestSerial;await api('/api/era5/credentials',{clear:true});await era5Check();await era5Refresh();}catch(e){era5Error(e.message);}};
+$('#era5CheckPlan').onclick=async()=>{era5Error();try{await era5Check();await era5Refresh();}catch(e){era5Error(e.message);}};
+for(const id of ['#era5Provider','#era5North','#era5South','#era5West','#era5East','#era5TryRecent','#era5Zenith'])$(id).onchange=async()=>{
+  era5Error();try{await era5Check();if(ERA5_UI.state?.job.status==='data_ready'&&$('#era5Zenith').value!=='')ERA5_UI.state.job.next_action='start';await era5Refresh();if(id==='#era5Zenith'&&$('#era5Zenith').value!==''){$('#era5Run').dataset.action='start';$('#era5Run').textContent='Продолжить расчёт';}}catch(e){era5Error(e.message);}
+};
+$('#era5ConnectEngine').onclick=async()=>{era5Error();try{const r=await api('/api/era5/engine',{path:$('#era5EnginePath').value});$('#era5EngineMessage').textContent=r.message;await era5Check();await era5Refresh();if(r.pyrttov){$('#era5EngineHelp').hidden=true;$('#era5GeometryHelp').hidden=false;$('#era5Run').dataset.action=$('#era5Zenith').value!==''?'start':'geometry';$('#era5Run').textContent=$('#era5Zenith').value!==''?'Продолжить расчёт':'Указать угол';}}catch(e){era5Error(e.message);}};
+$('#era5Setup').onclick=async()=>{era5Error();try{await api('/api/era5/setup',{});await era5Refresh();}catch(e){era5Error(e.message);}};
+$('#era5Cancel').onclick=async()=>{try{await api('/api/era5/cancel',{id:ERA5_UI.state?.job.id});await era5Refresh();}catch(e){era5Error(e.message);}};
+era5Dialog.addEventListener('close',()=>{clearInterval(ERA5_UI.timer);ERA5_UI.generation++;ERA5_UI.requestSerial++;$('#era5Token').value='';});
 const manualScaleDialog=showScaleDialog;
 showScaleDialog=async function(required){
-  await manualScaleDialog(required);
-  if(!$('#calibrationDialog').open)return;
-  const body=$('#calibrationDialog .dialog-body');const section=document.createElement('section');
-  section.innerHTML='<button id="era5Open" class="tonal full">Автоматически подобрать шкалу по ERA5</button><p class="micro">Загрузка профилей и расчёт сигнала через RTTOV / Электро-Л №2. Ручная настройка — ниже.</p>';
-  body.prepend(section);$('#era5Open').onclick=()=>showEra5Dialog($$('#scaleChannels input:checked').map(e=>Number(e.value))).catch(e=>scaleError(e.message));
+  await manualScaleDialog(required);if(!$('#calibrationDialog').open)return;
+  const body=$('#calibrationDialog .dialog-body'),section=document.createElement('section');section.innerHTML='<button id="era5Open" class="tonal full">Подготовить автоматически по ERA5</button><p class="micro">Установка библиотек, нужные каналы и запрос данных — одним запуском.</p>';body.prepend(section);
+  $('#era5Open').onclick=()=>showEra5Dialog(required).catch(e=>scaleError(e.message));
 };
