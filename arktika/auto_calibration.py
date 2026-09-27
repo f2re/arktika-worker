@@ -3,6 +3,8 @@ from __future__ import annotations
 import copy
 import json
 import re
+import uuid
+from .network import Cancelled
 from .download import digest
 from .era5_access import credentials_from_text, public_credentials, channels_list
 from .era5_forward import download_coefficients, coefficient_info
@@ -46,11 +48,44 @@ class AutoCalibrationMixin(Era5WorkflowMixin):
         if data.get('acknowledged') is not True:
             raise ValueError('Подтвердите загрузку официального архива RTTOV (лимит 1 ГиБ).')
         self._era5_init()
-        def work():
-            info=download_coefficients(self.store.root,self.cancel,self.log)
-            return {'era5_coefficients':info}
-        self.start('Коэффициенты МСУ-ГС Электро-Л №2',work)
-        return {'started':True}
+        with self.lock:
+            if self.busy: raise ValueError('Подготовка уже выполняется; дождитесь завершения.')
+            info=coefficient_info(self.store.root)
+            if info['present']: return {'started':False,'coefficient':info}
+            # Resume a stopped preparation without discarding its checked ERA5 report.
+            saved=copy.deepcopy(self._era5_job)
+            resume=saved.get('coefficient_resume') or {
+                'status':saved.get('status','idle'), 'phase':saved.get('phase',''),
+                'next_action':saved.get('next_action','start')}
+            steps=saved.setdefault('steps',[])
+            if not any(s['key']=='coefficients' for s in steps):
+                pos=next((i for i,s in enumerate(steps) if s['key']=='engine'),len(steps))
+                steps.insert(pos,{'key':'coefficients','title':'Коэффициенты Электро-Л №2','status':'pending'})
+            saved.update(id=saved.get('id') or uuid.uuid4().hex,status='running',
+                         next_action=None,coefficient_resume=resume)
+            self._era5_job=saved
+            self._flow_step('coefficients','running','Коэффициенты: загружаю таблицу; ERA5 повторно не запрашивается.')
+            def work():
+                try:
+                    info=download_coefficients(self.store.root,self.cancel,
+                        lambda m:self._flow_step('coefficients','running',m))
+                    if not info.get('present'): raise ValueError('Таблица не прошла проверку.')
+                    self._flow_step('coefficients','done','Таблица загружена и проверена. Программа RTTOV устанавливается отдельно.')
+                    with self.lock:
+                        status=resume['status'] if resume['status'] in ('data_ready','ready','applied','rejected') else 'coefficients_ready'
+                        action=resume['next_action'] if status!='coefficients_ready' else 'start'
+                        self._era5_job.update(status=status,next_action=action,
+                            phase='Коэффициенты готовы. '+('Для расчёта подключите программу RTTOV 13.2.' if action=='engine' else 'Можно продолжить подготовку.'))
+                        self._era5_job.pop('coefficient_resume',None);self._save_flow()
+                    return {'era5_coefficients':info}
+                except Exception as exc:
+                    safe=exc if isinstance(exc,(Cancelled,ValueError)) else ValueError('Не удалось загрузить таблицу NWP SAF; проверьте соединение и повторите.')
+                    message=self._flow_failed(safe)
+                    with self.lock: self._era5_job['next_action']='coefficients';self._save_flow()
+                    if isinstance(exc,Cancelled): raise
+                    return {'era5_stopped':True,'message':message}
+            self.start('Коэффициенты МСУ-ГС Электро-Л №2',work)
+        return {'started':True,'id':saved['id']}
 
     def era5_start(self,data):
         return self.era5_workflow_start(data)

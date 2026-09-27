@@ -24,10 +24,21 @@ def calculate_reference(scene, plan, options, root, credential, identity, cancel
         progress('Проверяю ERA5: переменные, оба часа, сетка и единицы.')
         for group in ('pressure','surface'):
             checked=load_group(files,group,plan);checked.close()
+        if not only or options.get('prepare_coefficients') is True:
+            progress('Коэффициенты: проверяю таблицу Электро-Л №2; программа RTTOV для загрузки не нужна.')
+            try:
+                coefficient=download_coefficients(root,cancel,progress)
+                if not coefficient.get('present'): raise ValueError('Таблица не прошла проверку.')
+                report['coefficient']=coefficient
+            except Cancelled:
+                raise
+            except Exception as exc:
+                report['next_action']='coefficients'
+                detail=str(exc) if isinstance(exc,ValueError) else 'Проверьте соединение с NWP SAF.'
+                raise ValueError('Не удалось подготовить коэффициенты. ERA5 сохранена. '+detail) from None
         if only:
             report.update(status='data_ready',message='ERA5 загружена и проверена. Температурная шкала ещё не рассчитана.')
         else:
-            coefficient=download_coefficients(root,cancel,progress)
             progress('Отбираю опоры: открытая вода, оба часа ERA5, исходные пиксели.')
             pairs=collocate(scene,plan,files,zenith,cancel)
             report['selection']={k:v for k,v in pairs.items() if k not in ('profiles','dn','groups')}

@@ -212,7 +212,7 @@ class Application(unittest.TestCase):
     def test_engine_not_replaced_by_surface_temperature(self):
         self.app.era5_credentials({'text':'SYNTHETIC','format':'token'})
         with patch('arktika.era5_workflow.ensure_runtime',return_value={'missing':[],'pyrttov':False}),patch('arktika.era5_workflow.run_calculation') as calc:
-            calc.return_value={'status':'data_ready','era5_files':[]}
+            calc.return_value={'status':'data_ready','era5_files':[],'coefficient':{'present':True,'sha256':'SYNTHETIC-TEST-ONLY'}}
             self.app.era5_start({'scene':self.scene,'channels':[9],'acknowledged':True});self.app.task.join(10)
             self.assertTrue(calc.call_args.args[2]['data_only'])
             self.assertEqual(self.app._era5_job['next_action'],'engine')

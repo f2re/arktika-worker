@@ -15,7 +15,7 @@ from .network import Cancelled
 from .products import PRODUCTS
 
 DEFAULT_AREA=[76.,10.,70.,20.]  # Норвежское море; не вся Арктика с одним углом.
-STEPS=[('dependencies','Библиотеки'),('channels','Каналы снимка'),('era5','Данные ERA5'),('engine','RTTOV и геометрия'),('calibration','Шкала')]
+STEPS=[('dependencies','Библиотеки'),('channels','Каналы снимка'),('era5','Данные ERA5'),('coefficients','Коэффициенты Электро-Л №2'),('engine','Программа RTTOV и геометрия'),('calibration','Шкала')]
 
 
 class NeedAction(ValueError):
@@ -210,22 +210,31 @@ class Era5WorkflowMixin:
                         self._flow_step('channels','done','Все '+str(len(channels))+' канала(ов) прочитаны и готовы.')
                     can_compute=not only and runtime['pyrttov'] and geometry
                     options['data_only']=not can_compute
+                    # Preparing tables does not depend on the executable or geometry.
+                    options['prepare_coefficients']=not only
+                    if only: self._flow_step('coefficients','skipped','Для отдельной загрузки ERA5 таблица не требуется.')
                     self._flow_step('era5','running','Запрашиваю ERA5; каждый файл будет проверен по сроку, переменным и сетке.')
                     def progress(message):
-                        key='engine' if message.startswith(('RTTOV','Загружаю официальный')) else 'calibration' if message.startswith(('Отбираю','Проверяю шкалу')) else 'era5'
+                        key='coefficients' if message.startswith('Коэффициенты:') else 'engine' if message.startswith('RTTOV') else 'calibration' if message.startswith(('Отбираю','Проверяю шкалу')) else 'era5'
                         if key!='era5': self._flow_step('era5','done','ERA5 загружена и проверена.')
                         self._flow_step(key,'running',message)
                     report=run_calculation(snapshot,plan,options,self.store.root,credential,identity,runtime,self.cancel,progress)
                     with self.lock: self._era5_job['report_id']=identity;self._save_flow()
                     if report['status']=='error':
                         message=report['message']
+                        if report.get('next_action')=='coefficients': raise NeedAction('coefficients',message)
                         if 'Доступ ERA5 отклонён' in message: raise NeedAction('credentials',message+' Примите условия обоих наборов или замените токен в форме ниже.')
                         if 'ERA5 не найден' in message: raise NeedAction('archive',message+' Выберите более ранний срок.')
                         raise ValueError(message)
                     self._flow_step('era5','done',f"ERA5: {len(report.get('era5_files',[]))}/{len(plan['requests'])} файлов проверены.")
+                    if not only:
+                        coefficient=report.get('coefficient',{})
+                        if not coefficient.get('present'):
+                            raise NeedAction('coefficients','Таблица коэффициентов не подтверждена. Повторите её загрузку; ERA5 сохранена.')
+                        self._flow_step('coefficients','done','Таблица загружена и проверена. Повторная загрузка не требуется.')
                     if report['status']=='data_ready':
                         next_action='complete' if only else 'engine' if not runtime['pyrttov'] else 'geometry'
-                        message='ERA5 загружена и проверена. Расчёт шкалы не запрошен.' if only else 'Данные готовы. Подключите RTTOV 13.2, затем продолжите — повторная загрузка не нужна.' if not runtime['pyrttov'] else 'Данные готовы. Укажите подтверждённый угол наблюдения; из DN он не определяется.'
+                        message='ERA5 загружена и проверена. Расчёт шкалы не запрошен.' if only else 'ERA5 и коэффициенты готовы. Не установлена программа RTTOV 13.2 — подключите её один раз.' if not runtime['pyrttov'] else 'Данные готовы. Укажите подтверждённый угол наблюдения; из DN он не определяется.'
                         self._flow_step('engine','skipped' if only else 'waiting',message)
                     else:
                         self._flow_step('engine','done','Расчёт опор RTTOV выполнен.')

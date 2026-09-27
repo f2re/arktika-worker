@@ -35,7 +35,8 @@ def main():
     with tempfile.TemporaryDirectory() as tmp,ExitStack() as stack:
         root=Path(tmp);app,scene,transport,assets=workflow_fixture(root)
         app.store.set_setting('last_date','2026-01-01');app.store.set_setting('view_settings',{'preset':'barents','product':'channel','channel':9})
-        runtime=dict(RUNTIME,missing=['xarray','netCDF4','cdsapi']);control={'install_calls':0,'retrievals':0,'slow':False}
+        runtime=dict(RUNTIME,missing=['xarray','netCDF4','cdsapi']);control={'install_calls':0,'retrievals':0,'slow':False,'coefficient_calls':0,'coefficient_error':False}
+        coefficient={'present':False,'name':'SYNTHETIC-coefficients.dat'}
         cache={}
         def ready(*args,**kwargs):return copy.deepcopy(runtime)
         def install(state,cancel,progress):
@@ -44,6 +45,18 @@ def main():
             for _ in range(7):
                 if cancel.wait(.15):raise Cancelled()
             runtime['missing']=[];runtime['managed']=True;return ready()
+        def download_table(state,cancel,progress):
+            if coefficient['present']:return dict(coefficient)
+            control['coefficient_calls']+=1
+            progress('Коэффициенты: загрузка — SYNTHETIC TEST SOURCE')
+            if cancel.wait(.3):raise Cancelled()
+            if control['coefficient_error']:raise ValueError('Коэффициенты: SYNTHETIC TEST NETWORK ERROR')
+            coefficient.update(present=True,sha256='0'*64,size_bytes=4096)
+            return dict(coefficient)
+        stack.enter_context(patch('arktika.era5_calculation.download_coefficients',side_effect=download_table))
+        stack.enter_context(patch('arktika.auto_calibration.download_coefficients',side_effect=download_table))
+        for module in ('arktika.auto_calibration','arktika.era5_workflow'):
+            stack.enter_context(patch(module+'.coefficient_info',side_effect=lambda *a:dict(coefficient)))
         def calculate(scene,plan,options,state,credential,identity,runtime_,cancel,progress):
             if control['slow']:
                 progress('ERA5: ожидаю тестовый источник — SYNTHETIC TEST')
@@ -56,12 +69,10 @@ def main():
                     cache[key]=model_files(folder,plan)
                 else:progress('ERA5: файлы из проверенного тестового кэша')
                 return cache[key]
-            coefficients=root/'SYNTHETIC-coefficients.dat';coefficients.write_text('SYNTHETIC TEST ONLY')
-            info={'present':True,'sha256':digest(coefficients),'filename':coefficients.name}
             # Test radiances are explicitly synthetic. Actual regression code checks fits.
             x=np.linspace(180,310,80);profiles=[{'test_dn':float(v)} for v in x]
             pairs={'profiles':profiles,'dn':[[float(v)]*len(plan['channels']) for v in x],'groups':[str(i//10) for i in range(80)]}
-            with patch('arktika.era5_calculation.retrieve_plan',side_effect=fetch),patch('arktika.era5_calculation.download_coefficients',return_value=info),patch('arktika.era5_calculation.collocate',return_value=pairs),patch('arktika.era5_calculation.forward_isolated',side_effect=lambda profiles,channels,*a:np.array([[.5*p['test_dn']+130]*len(channels) for p in profiles])):
+            with patch('arktika.era5_calculation.retrieve_plan',side_effect=fetch),patch('arktika.era5_calculation.collocate',return_value=pairs),patch('arktika.era5_calculation.forward_isolated',side_effect=lambda profiles,channels,*a:np.array([[.5*p['test_dn']+130]*len(channels) for p in profiles])):
                 return calculate_reference(scene,plan,options,state,credential,identity,cancel,progress)
         stack.enter_context(patch('arktika.era5_workflow.runtime_info',side_effect=ready))
         stack.enter_context(patch('arktika.auto_calibration.runtime_info',side_effect=ready))
@@ -111,7 +122,30 @@ def main():
                     check('ERA5 готова даже без RTTOV','()=>ERA5_UI.state.job.next_action==="engine"&&document.querySelector("#era5Report").textContent.includes("Файлов ERA5 проверено")')
                     check('Шкала без RTTOV не объявлена готовой','()=>ERA5_UI.state.job.steps.find(s=>s.key==="calibration").status!=="done"&&!document.querySelector("#era5Apply")')
                     check('Есть следующий шаг без тупика','()=>document.querySelector("#era5Run").textContent.includes("Подключить RTTOV")&&!document.querySelector("#era5EngineHelp").hidden')
+                    check('Коэффициенты получены даже без программы RTTOV','()=>ERA5_UI.state.runtime.coefficient.present&&ERA5_UI.state.job.steps.find(s=>s.key==="coefficients").status==="done"')
+                    assert control['coefficient_calls']==1
+                    check('Таблица и программа показаны отдельными этапами','()=>document.querySelector("[data-stage=coefficients]").textContent.includes("Электро-Л")&&document.querySelector("[data-stage=engine]").textContent.includes("Программа RTTOV")')
                     shot('data-ready')
+                    # Resume the exact old paused state: ERA5 present, no table or engine.
+                    page.locator('#era5Dialog [data-close]').click()
+                    with app.lock:
+                        app._era5_job['steps']=[v for v in app._era5_job['steps'] if v['key']!='coefficients']
+                        app._save_flow()
+                    coefficient['present']=False;control['coefficient_error']=True
+                    counts=(control['retrievals'],control['install_calls'],transport.calls)
+                    old_report=app._era5_job['report_id']
+                    show()
+                    check('Старое ожидание RTTOV само запускает докачку таблицы','()=>ERA5_UI.state.job.active_step==="coefficients"')
+                    check('Сбой таблицы показывает отдельный повтор','()=>ERA5_UI.state.job.status==="error"&&document.querySelector("#era5Run").dataset.action==="coefficients"')
+                    assert counts==(control['retrievals'],control['install_calls'],transport.calls)
+                    shot('coefficient-error')
+                    control['coefficient_error']=False
+                    page.locator('#era5Run').click()
+                    check('Повтор получает таблицу и возвращает ожидание программы','()=>ERA5_UI.state.job.status==="data_ready"&&ERA5_UI.state.runtime.coefficient.present&&document.querySelector("#era5Run").dataset.action==="engine"')
+                    assert old_report==app._era5_job['report_id']
+                    assert counts==(control['retrievals'],control['install_calls'],transport.calls)
+                    report['checks'].append({'name':'Докачка таблицы сохранила отчёт и не повторила ERA5, каналы или установку','passed':True})
+                    shot('coefficients-repaired')
                     calls=transport.calls
                     runtime['pyrttov']=True
                     page.evaluate('()=>era5Refresh()')

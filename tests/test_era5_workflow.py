@@ -50,6 +50,7 @@ def fake_report(scene,plan,options,root,credential,identity,runtime,cancel,progr
     report={'id':identity,'scene':scene['id'],'time':scene['time'],'platform':scene['platform'],
             'status':'data_ready','channels':{},'message':'SYNTHETIC TEST DATA READY',
             'era5_files':[{'group':r['group'],'time':r['time']} for r in plan['requests']], 'plan':plan,'scientific_validation':False}
+    if options.get('prepare_coefficients'):report['coefficient']={'present':True,'sha256':'SYNTHETIC-TEST-ONLY'}
     folder=Path(root)/'era5'/'runs'/identity;folder.mkdir(parents=True,exist_ok=True)
     atomic_json(folder/'report.json',report)
     return report
@@ -103,6 +104,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertTrue({'7','9','10'}.issubset(snapshot['channels']))
         self.assertEqual(sorted(Path(j['path']).name[-6:-4] for j in self.app.store.jobs()),['07','10']);self.assertGreater(self.transport.calls,0)
         self.assertTrue(run.call_args.args[2]['data_only'])
+        self.assertTrue(run.call_args.args[2]['prepare_coefficients'])
         self.assertEqual(next(s['status'] for s in state['steps'] if s['key']=='channels'),'done')
         self.assertNotEqual(next(s['status'] for s in state['steps'] if s['key']=='calibration'),'done')
     def test_rerun_uses_registered_channels(self):
@@ -111,6 +113,7 @@ class WorkflowTests(unittest.TestCase):
         state,run=self.start(dict(self.body,data_only=True))
         self.assertEqual(state['next_action'],'complete');self.assertFalse(self.app.store.jobs());self.assertEqual(self.transport.calls,0)
         self.assertEqual(next(s['status'] for s in state['steps'] if s['key']=='channels'),'skipped')
+        self.assertFalse(run.call_args.args[2]['prepare_coefficients'])
     def test_data_only_does_not_need_scene_or_engine_or_geometry(self):
         body={'platform':'ARCM1','time':'2024-01-01T00:00:00Z','product':'night','data_only':True}
         state,run=self.start(body);self.assertEqual(state['status'],'data_ready');self.assertEqual(run.call_args.args[0]['channels'],{})
