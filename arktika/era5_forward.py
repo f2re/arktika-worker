@@ -14,6 +14,7 @@ import sys
 import tarfile
 import time
 import urllib.request
+import urllib.error
 from urllib.parse import urlsplit
 import numpy as np
 from .download import atomic_json, digest
@@ -53,7 +54,7 @@ def coefficient_info(root):
         if meta.get('sha256')==sha and meta.get('source')==COEF_ARCHIVE:
             source=COEF_ARCHIVE;origin='official_https_download'
     except (OSError,ValueError): pass
-    return {'present':True,'name':COEF_NAME,'sha256':sha,'source':source,'origin':origin}
+    return {'present':True,'name':COEF_NAME,'size_bytes':p.stat().st_size,'sha256':sha,'source':source,'origin':origin}
 
 
 def readiness(root):
@@ -70,8 +71,11 @@ def readiness(root):
 
 def download_coefficients(root,cancel=None,progress=lambda message:None):
     """Из официального архива извлекается один обычный файл, не пути архива."""
+    cancelled(cancel)
     info=coefficient_info(root)
-    if info['present']: return info
+    if info['present']:
+        progress('Коэффициенты: проверенная таблица уже на диске; повторная загрузка не нужна.')
+        return info
     if os.environ.get('ARKTIKA_ELECTROL_COEF'):
         raise ValueError('Исправьте путь ARKTIKA_ELECTROL_COEF; он задаётся администратором.')
     target=coefficient_path(root);target.parent.mkdir(parents=True,exist_ok=True)
@@ -83,12 +87,15 @@ def download_coefficients(root,cancel=None,progress=lambda message:None):
                 raise ValueError('Неожиданное перенаправление источника RTTOV.')
             return super().redirect_request(req,fp,code,msg,headers,newurl)
     opener=urllib.request.build_opener(urllib.request.ProxyHandler({}),Redirect())
-    progress('Загружаю официальный архив коэффициентов RTTOV; извлекается только Электро-Л №2.')
+    progress('Коэффициенты: загружаю архив NWP SAF; извлекается только таблица Электро-Л №2.')
     class Limited:
-        def __init__(self,stream): self.stream=stream;self.size=0
+        def __init__(self,stream): self.stream=stream;self.size=0;self.updated=time.monotonic()
         def read(self,n=-1):
             cancelled(cancel);b=self.stream.read(65536 if n<0 else min(n,65536));self.size+=len(b)
             if self.size>1024**3: raise ValueError('Архив RTTOV превысил лимит 1 ГиБ.')
+            if time.monotonic()-self.updated>=.5:
+                self.updated=time.monotonic()
+                progress(f'Коэффициенты: получено {self.size/1048576:.1f} МиБ архива NWP SAF.')
             return b
     try:
         with opener.open(COEF_ARCHIVE,timeout=60) as response:
@@ -114,8 +121,13 @@ def download_coefficients(root,cancel=None,progress=lambda message:None):
                     if not info['present']: raise ValueError(info.get('error','Коэффициенты не распознаны.'))
                     info.update(source=COEF_ARCHIVE,origin='official_https_download')
                     atomic_json(target.with_suffix('.source.json'),info)
+                    progress(f"Коэффициенты: таблица проверена, {info['size_bytes']/1048576:.2f} МиБ.")
                     return info
         raise ValueError('В архиве NWP SAF нет ожидаемого файла Электро-Л №2.')
+    except (urllib.error.URLError, TimeoutError, ConnectionError):
+        raise ValueError('NWP SAF недоступен. Повторите загрузку коэффициентов; доступ CDS и установленный RTTOV для неё не нужны.') from None
+    except (tarfile.TarError, EOFError):
+        raise ValueError('Архив NWP SAF повреждён или не распознан. Повторите загрузку коэффициентов.') from None
     finally: part.unlink(missing_ok=True)
 
 
