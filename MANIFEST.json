@@ -5,7 +5,7 @@
     ".github/ISSUE_TEMPLATE/bug_report.md": "095ea2329092b4fd2b6847962b3a71c6ba37d843d3f6c5f5e64a716e4d2e33af",
     ".github/pull_request_template.md": "999de484adf12cae6d5243763bc11ae3d98b49f51f56eb271c70f2e962e73be4",
     ".github/workflows/source-snapshot.yml": "6cbf4347fe3afac28b4bcdff2e497c619ea28705e10813de8aa0a749db1277cd",
-    ".github/workflows/tests.yml": "49c6410c23feacedb1b7bbc12f05d09402fd7bb16cbb9dedb695b6b1248eca0e",
+    ".github/workflows/tests.yml": "e741ffdba6b256ed3d4514f08eac230b74dcdad8ca5a8299fe8974f606b97dc1",
     ".gitignore": "3b42aaecd328025a9108a0e9979ff4f9cffb8d7611a863191b3ef23fb2dd4bc7",
     "AGENTS.md": "8d78fe9ae7d50db006ba7d9fa88829bde07376dc9f2c536e238bf0e11562fcaa",
     "CHANGELOG.md": "7a072afcb7a6b2e520a6228c2d65176d075a519f64b90af8466e829175e55ec7",
