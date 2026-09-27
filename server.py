@@ -177,6 +177,10 @@ class Handler(BaseHTTPRequestHandler):
             app=self.server.app;result={'ok':True}
             if path=='/api/era5/credentials':result=app.era5_credentials(data)
             elif path=='/api/era5/plan':result=app.era5_plan(data)
+            elif path=='/api/era5/preflight':result=app.era5_preflight(data)
+            elif path=='/api/era5/setup':result=app.era5_setup(data)
+            elif path=='/api/era5/engine':result=app.era5_engine(data)
+            elif path=='/api/era5/cancel':result=app.era5_cancel(data)
             elif path=='/api/era5/start':result=app.era5_start(data)
             elif path=='/api/era5/coefficients':result=app.era5_coefficient_download(data)
             elif path=='/api/era5/apply':result=app.era5_apply(data)
