@@ -69,7 +69,7 @@ def earthdata_credentials_from_text(text, kind='auto'):
     if kind not in ('auto','token','netrc'):
         raise ValueError('Формат Earthdata: token или netrc.')
 
-    looks_netrc = bool(re.search(r'(^|\\n)\\s*(machine|default|macdef)\\b', stripped, re.I))
+    looks_netrc = bool(re.search(r'(^|\n)\s*(machine|default|macdef)\b', stripped, re.I))
     if kind == 'token' or (kind == 'auto' and not looks_netrc):
         token = stripped
         if len(token) > 8192 or any(c.isspace() or ord(c) < 32 for c in token):
