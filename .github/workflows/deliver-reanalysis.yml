@@ -1,0 +1,80 @@
+name: Materialize verified reanalysis patch
+on:
+  push:
+    branches: [delivery/reanalysis-fields-20260929]
+permissions:
+  contents: write
+jobs:
+  materialize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: supply
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: 2e172a5cad1a799b1591ab88d6588bb89ba125bc
+          path: work
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify and materialize only declared source edits
+        shell: bash
+        run: |
+          python - <<'PY'
+          import hashlib, json, lzma, pathlib, subprocess
+          supply = pathlib.Path('supply/.delivery')
+          repo = pathlib.Path('work')
+          packed = b''.join((supply / f'reanalysis-{i}.part').read_bytes() for i in range(5))
+          assert hashlib.sha256(packed).hexdigest() == '4990ddfb6e026ca4f5c7deec7fa5134f779217eaeb176f64a6d1b7079f97547f'
+          obj = json.loads(lzma.decompress(packed))
+          assert obj['base_commit'] == '2e172a5cad1a799b1591ab88d6588bb89ba125bc'
+          head = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=repo, text=True).strip()
+          assert head == obj['base_commit']
+          assert len(obj['files']) == 30
+          seen = set()
+          allowed_roots = {'.github', 'arktika', 'docs', 'scripts', 'static', 'tests'}
+          allowed_files = {'README.md', 'CHANGELOG.md', 'MANIFEST.json', 'requirements-era5.txt', 'requirements-reanalysis.txt', 'server.py'}
+          for item in obj['files']:
+              rel = pathlib.PurePosixPath(item['path'])
+              assert not rel.is_absolute() and '..' not in rel.parts and str(rel) not in seen
+              assert rel.parts[0] in allowed_roots or str(rel) in allowed_files
+              assert rel.parts[0] != '.github' or str(rel) == '.github/workflows/tests.yml'
+              seen.add(str(rel))
+              path = repo / rel
+              assert not path.is_symlink()
+              if item['before'] is None:
+                  assert not path.exists()
+                  text = item['content']
+              else:
+                  raw = path.read_bytes()
+                  assert hashlib.sha256(raw).hexdigest() == item['before'], str(rel)
+                  text = raw.decode('utf-8')
+                  for offset, count, replacement in reversed(item['edits']):
+                      assert 0 <= offset <= len(text) and 0 <= count <= len(text) - offset
+                      text = text[:offset] + replacement + text[offset + count:]
+              raw = text.encode('utf-8')
+              assert hashlib.sha256(raw).hexdigest() == item['after'], str(rel)
+              path.parent.mkdir(parents=True, exist_ok=True)
+              path.write_bytes(raw)
+          print('Verified all 30 changed source files; base and per-file hashes match.')
+          PY
+      - name: Validate materialized source
+        working-directory: work
+        run: |
+          python -m compileall -q arktika server.py scripts tests
+          python scripts/manifest.py --check
+          node --check static/reanalysis.js
+          node --check static/studio.js
+          node --check static/app.js
+      - name: Publish feature source branch without altering main
+        working-directory: work
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git checkout -b feat/reanalysis-fields-20260929
+          git add -A
+          git commit -m 'Полевые слои ERA5/CARRA2/MERRA-2: загрузка, карта и сравнение'
+          git push origin HEAD:refs/heads/feat/reanalysis-fields-20260929
