@@ -102,11 +102,11 @@ def earthdata_credentials_from_text(text, kind='auto'):
             raise ValueError('В .netrc повторяется machine '+host+'.')
         entries[host] = fields
 
-    if set(entries) - {EARTHDATA_HOST}:
-        raise ValueError('Загрузите отдельный .netrc только для Earthdata, без других machine.')
     fields = entries.get(EARTHDATA_HOST)
     if not fields or not fields.get('login') or not fields.get('password'):
         raise ValueError('В .netrc нет machine urs.earthdata.nasa.gov с login и password.')
+    if set(entries) - {EARTHDATA_HOST}:
+        raise ValueError('Загрузите отдельный .netrc только для Earthdata, без других machine.')
     if len(fields['login']) > 512 or len(fields['password']) > 4096:
         raise ValueError('Слишком длинные реквизиты Earthdata.')
     SECRETS.append(fields['password'])
