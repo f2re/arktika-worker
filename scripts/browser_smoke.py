@@ -97,6 +97,8 @@ def main():
                     }""")
                     page.add_script_tag(content=(ROOT/'static/app.js').read_text(encoding='utf-8'))
                     page.add_script_tag(content=(ROOT/'static/catalog.js').read_text(encoding='utf-8'))
+                    for script in ('product_flow.js','era5.js','reanalysis.js'):
+                        page.add_script_tag(content=(ROOT/'static'/script).read_text(encoding='utf-8'))
                     page.add_script_tag(content=(ROOT/'static/studio.js').read_text(encoding='utf-8'))
                 else:
                     page.goto(base + '/#' + server.key)

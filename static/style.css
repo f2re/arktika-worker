@@ -327,3 +327,18 @@ dialog.fixed-dialog .table-scroll{max-height:none;overflow:visible}
 @media(max-width:600px){.era5-stage-status{display:none}.era5-steps li{gap:9px}.era5-dialog .dialog-footer a{font-size:12px}.era5-dialog .dialog-footer button{font-size:12px}.era5-dialog .era5-head .micro{font-size:10px}}
 
 .source-groups{display:grid;gap:20px}.source-group>h3{margin:0 0 10px;font-size:13px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}.source-card{border:1px solid var(--line);border-radius:16px;padding:14px 16px;margin:8px 0;background:var(--surface)}.source-card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px}.source-card-head strong{display:block;font-size:15px}.source-card-head small{display:block;color:var(--muted);margin-top:3px}.source-card p{margin:9px 0}.source-state{font-size:10px;padding:5px 8px;border-radius:999px;white-space:nowrap;background:var(--bg);color:var(--muted)}.source-state.ready{background:#e8f4ef;color:#236c57}.source-state.missing{background:#fff3e4;color:#8a5b18}@media(max-width:600px){.source-card-head{display:block}.source-state{display:inline-block;margin-top:8px}}
+
+/* Reanalysis uses the same map grid; controls are local to each layer. */
+#reanalysisPanel details{margin:12px 0;padding:10px 0;border-top:1px solid var(--line)}
+#reanalysisPanel summary{font-weight:600;cursor:pointer}#reanalysisPanel label{margin:10px 0}
+#reanalysisPanel input,#reanalysisPanel select{font-size:12px}#reanalysisPanel button{white-space:normal}
+.field-card{border:1px solid var(--line);border-radius:12px;padding:10px;margin:10px 0;background:var(--surface)}
+.field-card-heading{display:flex;align-items:flex-start;gap:4px}.field-card-heading label{flex:1;font-size:12px;line-height:1.5}
+.field-card-heading button{font-size:20px;min-width:28px;padding:2px}.field-card .row{flex-wrap:wrap}.field-card .row label{flex:1;min-width:70px}
+.field-card .micro{font-size:11px;line-height:1.5}.field-opacity input{padding:0;min-height:24px}
+.field-legend{display:flex;justify-content:space-between;font-size:10px;gap:5px}.field-palette{height:6px;border-radius:3px;margin:5px 0;background:var(--line)}
+#reanalysisOverlays .field-contour{fill:none;stroke:#f9fcff;stroke-width:1.2;vector-effect:non-scaling-stroke}
+#reanalysisOverlays .field-contour-label{font-size:10px;fill:white;stroke:#1c3447;stroke-width:2px}
+#reanalysisOverlays .field-wind{fill:none;stroke:#fff5b5;stroke-width:1.4;vector-effect:non-scaling-stroke}
+.field-point{padding:12px 0;border-top:1px solid var(--line)}.field-point strong{font-size:13px}.field-point small{font-size:11px;color:var(--muted)}
+.field-point p{margin:7px 0}#reanalysisPoint{margin-top:18px}.field-job p:empty{display:none}

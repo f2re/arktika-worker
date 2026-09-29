@@ -12,15 +12,19 @@ from .download import atomic_json, digest
 from .era5_access import cancelled
 
 ROOT = Path(__file__).resolve().parents[1]
-PACKAGES = ('numpy', 'rasterio', 'pyproj', 'PIL', 'xarray', 'netCDF4', 'cdsapi', 'requests')
+PACKAGES = ('numpy', 'rasterio', 'pyproj', 'PIL', 'xarray', 'netCDF4', 'cdsapi', 'requests', 'scipy', 'contourpy', 'pydap', 'cfgrib')
 _LOCK = threading.Lock()
 _CACHE = {}
-PROBE = '''import importlib,json
+PROBE = '''import importlib,json,re
 missing=[];versions={}
 for name in %r:
  try:
   m=importlib.import_module(name);versions[name]=str(getattr(m,'__version__','installed'))
  except Exception: missing.append(name)
+for name,minimum in {'xarray':(2025,4),'pydap':(3,5)}.items():
+ if name not in missing:
+  version=tuple(int(p) for p in re.findall(r'[0-9]+',versions.get(name,''))[:2])
+  if version<minimum: missing.append(name)
 engine=False
 try:
  import pyrttov

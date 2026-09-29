@@ -42,6 +42,7 @@ async function browseFolder(path){const r=await api('/api/folders',{path});S.fol
 
 const sourceKindNames={satellite:'Спутниковые данные',reanalysis:'Реанализы',local:'Локальные данные'};
 const sourceLayerNotes={
+  fields_ready:'Самостоятельные поля, наложение на карту и численное сравнение. RTTOV не нужен.',
   operational:'Доступно в текущей карте.',
   calibration_ready:'Доступ используется для подготовки ERA5 и радиометрических опор. Полевые слои добавляются отдельным этапом.',
   adapter_pending:'Реквизиты можно настроить сейчас. Загрузка и отображение полей будут включены следующим слоем реализации.'
@@ -54,10 +55,11 @@ function drawSources(result){
       const ready=s.status==='ready'||s.status==='credentials_present';
       const status=s.status==='ready'?'Готово':ready?'Реквизиты заданы':'Нужен доступ';
       const action=s.id==='local'?'Открыть GeoTIFF':s.id==='gptl'?'Настроить GPTL':s.auth==='cds'?'Настроить CDS':'Настроить Earthdata';
-      return `<article class="source-card"><div class="source-card-head"><div><strong>${escape(s.name)}</strong><small>${escape(s.provider)}</small></div><span class="source-state ${ready?'ready':'missing'}">${escape(status)}</span></div><p>${escape(s.description)}</p><p class="micro">${escape(s.coverage)} · ${escape(sourceLayerNotes[s.layer_status]||'')}</p><div class="row wrap"><button class="tonal" data-source="${escape(s.id)}">${escape(action)}</button><a class="text-button" href="${escape(s.docs)}" target="_blank" rel="noopener">Источник</a></div></article>`;
+      return `<article class="source-card"><div class="source-card-head"><div><strong>${escape(s.name)}</strong><small>${escape(s.provider)}</small></div><span class="source-state ${ready?'ready':'missing'}">${escape(status)}</span></div><p>${escape(s.description)}</p><p class="micro">${escape(s.coverage)} · ${escape(sourceLayerNotes[s.layer_status]||'')}</p><div class="row wrap"><button class="tonal" data-source="${escape(s.id)}">${escape(action)}</button>${s.kind==='reanalysis'?`<button class="primary" data-fields="${escape(s.id)}">Поля на карте</button>`:''}<a class="text-button" href="${escape(s.docs)}" target="_blank" rel="noopener">Источник</a></div></article>`;
     }).join('')+'</section>';
   }).join('');
   $$('#sourceRows [data-source]').forEach(button=>button.onclick=()=>openSourceAccess(button.dataset.source).catch(e=>toast(e.message)));
+  $$('#sourceRows [data-fields]').forEach(button=>button.onclick=()=>{if(typeof openFieldSource==='function')openFieldSource(button.dataset.fields);});
 }
 async function showSources(){
   const result=await api('/api/sources');drawSources(result);
