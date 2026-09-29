@@ -6,6 +6,7 @@ Earthdata — для MERRA-2. Модуль не объявляет сетево�
 """
 from __future__ import annotations
 
+import re
 import shlex
 
 from .era5_access import public_credentials
@@ -68,7 +69,8 @@ def earthdata_credentials_from_text(text, kind='auto'):
     if kind not in ('auto','token','netrc'):
         raise ValueError('Формат Earthdata: token или netrc.')
 
-    if kind == 'token' or (kind == 'auto' and not stripped.lower().startswith(('machine ','default ','macdef '))):
+    looks_netrc = bool(re.search(r'(^|\\n)\\s*(machine|default|macdef)\\b', stripped, re.I))
+    if kind == 'token' or (kind == 'auto' and not looks_netrc):
         token = stripped
         if len(token) > 8192 or any(c.isspace() or ord(c) < 32 for c in token):
             raise ValueError('Вставьте один Bearer-токен Earthdata без пробелов и переводов строк.')
