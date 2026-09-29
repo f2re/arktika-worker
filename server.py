@@ -110,6 +110,7 @@ class Handler(BaseHTTPRequestHandler):
             app=self.server.app
             if path=='/api/era5/state':result=app.era5_state()
             elif path=='/api/era5/report':result=app.era5_report(q.get('id'))
+            elif path=='/api/sources':result=app.source_state()
             elif path=='/api/registry':result=registry()
             elif path=='/api/guides':result=GUIDES
             elif path=='/api/profiles':result={'profiles':app.profiles()}
@@ -176,6 +177,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send(200,{'ok':True},extra={'Set-Cookie':'arktika_session='+self.server.key+'; HttpOnly; SameSite=Strict; Path=/'});return
             app=self.server.app;result={'ok':True}
             if path=='/api/era5/credentials':result=app.era5_credentials(data)
+            elif path=='/api/sources/credentials':result=app.source_credentials(data)
             elif path=='/api/era5/plan':result=app.era5_plan(data)
             elif path=='/api/era5/preflight':result=app.era5_preflight(data)
             elif path=='/api/era5/setup':result=app.era5_setup(data)
