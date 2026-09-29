@@ -21,6 +21,11 @@ class EarthdataCredentials(unittest.TestCase):
         self.assertEqual(value['login'],'weather-user')
         self.assertEqual(value['password'],'secret-value')
 
+    def test_auto_netrc_with_comment(self):
+        value=earthdata_credentials_from_text(
+            '# Earthdata credentials\nmachine urs.earthdata.nasa.gov login weather-user password secret-value','auto')
+        self.assertEqual(value['format'],'netrc')
+
     def test_netrc_requires_official_host(self):
         with self.assertRaisesRegex(ValueError,'urs.earthdata.nasa.gov'):
             earthdata_credentials_from_text('machine example.org login user password pass','netrc')
