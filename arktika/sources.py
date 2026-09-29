@@ -52,7 +52,7 @@ SOURCE_SPECS = (
         provider='Файлы пользователя', auth='none',
         description='Локальные спутниковые растры без копирования исходников.',
         coverage='По геопривязке файла',
-        docs='/docs/USER_GUIDE.md',
+        docs='/docs/index.html',
         capabilities=['local_import','satellite_map'],
     ),
 )
