@@ -1,6 +1,7 @@
 """Проверка единого флоу источников. Сетевые запросы здесь не выполняются."""
 import tempfile
 import unittest
+from pathlib import Path
 
 from arktika.sources import earthdata_credentials_from_text, public_earthdata
 from test_era5_workflow import workflow_fixture
@@ -37,7 +38,7 @@ class EarthdataCredentials(unittest.TestCase):
 class SourceFlow(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory()
-        self.app,_,_,_=workflow_fixture(self.tmp.name)
+        self.app,_,_,_=workflow_fixture(Path(self.tmp.name))
 
     def tearDown(self):
         self.app.cancel.set()
