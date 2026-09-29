@@ -30,6 +30,11 @@ class EarthdataCredentials(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'urs.earthdata.nasa.gov'):
             earthdata_credentials_from_text('machine example.org login user password pass','netrc')
 
+    def test_mixed_netrc_rejected(self):
+        with self.assertRaisesRegex(ValueError,'отдельный'):
+            earthdata_credentials_from_text(
+                'machine urs.earthdata.nasa.gov login user password pass machine example.org login x password y','netrc')
+
     def test_default_and_macdef_rejected(self):
         for text in ('default login user password pass','macdef init'):
             with self.subTest(text=text),self.assertRaises(ValueError):
