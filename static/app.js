@@ -57,7 +57,7 @@ function drawSources(result){
       return `<article class="source-card"><div class="source-card-head"><div><strong>${escape(s.name)}</strong><small>${escape(s.provider)}</small></div><span class="source-state ${ready?'ready':'missing'}">${escape(status)}</span></div><p>${escape(s.description)}</p><p class="micro">${escape(s.coverage)} · ${escape(sourceLayerNotes[s.layer_status]||'')}</p><div class="row wrap"><button class="tonal" data-source="${escape(s.id)}">${escape(action)}</button><a class="text-button" href="${escape(s.docs)}" target="_blank" rel="noopener">Источник</a></div></article>`;
     }).join('')+'</section>';
   }).join('');
-  $('#sourceRows [data-source]').forEach(button=>button.onclick=()=>openSourceAccess(button.dataset.source).catch(e=>toast(e.message)));
+  $$('#sourceRows [data-source]').forEach(button=>button.onclick=()=>openSourceAccess(button.dataset.source).catch(e=>toast(e.message)));
 }
 async function showSources(){
   const result=await api('/api/sources');drawSources(result);
