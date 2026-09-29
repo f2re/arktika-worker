@@ -76,12 +76,13 @@ jobs:
           python-version: '3.12'
       - run: python -m pip install -r requirements.txt -r requirements-era5.txt 'playwright>=1.50,<2'
       - run: python -m playwright install --with-deps chromium
-      - run: node --check static/app.js && node --check static/studio.js && node --check static/catalog.js && node --check static/product_flow.js && node --check static/era5.js
+      - run: node --check static/app.js && node --check static/studio.js && node --check static/catalog.js && node --check static/product_flow.js && node --check static/era5.js && node --check static/reanalysis.js
       - run: python scripts/browser_smoke.py --output browser-results
       - run: python scripts/catalog_browser_smoke.py --output browser-results/catalog
       - run: python scripts/archive_browser_smoke.py --output browser-results/archive
       - run: python scripts/product_browser_smoke.py --output browser-results/products
       - run: python scripts/era5_browser_smoke.py --output browser-results/era5
+      - run: python scripts/reanalysis_browser_smoke.py --output browser-results/reanalysis
       - uses: actions/upload-artifact@v4
         if: always()
         with:
