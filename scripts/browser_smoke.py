@@ -135,6 +135,11 @@ def main():
                     wait_js('(name)=>document.querySelector("#profileFileName").textContent===name', path.name)
 
                 wait_js('()=>typeof S!=="undefined"&&S.scenes.length>0')
+                page.locator('#authOpen').click()
+                page.locator('#sourcesDialog').wait_for(state='visible')
+                check('Единый реестр показывает GPTL, ERA5, CARRA2 и MERRA-2', '()=>["Арктика-М / GPTL","ERA5","CARRA2","MERRA-2"].every(name=>document.querySelector("#sourceRows").textContent.includes(name))')
+                check('ERA5 и CARRA2 показывают общий CDS-доступ', '()=>document.querySelectorAll("#sourceRows [data-source=era5],#sourceRows [data-source=carra2]").length===2&&document.querySelector("#sourceRows").textContent.includes("Copernicus CDS")')
+                page.locator('#sourcesDialog [data-close]').click()
                 page.locator('#sessions button.session').first.click()
                 loaded('channel', 9)
                 check('Начальная дата и локальный сеанс', '()=>S.day==="2026-01-01"&&S.scene!==null')

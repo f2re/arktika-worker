@@ -21,7 +21,8 @@ from .catalog import catalog_sessions, describe_session
 from .archive import register_composite, build_composite
 from .product_flow import ProductFlowMixin
 from .auto_calibration import AutoCalibrationMixin
-class Workstation(AutoCalibrationMixin, ProductFlowMixin, AnalysisMixin, App):
+from .sources import SourceManagerMixin
+class Workstation(SourceManagerMixin, AutoCalibrationMixin, ProductFlowMixin, AnalysisMixin, App):
  def __init__(self,state_dir,download_dir=None,token='',config=None,client=None):
   self.config=config or {};super().__init__(state_dir,download_dir,token,client or AuthClient(token,self.config.get('oauth')))
   with self.store.lock,self.store.conn:
