@@ -121,7 +121,7 @@
     "tests/test_publish.py": "9d6a170d42b08dc170c648098a95e7dad04a5e9659c26a6bf6bf2a15e92790b9",
     "tests/test_science.py": "2ad0a0b40d47cdd2fcfabb18b8f4799aa44d583011833e94d33e102fb92f45be",
     "tests/test_transport.py": "f2b2df96c5e5af642063b57aea097d463bcea8b2b40432c1cf3a641cf00a5e29",
-    "arktika/sources.py": "26b2adcae3c74bfdb53cfadfdc4f829266004dee26589772e012259eba5141e5",
-    "tests/test_sources.py": "8bf7458c21bd78de3281c215ded18c986dffe5ba61294fdf4843915ba0740bf3"
+    "arktika/sources.py": "06ae73e039034c18eb149c27d6cfae190d7164dea84ba368197763a9b9061c2c",
+    "tests/test_sources.py": "0ee0537c9f8c7d7981859d6ad625107bd67ca390ec817eec220f8fcdb5148aab"
   }
 }
