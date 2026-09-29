@@ -9,7 +9,7 @@ from __future__ import annotations
 import re
 import shlex
 
-from .era5_access import public_credentials
+from .era5_access import public_credentials, credentials_from_text
 from .network import SECRETS
 
 EARTHDATA_HOST = 'urs.earthdata.nasa.gov'
@@ -133,7 +133,7 @@ class SourceManagerMixin:
         self._sources_init()
         gptl = self.client.token_info()
         with self.lock:
-            cds = public_credentials(self._era5_credential)
+            cds = public_credentials(self._era5_credential if self._era5_credential.get('provider') == 'cds' else {})
             earthdata = public_earthdata(self._earthdata_credential)
 
         access = {
@@ -148,10 +148,9 @@ class SourceManagerMixin:
             state = access[spec['auth']]
             row['access'] = state
             row['status'] = 'ready' if spec['auth'] == 'none' else ('credentials_present' if state['present'] else 'credentials_missing')
-            if spec['id'] in ('carra2','merra2'):
-                row['layer_status'] = 'adapter_pending'
-            elif spec['id'] == 'era5':
-                row['layer_status'] = 'calibration_ready'
+            if spec['id'] in ('era5','carra2','merra2'):
+                row['layer_status'] = 'fields_ready'
+                row['capabilities'] = list(row['capabilities']) + ['field_download','field_cache','field_map','field_comparison']
             else:
                 row['layer_status'] = 'operational'
             rows.append(row)
@@ -166,6 +165,8 @@ class SourceManagerMixin:
     def source_credentials(self, data):
         provider = str(data.get('provider','')).lower()
         if provider == 'cds':
+            if data.get('clear') is not True and credentials_from_text(data.get('text',''), data.get('format','auto'))['provider'] != 'cds':
+                raise ValueError('В этом окне нужен доступ CDS, не NCAR/GDEX.')
             payload = {'clear': True} if data.get('clear') is True else {
                 'text': data.get('text',''),
                 'format': data.get('format','auto'),

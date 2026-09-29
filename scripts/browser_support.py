@@ -5,7 +5,7 @@ import urllib.error
 import urllib.request
 
 
-def mount(page, root, server, bridge=False):
+def mount(page, root, server, bridge=False, scripts=('app.js','catalog.js','product_flow.js','studio.js')):
     base='http://127.0.0.1:'+str(server.server_port)
     if not bridge:
         page.goto(base+'/#'+server.key)
@@ -32,5 +32,5 @@ def mount(page, root, server, bridge=False):
         else setter.call(this,name,value);
       };
     }''')
-    for name in ('app.js','catalog.js','product_flow.js','studio.js'):
+    for name in scripts:
         page.add_script_tag(content=(root/'static'/name).read_text(encoding='utf-8'))

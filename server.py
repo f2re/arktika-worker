@@ -95,11 +95,11 @@ class Handler(BaseHTTPRequestHandler):
                 self.send(303,b'',extra={'Location':'/'})
             except Exception as e:self.error(e)
             return
-        if path in ('/','/app.js','/style.css','/icon.svg','/favicon.ico','/studio.js','/catalog.js','/catalog.css','/product_flow.js','/era5.js'):
+        if path in ('/','/app.js','/style.css','/icon.svg','/favicon.ico','/studio.js','/catalog.js','/catalog.css','/product_flow.js','/era5.js','/reanalysis.js'):
             if not self.gate(False):return
-            names={'/era5.js':'era5.js','/':'index.html','/app.js':'app.js','/style.css':'style.css','/icon.svg':'icon.svg','/favicon.ico':'icon.svg','/studio.js':'studio.js','/product_flow.js':'product_flow.js','/catalog.js':'catalog.js','/catalog.css':'catalog.css'}
+            names={'/reanalysis.js':'reanalysis.js','/era5.js':'era5.js','/':'index.html','/app.js':'app.js','/style.css':'style.css','/icon.svg':'icon.svg','/favicon.ico':'icon.svg','/studio.js':'studio.js','/product_flow.js':'product_flow.js','/catalog.js':'catalog.js','/catalog.css':'catalog.css'}
             p=ROOT/'static'/names[path]
-            ctype={'era5.js':'application/javascript; charset=utf-8','index.html':'text/html; charset=utf-8','app.js':'application/javascript; charset=utf-8','studio.js':'application/javascript; charset=utf-8','product_flow.js':'application/javascript; charset=utf-8','catalog.js':'application/javascript; charset=utf-8','catalog.css':'text/css; charset=utf-8','style.css':'text/css; charset=utf-8','icon.svg':'image/svg+xml'}[p.name]
+            ctype={'reanalysis.js':'application/javascript; charset=utf-8','era5.js':'application/javascript; charset=utf-8','index.html':'text/html; charset=utf-8','app.js':'application/javascript; charset=utf-8','studio.js':'application/javascript; charset=utf-8','product_flow.js':'application/javascript; charset=utf-8','catalog.js':'application/javascript; charset=utf-8','catalog.css':'text/css; charset=utf-8','style.css':'text/css; charset=utf-8','icon.svg':'image/svg+xml'}[p.name]
             self.send(200,p.read_bytes(),ctype);return
         if path=='/health':
             if self.gate(False):self.send(200,{'app':'arktika-web','version':'0.2.2'})
@@ -111,6 +111,16 @@ class Handler(BaseHTTPRequestHandler):
             if path=='/api/era5/state':result=app.era5_state()
             elif path=='/api/era5/report':result=app.era5_report(q.get('id'))
             elif path=='/api/sources':result=app.source_state()
+            elif path=='/api/reanalysis/catalog':
+                from arktika.reanalysis.catalog import catalog
+                result=catalog()
+            elif path=='/api/reanalysis/state':result=app.reanalysis_state()
+            elif path.startswith('/reanalysis/'):
+                bits=path.split('/')
+                if len(bits)!=5 or bits[2] not in ('render','field'):raise ValueError('Неверный адрес полевого продукта.')
+                p=app.reanalysis_artifact(bits[2],bits[3],bits[4])
+                ctype=mimetypes.guess_type(str(p))[0] or 'application/octet-stream'
+                self.send(200,p.read_bytes(),ctype,{'Content-Disposition':'attachment; filename="'+p.name+'"'} if p.suffix in ('.nc','.tif') else None);return
             elif path=='/api/registry':result=registry()
             elif path=='/api/guides':result=GUIDES
             elif path=='/api/profiles':result={'profiles':app.profiles()}
@@ -178,6 +188,12 @@ class Handler(BaseHTTPRequestHandler):
             app=self.server.app;result={'ok':True}
             if path=='/api/era5/credentials':result=app.era5_credentials(data)
             elif path=='/api/sources/credentials':result=app.source_credentials(data)
+            elif path=='/api/reanalysis/prepare':result=app.reanalysis_prepare(data)
+            elif path=='/api/reanalysis/layers':result=app.reanalysis_layers(data)
+            elif path=='/api/reanalysis/map':result=app.reanalysis_map(data)
+            elif path=='/api/reanalysis/difference':result=app.reanalysis_difference(data)
+            elif path=='/api/reanalysis/point':result=app.reanalysis_point(data)
+            elif path=='/api/reanalysis/cancel':result=app.reanalysis_cancel(data)
             elif path=='/api/era5/plan':result=app.era5_plan(data)
             elif path=='/api/era5/preflight':result=app.era5_preflight(data)
             elif path=='/api/era5/setup':result=app.era5_setup(data)

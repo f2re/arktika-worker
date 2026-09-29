@@ -22,7 +22,8 @@ from .archive import register_composite, build_composite
 from .product_flow import ProductFlowMixin
 from .auto_calibration import AutoCalibrationMixin
 from .sources import SourceManagerMixin
-class Workstation(SourceManagerMixin, AutoCalibrationMixin, ProductFlowMixin, AnalysisMixin, App):
+from .reanalysis.service import ReanalysisMixin
+class Workstation(ReanalysisMixin, SourceManagerMixin, AutoCalibrationMixin, ProductFlowMixin, AnalysisMixin, App):
  def __init__(self,state_dir,download_dir=None,token='',config=None,client=None):
   self.config=config or {};super().__init__(state_dir,download_dir,token,client or AuthClient(token,self.config.get('oauth')))
   with self.store.lock,self.store.conn:
@@ -177,7 +178,8 @@ class Workstation(SourceManagerMixin, AutoCalibrationMixin, ProductFlowMixin, An
  def product_grid(self,p):
   return dict(p['grid'],transform=Affine(*p['transform']))
  def context(self,preset='arctic',width=1000,product=None):
-  g=self.product_grid(self.product(product)) if product else grid(preset,width);key=product or (preset,width)
+  g=self.product_grid(self.product(product)) if product else grid(preset,width);key=(g['crs'],tuple(g['bounds']),g['width'],g['height'])
+  if len(self.context_cache)>16:self.context_cache.clear()
   if key not in self.context_cache:self.context_cache[key]=map_context(g,ROOT/'static/land.geojson')
   return dict(grid={k:v for k,v in g.items() if k!='transform'},**self.context_cache[key])
  def coordinates(self,data):
