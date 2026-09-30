@@ -6,6 +6,7 @@ import rasterio
 from pyproj import Transformer
 from affine import Affine
 from .service import App,dto
+from . import __version__
 from .auth import AuthClient
 from .products import registry
 from .processing import build_product,validate_calibration,calibration,apply_scale
@@ -22,7 +23,7 @@ from .archive import register_composite, build_composite
 from .product_flow import ProductFlowMixin
 from .auto_calibration import AutoCalibrationMixin
 from .sources import SourceManagerMixin
-from .reanalysis.service import ReanalysisMixin
+from .reanalysis_service import ReanalysisMixin
 class Workstation(ReanalysisMixin, SourceManagerMixin, AutoCalibrationMixin, ProductFlowMixin, AnalysisMixin, App):
  def __init__(self,state_dir,download_dir=None,token='',config=None,client=None):
   self.config=config or {};super().__init__(state_dir,download_dir,token,client or AuthClient(token,self.config.get('oauth')))
@@ -34,7 +35,7 @@ class Workstation(ReanalysisMixin, SourceManagerMixin, AutoCalibrationMixin, Pro
   self.cal=self.store.setting('calibration',self.config.get('calibration',{'mode':'unknown'}));validate_calibration(self.cal)
  def state(self):
   self.sync_downloads()
-  result=super().state();result.update(view_settings=self.store.setting('view_settings',{}),version='0.2.2',calibration=self.cal,oauth=dict(client_id=self.client.oauth.get('client_id',''),redirect_uri=self.client.oauth.get('redirect_uri',''),refresh_present=bool(self.client.refresh_token)))
+  result=super().state();result.update(view_settings=self.store.setting('view_settings',{}),version=__version__,calibration=self.cal,oauth=dict(client_id=self.client.oauth.get('client_id',''),redirect_uri=self.client.oauth.get('redirect_uri',''),refresh_present=bool(self.client.refresh_token)))
   return result
  def configure(self,data):
   if 'view_settings' in data:
@@ -178,9 +179,12 @@ class Workstation(ReanalysisMixin, SourceManagerMixin, AutoCalibrationMixin, Pro
  def product_grid(self,p):
   return dict(p['grid'],transform=Affine(*p['transform']))
  def context(self,preset='arctic',width=1000,product=None):
-  g=self.product_grid(self.product(product)) if product else grid(preset,width);key=(g['crs'],tuple(g['bounds']),g['width'],g['height'])
-  if len(self.context_cache)>16:self.context_cache.clear()
-  if key not in self.context_cache:self.context_cache[key]=map_context(g,ROOT/'static/land.geojson')
+  g=self.product_grid(self.product(product)) if product else grid(preset,width)
+  coast=ROOT/'static/land.geojson';stat=coast.stat()
+  key=(g['crs'],tuple(g['bounds']),g['width'],g['height'],stat.st_mtime_ns,stat.st_size)
+  if key not in self.context_cache:
+   if len(self.context_cache)>=8:self.context_cache.pop(next(iter(self.context_cache)))
+   self.context_cache[key]=map_context(g,coast)
   return dict(grid={k:v for k,v in g.items() if k!='transform'},**self.context_cache[key])
  def coordinates(self,data):
   g=self.product_grid(self.product(data['product'])) if data.get('product') else grid(data.get('preset','arctic'),data.get('width',1000));x=float(data['x']);y=float(data['y'])

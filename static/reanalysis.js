@@ -1,161 +1,178 @@
-/* Полевые слои независимы от спутниковой радиометрии. Сроки не подменяются. */
+/* Пространственные поля: независимый от спутника стек, точные сроки, без CDN. */
 'use strict';
-const FIELD_UI={catalog:null,state:null,timer:null,refreshing:false,signature:'',renderCache:new Map(),generation:0,pointSerial:0,lastPoint:null,failedMap:'',requestingMap:false,initialised:false};
-function fieldError(message='') { const p=$('#fieldError');if(p){p.textContent=message;p.hidden=!message;} }
-function fieldMapKey(){return S.map?S.map.grid.preset+':'+S.map.grid.width:'';}
-function fieldMapArgs(){return {preset:S.map?.grid.preset||$('#preset').value||'arctic',width:S.map?.grid.width||1000};}
-function fieldTimeText(row){return row.time.replace('T',' ').replace('Z',' UTC')+(row.temporal==='mean_1h'?' · среднее за час':' · анализ');}
-function fieldTitle(row){return row.name+' · '+row.title+(row.level?' · '+row.level+' гПа':'')+' · '+fieldTimeText(row);}
-function fieldSpec(){return FIELD_UI.catalog?.sources.find(s=>s.id===$('#fieldSource').value)?.fields.find(f=>f.id===$('#fieldVariable').value);}
-function fieldControls(reset=false){
-  const source=FIELD_UI.catalog.sources.find(s=>s.id===$('#fieldSource').value),old=$('#fieldVariable').value;
-  $('#fieldVariable').innerHTML=source.fields.map(f=>`<option value="${escape(f.id)}">${escape(f.name)}</option>`).join('');
-  if(source.fields.some(f=>f.id===old))$('#fieldVariable').value=old;
-  const f=fieldSpec(),level=$('#fieldLevel').value||'850';
-  $('#fieldLevel').innerHTML=f.levels.map(l=>`<option value="${l}">${l} гПа</option>`).join('');
-  if(f.levels.includes(Number(level)))$('#fieldLevel').value=level;
-  $('#fieldLevelLabel').hidden=f.vertical!=='pressure';
-  $('#fieldTimeNote').textContent=f.minute===30?'MERRA-2: часовые средние, срок в середине интервала — HH:30 UTC. Не вычитаются из мгновенных полей.':`Исходные сроки анализа: каждые ${f.hour_step} ч, HH:00 UTC. Соседний срок не подставляется.`;
-  $('#fieldSourceNote').textContent=source.id==='carra2'?'CARRA2: доступность года проверяется по живому каталогу CDS. Это архивный реанализ, не оперативный прогноз.':source.id==='merra2'?'Для облачного OPeNDAP нужны разрешения Earthdata для GES DISC / Hyrax.':'ERA5 запрашивается как самостоятельное поле; RTTOV не требуется.';
+const FIELDS={catalogue:[],fields:[],stack:[],epoch:0,probeEpoch:0,pending:null,timer:null,saveTail:Promise.resolve(),job:{status:'idle'}};
+const fieldDialog=document.createElement('dialog');fieldDialog.id='fieldDialog';fieldDialog.className='wide fixed-dialog';
+fieldDialog.innerHTML=`<div class="dialog-head"><div><h2>Добавить поле реанализа</h2><p>Один источник · один срок анализа · один уровень</p></div><button id="fieldClose" aria-label="Закрыть">✕</button></div>
+<div class="dialog-body"><div class="row"><label>Источник<select id="fieldSource"></select></label><label>Поле<select id="fieldVariable"></select></label></div>
+<div class="row"><label id="fieldLevelLabel">Уровень, гПа<select id="fieldLevel"></select></label><label>Срок анализа, UTC<input id="fieldTime" type="datetime-local" step="3600"></label></div>
+<p id="fieldTimeHelp" class="hint"></p><div class="row"><p id="fieldAccessHelp" class="hint"></p><button id="fieldConfigure" class="text-button">Настроить доступ</button></div>
+<details id="fieldArea"><summary>Область запроса</summary><div class="row"><label>Север, °<input id="fieldNorth" type="number" min="-90" max="90" value="82" step="any"></label><label>Юг, °<input id="fieldSouth" type="number" min="-90" max="90" value="60" step="any"></label></div><div class="row"><label>Запад, °<input id="fieldWest" type="number" min="-180" max="180" value="-20" step="any"></label><label>Восток, °<input id="fieldEast" type="number" min="-180" max="180" value="70" step="any"></label></div><button id="fieldUseRegion" class="text-button">Границы выбранной области карты</button><p class="micro">Для пересечения 180° задайте запад больше востока. Запрос делится на две части, без подмены области.</p></details>
+<details><summary>Импорт локального NetCDF / GRIB</summary><label>Полный путь к файлу на компьютере сервера<input id="fieldPath" placeholder="/data/reanalysis/field.nc" autocomplete="off"></label><p class="micro">Используются выбранные выше источник, поле, уровень и срок. Единицы и координаты проверяются по файлу. Исходник не изменяется.</p><button id="fieldImport" class="tonal">Проверить и импортировать</button></details>
+<p id="fieldError" class="error-text" role="alert" hidden></p><p id="fieldJobMessage" role="status"></p>
+<details id="fieldCacheDetails"><summary>Уже загруженные поля</summary><div id="fieldCache"></div></details>
+<details id="fieldDifferenceDetails"><summary>Разность двух источников: A − B</summary><div class="row"><label>A<select id="fieldFirst"></select></label><label>B<select id="fieldSecond"></select></label></div><p class="micro">Одинаковые поле, уровень и срок. Расчёт на более грубой исходной сетке; вне совместной маски данных результата нет.</p><button id="fieldDifference" class="tonal">Рассчитать разность</button></details>
+</div><div class="dialog-footer"><a href="/docs/REANALYSIS.html" target="_blank" rel="noopener">Поля и ограничения</a><button id="fieldDownload" class="primary">Загрузить и добавить на карту</button></div>`;
+document.body.append(fieldDialog);
+function fieldError(message=''){const el=$('#fieldError');el.textContent=message;el.hidden=!message;}
+function fieldMeta(id){return FIELDS.fields.find(f=>f.id===id);}
+function fieldNumber(v){return num(v!==null&&Math.abs(v)<.005?0:v,2);}
+function fieldLabel(f){return `${f.source_label||f.source} · ${f.title} ${f.level===null?'':f.level+' гПа'} · ${f.time.replace('T',' ').replace('Z',' UTC')}`;}
+function fieldStyleOptions(f){return f.wind?[['fill','Заливка'],['arrows','Ветер'],['fill_arrows','Заливка и ветер']]:[['fill','Заливка'],['contours','Изолинии'],['fill_contours','Заливка и изолинии']];}
+function timeMismatch(f){const t=S.product?.time||S.scene?.time;if(!t)return FIELDS.stack.filter(s=>s.visible).some(s=>fieldMeta(s.id)?.time!==f.time)?'На карте поля разных сроков':'';if(t===f.time)return '';const gap=(Date.parse(f.time)-Date.parse(t))/3600000;return `Срок отличается от снимка: ${gap>0?'+':''}${num(gap,2)} ч`;}
+function fieldSelectors(){
+  const source=FIELDS.catalogue.find(s=>s.id===$('#fieldSource').value);if(!source)return;
+  const previous=$('#fieldVariable').value;
+  $('#fieldVariable').innerHTML=source.variables.map(v=>`<option value="${v.id}">${escape(v.title)}</option>`).join('');
+  if(source.variables.some(v=>v.id===previous))$('#fieldVariable').value=previous;
+  fieldLevels();
 }
-function fieldInput(){
-  const f=fieldSpec(),time=$('#fieldTime').value;
-  if(!time)throw Error('Укажите срок поля UTC.');
-  return {...fieldMapArgs(),source:$('#fieldSource').value,field:f.id,level:f.vertical==='pressure'?Number($('#fieldLevel').value):null,
-    time:time+(time.length===16?':00Z':'Z'),area:['#fieldNorth','#fieldWest','#fieldSouth','#fieldEast'].map(id=>$(id).value===''?null:Number($(id).value)),
-    path:$('#fieldPath').value.trim()||undefined,refresh:$('#fieldRefresh').checked};
+function fieldLevels(){
+  const source=FIELDS.catalogue.find(s=>s.id===$('#fieldSource').value),v=source?.variables.find(v=>v.id===$('#fieldVariable').value);if(!v)return;
+  const old=$('#fieldLevel').value;
+  $('#fieldLevelLabel').hidden=v.vertical!=='pressure';$('#fieldLevel').innerHTML=v.levels.map(x=>`<option value="${x}">${x}</option>`).join('');
+  $('#fieldLevel').value=v.levels.includes(Number(old))?old:v.levels.includes(850)?'850':String(v.levels[0]??'');
+  const step=source.id==='merra2'&&v.vertical==='surface'?1:source.step_hours;
+  $('#fieldTimeHelp').textContent=`${source.name}: анализ через ${step} ч. Время не округляется, ближайший срок не подставляется.`;
+  $('#fieldAccessHelp').textContent=source.auth==='cds'?'Доступ: Copernicus CDS, общий с ERA5/CARRA2. Условия конкретного набора принимаются на сайте CDS.':'Доступ: NASA Earthdata. MERRA-2 загружается поднабором OPeNDAP, без скачивания всех уровней за сутки.';
 }
-function fieldAreaFromMap(){
-  const p=S.registry?.presets?.[fieldMapArgs().preset];
-  const b=p?.geo_bounds||[-180,40,180,90];
-  for(const [id,value] of [['#fieldNorth',b[3]],['#fieldWest',b[0]],['#fieldSouth',b[1]],['#fieldEast',b[2]]])$(id).value=value;
+function fieldBody(){
+  const source=$('#fieldSource').value,variable=$('#fieldVariable').value;
+  const raw=$('#fieldTime').value;if(!raw)throw Error('Укажите срок анализа в UTC.');
+  const area=['#fieldNorth','#fieldWest','#fieldSouth','#fieldEast'].map(id=>{if($(id).value==='')throw Error('Заполните границы области.');return Number($(id).value);});
+  return {source,variable,time:raw+(raw.length===16?':00Z':'Z'),level:$('#fieldLevelLabel').hidden?null:Number($('#fieldLevel').value),area};
 }
-function fieldAction(fn){return async()=>{fieldError();try{await fn();FIELD_UI.failedMap='';await refreshFields();}catch(e){fieldError(e.message);}};}
-async function fieldLayerUpdate(id,body){
-  await api('/api/reanalysis/layers',{id,action:'update',...body});FIELD_UI.failedMap='';invalidateReanalysisPoint();await refreshFields();
-}
-function drawFieldCards(state){
-  const openIds=new Set($$('#fieldLayers details[open]').map(e=>e.dataset.layer));
-  $('#fieldLayers').innerHTML=state.layers.length?[...state.layers].reverse().map(l=>{
-    const options=l.style,view=l.views[fieldMapKey()];
-    const mismatch=S.scene&&l.time!==S.scene.time;
-    return `<article class="field-card" data-layer="${escape(l.id)}"><div class="field-card-heading"><label class="check"><input type="checkbox" data-visible ${l.visible?'checked':''}><strong>${escape(l.name+' · '+l.title)}</strong></label><button class="text-button" data-remove aria-label="Убрать слой ${escape(l.title)}">×</button></div>
-    <p class="micro">${l.level?l.level+' гПа · ':''}${escape(fieldTimeText(l))}<br>Шаг источника: ${num(l.resolution_km)} км${mismatch?' · срок отличается от снимка':''}</p>
-    <label>Отображение<select data-mode><option value="raster" ${options.mode==='raster'?'selected':''}>Заливка</option><option value="contours" ${options.mode==='contours'?'selected':''}>Изолинии</option>${l.vector?`<option value="wind" ${options.mode==='wind'?'selected':''}>Векторы ветра</option>`:''}</select></label>
-    ${options.mode==='wind'?'<p class="micro">Стрелки показывают направление переноса. Скорость — в анализе точки.</p>':''}<label class="field-opacity">Непрозрачность<input data-opacity type="range" min="0" max="1" step="0.05" value="${options.opacity}"></label>
-    <div class="field-legend"><span>${num(options.min)} ${escape(l.units)}</span><span>${num(options.max)} ${escape(l.units)}</span></div><div class="field-palette" data-palette></div>
-    <details data-layer="${escape(l.id)}" ${openIds.has(l.id)?'open':''}><summary>Шкала и файлы</summary><div class="row"><label>От<input data-min type="number" step="any" value="${options.min}"></label><label>До<input data-max type="number" step="any" value="${options.max}"></label></div><label>Шаг изолиний<input data-step type="number" step="any" min="0.0001" value="${options.step}"></label><button data-scale class="tonal">Применить шкалу</button><div class="row wrap"><a href="/reanalysis/field/${l.field_id}/field.nc" download>NetCDF</a><a href="/reanalysis/field/${l.field_id}/field.json" download>Происхождение</a>${view?`<a href="/reanalysis/render/${view.id}/values.tif" download>GeoTIFF</a>`:''}</div></details>
-    <div class="row"><button data-up class="text-button" aria-label="Выше">↑ Выше</button><button data-down class="text-button" aria-label="Ниже">↓ Ниже</button><small class="micro">${l.visible&&!view?'Ожидает построения':view?.valid_pixels===0?'Нет данных в текущей области':''}</small></div></article>`;
-  }).join(''):'<p class="hint">Добавьте поле реанализа. Спутниковый снимок для этого не нужен.</p>';
-  for(const card of $$('#fieldLayers .field-card')){
-    const id=card.dataset.layer;
-    card.querySelector('[data-visible]').onchange=fieldAction(()=>fieldLayerUpdate(id,{visible:card.querySelector('[data-visible]').checked}));
-    card.querySelector('[data-mode]').onchange=fieldAction(()=>fieldLayerUpdate(id,{style:{mode:card.querySelector('[data-mode]').value}}));
-    card.querySelector('[data-opacity]').oninput=e=>{const g=$(`#reanalysisOverlays [data-layer="${id}"]`);if(g)g.setAttribute('opacity',e.target.value);};
-    card.querySelector('[data-opacity]').onchange=fieldAction(()=>fieldLayerUpdate(id,{style:{opacity:Number(card.querySelector('[data-opacity]').value)}}));
-    card.querySelector('[data-scale]').onclick=fieldAction(()=>fieldLayerUpdate(id,{style:Object.fromEntries(['min','max','step'].map(k=>[k,card.querySelector(`[data-${k}]`).value===''?null:Number(card.querySelector(`[data-${k}]`).value)]))}));
-    card.querySelector('[data-remove]').onclick=fieldAction(async()=>{await api('/api/reanalysis/layers',{action:'remove',id});invalidateReanalysisPoint();});
-    for(const [name,step] of [['up',1],['down',-1]])card.querySelector(`[data-${name}]`).onclick=fieldAction(()=>api('/api/reanalysis/layers',{action:'move',id,step}));
-  }
-  const fields=state.fields;
-  for(const selector of ['#fieldCached','#fieldLeft','#fieldRight']){
-    const e=$(selector),old=e.value,rows=selector==='#fieldCached'?fields:fields.filter(f=>!f.difference&&!f.vector);
-    e.innerHTML='<option value="">Выберите поле</option>'+rows.map(f=>`<option value="${f.id}">${escape(fieldTitle(f))}</option>`).join('');
-    if(rows.some(f=>f.id===old))e.value=old;
-  }
-  $('#fieldCacheInfo').textContent=fields.length+' полей · '+size(state.cache_bytes);
-}
-async function drawFieldMap(){
-  if(!FIELD_UI.initialised||!S.map||!FIELD_UI.state)return;
-  const generation=++FIELD_UI.generation,key=fieldMapKey(),grid=S.map.grid;
-  $('#reanalysisOverlays').replaceChildren();
-  for(const l of FIELD_UI.state.layers){
-    const view=l.views[key];if(!l.visible||!view||view.crs!==grid.crs||JSON.stringify(view.bounds)!==JSON.stringify(grid.bounds))continue;
-    let r=FIELD_UI.renderCache.get(view.id);
-    if(!r){r=await api(`/reanalysis/render/${view.id}/render.json`);if(FIELD_UI.renderCache.size>24)FIELD_UI.renderCache.clear();FIELD_UI.renderCache.set(view.id,r);}
-    if(generation!==FIELD_UI.generation||key!==fieldMapKey())return;
-    const group=svgEl('g',{'data-layer':l.id,opacity:l.style.opacity,'pointer-events':'none'});
-    if(l.style.mode==='raster')group.append(svgEl('image',{href:r.image,width:r.width,height:r.height}));
-    if(l.style.mode==='contours')for(const [i,line] of r.contours.entries()){
-      group.append(svgEl('polyline',{points:line.points.map(p=>p.join(',')).join(' '),class:'field-contour'}));
-      if(line.points.length>40&&i%3===0){const p=line.points[Math.floor(line.points.length/2)],t=svgEl('text',{x:p[0],y:p[1],class:'field-contour-label'});t.textContent=num(line.value,1);group.append(t);}
-    }
-    if(l.style.mode==='wind')for(const v of r.vectors){
-      const x=v.x+v.dx,y=v.y+v.dy,n=Math.hypot(v.dx,v.dy),ux=v.dx/n,uy=v.dy/n;
-      const p=`M${v.x},${v.y} L${x},${y} M${x-ux*6-uy*3},${y-uy*6+ux*3} L${x},${y} L${x-ux*6+uy*3},${y-uy*6-ux*3}`;
-      const arrow=svgEl('path',{d:p,class:'field-wind'}),title=svgEl('title',{});title.textContent=v.speed+' м/с';arrow.append(title);group.append(arrow);
-    }
-    $('#reanalysisOverlays').append(group);
-    const palette=$(`#fieldLayers [data-layer="${l.id}"] [data-palette]`);
-    if(palette)palette.style.background='linear-gradient(to right,'+r.legend.colors.map(c=>'rgb('+c.join(',')+')').join(',')+')';
-  }
-}
-async function fieldEnsureMap(){
-  const state=FIELD_UI.state,key=fieldMapKey();if(!state||!key||state.busy||FIELD_UI.requestingMap)return;
-  const missing=state.layers.filter(l=>l.visible&&!l.views[key]);if(!missing.length)return;
-  const signature=key+'|'+missing.map(l=>l.id+JSON.stringify(l.style)).join('|');
-  if(FIELD_UI.failedMap===signature)return;
-  FIELD_UI.requestingMap=true;FIELD_UI.failedMap=signature;
-  try{await api('/api/reanalysis/map',fieldMapArgs());}catch(e){fieldError(e.message);}finally{FIELD_UI.requestingMap=false;}
+function fieldsJob(){
+  const j=FIELDS.job,busy=j.status==='running';
+  $('#fieldJobMessage').textContent=busy?(j.message||''):'';
+  if($('#fieldStatus'))$('#fieldStatus').textContent=j.message||'';
+  if($('#fieldCancel')){$('#fieldCancel').hidden=!busy;$('#fieldCancel').disabled=!busy;}
+  for(const id of ['#fieldDownload','#fieldImport','#fieldDifference','#fieldConfigure'])$(id).disabled=busy;
+  if(j.status==='error'||j.status==='interrupted')fieldError(j.message);
 }
 async function refreshFields(){
-  if(!FIELD_UI.initialised||FIELD_UI.refreshing)return;
-  FIELD_UI.refreshing=true;
-  try{
-    const state=await api('/api/reanalysis/state');FIELD_UI.state=state;
-    const signature=JSON.stringify([state.layers,state.fields.map(f=>f.id),fieldMapKey(),S.scene?.time]);
-    if(signature!==FIELD_UI.signature){FIELD_UI.signature=signature;drawFieldCards(state);await drawFieldMap();}
-    $('#fieldJob').textContent=state.job.message||'';$('#fieldJob').classList.toggle('error-text',state.job.status==='error');
-    $('#fieldCancel').hidden=state.job.status!=='running';
-    for(const id of ['#fieldLoad','#fieldUseCache','#fieldDifference'])$(id).disabled=state.busy;
-    await fieldEnsureMap();
-  }catch(e){fieldError(e.message);}finally{FIELD_UI.refreshing=false;}
+  const data=await api('/api/reanalysis/state');FIELDS.catalogue=data.catalogue.sources;FIELDS.fields=data.fields;FIELDS.job=data.job;
+  if(!$('#fieldSource').options.length){$('#fieldSource').innerHTML=FIELDS.catalogue.map(s=>`<option value="${s.id}">${escape(s.name)}</option>`).join('');fieldSelectors();}
+  fieldsJob();drawFieldCache();
+  const legacy=$('#fieldLegacyNotice');
+  if(legacy){legacy.hidden=!data.legacy_cache_count;legacy.textContent=data.legacy_cache_count?'Кэш предыдущей версии сохранён на диске. Получите поля повторно: изменились проверки времени и формат метаданных.':'';}
+  if(FIELDS.pending&&data.job.id===FIELDS.pending&&data.job.status==='done'){
+    FIELDS.pending=null;await addCachedField(data.job.field_id);toast('Поле добавлено на карту. Его срок указан в списке слоёв.');
+  }
+  if(!['running'].includes(data.job.status)){clearTimeout(FIELDS.timer);FIELDS.timer=null;}
+  return data;
 }
-function reanalysisMapChanged(){
-  if(!FIELD_UI.initialised)return;
-  FIELD_UI.generation++;FIELD_UI.signature='';FIELD_UI.failedMap='';$('#reanalysisOverlays').replaceChildren();
-  invalidateReanalysisPoint();refreshFields();
+async function pollFields(){
+  try{await refreshFields();}catch(e){fieldError(e.message);}
+  if(FIELDS.job.status==='running')FIELDS.timer=setTimeout(pollFields,1200);
 }
-function invalidateReanalysisPoint(){
-  FIELD_UI.pointSerial++;FIELD_UI.lastPoint=null;const p=$('#reanalysisPoint');if(p){p.replaceChildren();p.hidden=true;}
+async function openFieldDialog(source){
+  fieldError();await refreshFields();
+  if(source){$('#fieldSource').value=source;fieldSelectors();}
+  if(!$('#fieldTime').value)$('#fieldTime').value=(S.product?.time||S.scene?.time||S.day+'T00:00:00Z').slice(0,16);
+  if($('#sourcesDialog').open)$('#sourcesDialog').close();
+  if(!fieldDialog.open)fieldDialog.showModal();
 }
-async function inspectReanalysisPoint(lon,lat){
-  if(!FIELD_UI.initialised||!FIELD_UI.state?.layers.some(l=>l.visible))return;
-  const serial=++FIELD_UI.pointSerial;FIELD_UI.lastPoint={lon,lat};if(!S.product)$('#pixel').innerHTML=`<h3>${num(lat,3)}° · ${num(lon,3)}°</h3>`;const target=$('#reanalysisPoint');target.hidden=false;target.textContent='Чтение исходных узлов реанализа…';
-  try{
-    const r=await api('/api/reanalysis/point',{lon,lat});if(serial!==FIELD_UI.pointSerial)return;
-    target.innerHTML='<h3>Реанализы в точке</h3>'+r.fields.map(f=>`<article class="field-point"><strong>${escape(f.name+' · '+f.title)}</strong><p>${num(f.value,2)} ${escape(f.units)}${f.level?' · '+f.level+' гПа':''}</p><small>${escape(fieldTimeText(f))}</small>${f.value===null?'<p class="hint">Нет данных в области/узле. Не интерпретируется как ноль.</p>':`<p class="micro">Узел ${num(f.native_lat,3)}°, ${num(f.native_lon,3)}° · ${num(f.distance_km,2)} км от точки${f.u!==undefined?'<br>u = '+num(f.u)+'; v = '+num(f.v)+' м/с':''}</p>`}</article>`).join('')+'<p class="micro">'+escape(r.note)+'</p>';
-  }catch(e){if(serial===FIELD_UI.pointSerial)target.textContent=e.message;}
+function drawFieldCache(){
+  $('#fieldCache').innerHTML=FIELDS.fields.length?FIELDS.fields.map(f=>`<article class="field-cache-row"><span>${escape(fieldLabel(f))}</span><button class="tonal" data-field-add="${f.id}" ${FIELDS.stack.some(s=>s.id===f.id)?'disabled':''}>Добавить</button></article>`).join(''):'<p class="hint">Пока нет сохранённых полей.</p>';
+  $$('#fieldCache [data-field-add]').forEach(b=>b.onclick=()=>addCachedField(b.dataset.fieldAdd).catch(e=>fieldError(e.message)));
+  const originals=FIELDS.fields.filter(f=>!f.difference_of);
+  for(const selector of ['#fieldFirst','#fieldSecond']){const old=$(selector).value;$(selector).innerHTML=originals.map(f=>`<option value="${f.id}">${escape(fieldLabel(f))}</option>`).join('');if(originals.some(f=>f.id===old))$(selector).value=old;}
+  if($('#fieldFirst').value===$('#fieldSecond').value&&originals.length>1)$('#fieldSecond').selectedIndex=1;
 }
-async function inspectFieldOnly(x,y){
-  invalidatePoint();const serial=FIELD_UI.pointSerial,key=fieldMapKey();
-  const p=await api('/api/coordinates',{...fieldMapArgs(),x,y});if(serial!==FIELD_UI.pointSerial||key!==fieldMapKey())return;
-  tab('point');$('#pixel').innerHTML=`<h3>${num(p.lat,3)}° · ${num(p.lon,3)}°</h3>`;
-  $('#pointLayer').replaceChildren(svgEl('circle',{cx:x,cy:y,r:5,fill:'none',stroke:'white','stroke-width':2}));
-  await inspectReanalysisPoint(p.lon,p.lat);
+async function startField(local=false){
+  fieldError();try{
+    const body=fieldBody();if(local)body.path=$('#fieldPath').value;
+    const result=await api('/api/reanalysis/'+(local?'import':'add'),body);
+    FIELDS.pending=result.id;FIELDS.job={id:result.id,status:'running',message:'Проверка и подготовка поля'};fieldsJob();
+    clearTimeout(FIELDS.timer);await pollFields();
+  }catch(e){fieldError(e.message);}
 }
-async function openFieldSource(source){
-  if($('#sourcesDialog').open)$('#sourcesDialog').close();left('fields');
-  if(!FIELD_UI.catalog)return;
-  $('#fieldSource').value=source;fieldControls();$('#fieldAdd').open=true;
+function saveFieldStack(){
+  const snapshot=FIELDS.stack.map(x=>({...x}));
+  FIELDS.saveTail=FIELDS.saveTail.catch(()=>{}).then(()=>api('/api/reanalysis/stack',{stack:snapshot}));
+  return FIELDS.saveTail;
 }
-function initReanalysisUI(){
-  if(FIELD_UI.initialised)return;FIELD_UI.initialised=true;
-  const overlay=svgEl('g',{id:'reanalysisOverlays','pointer-events':'none'});$('#coast').before(overlay);
-  const point=document.createElement('section');point.id='reanalysisPoint';point.hidden=true;$('#tab-point').append(point);
-  $('#fieldRail').onclick=()=>{left('fields',false);refreshFields();};
-  $('#fieldSource').onchange=()=>fieldControls();$('#fieldVariable').onchange=()=>fieldControls();
-  $('#fieldSceneTime').onclick=()=>{if(!S.scene){fieldError('Сначала выберите спутниковый срок либо введите архивный срок вручную.');return;}$('#fieldTime').value=S.scene.time.replace('Z','').slice(0,19);fieldError();};
-  $('#fieldMapArea').onclick=fieldAreaFromMap;
-  $('#fieldLoad').onclick=fieldAction(async()=>{await api('/api/reanalysis/prepare',fieldInput());$('#fieldJob').textContent='Подготовка поля…';});
-  $('#fieldUseCache').onclick=fieldAction(()=>api('/api/reanalysis/layers',{action:'cached',field_id:$('#fieldCached').value,...fieldMapArgs()}));
-  $('#fieldDifference').onclick=fieldAction(()=>api('/api/reanalysis/difference',{left:$('#fieldLeft').value,right:$('#fieldRight').value,...fieldMapArgs()}));
-  $('#fieldCancel').onclick=fieldAction(()=>api('/api/reanalysis/cancel',{id:FIELD_UI.state?.job.id}));
-  $('#fieldRetry').onclick=()=>{FIELD_UI.failedMap='';refreshFields();};
-  $('#fieldAccess').onclick=fieldAction(()=>openSourceAccess($('#fieldSource').value));
-  api('/api/reanalysis/catalog').then(c=>{
-    FIELD_UI.catalog=c;$('#fieldSource').innerHTML=c.sources.map(s=>`<option value="${s.id}">${escape(s.name)}</option>`).join('');fieldControls();
-    if(S.scene)$('#fieldTime').value=S.scene.time.replace('Z','').slice(0,19);
-    refreshFields();FIELD_UI.timer=setInterval(refreshFields,1800);
-  }).catch(e=>fieldError(e.message));
+async function addCachedField(id){
+  if(FIELDS.stack.some(x=>x.id===id))return;
+  const f=fieldMeta(id);if(!f)throw Error('Поле не найдено. Обновите список.');
+  if(FIELDS.stack.length>=8)throw Error('Снимите один из восьми слоёв перед добавлением.');
+  FIELDS.stack.push({id,opacity:.65,style:f.wind?'fill_arrows':f.variable==='mslp'?'contours':'fill',visible:true});
+  await saveFieldStack();drawFieldStack();drawFieldCache();renderFieldMaps();
 }
+function drawFieldStack(){
+  if(!$('#fieldLayerRows'))return;
+  $('#fieldLayerRows').innerHTML=FIELDS.stack.map((s,i)=>{
+    const f=fieldMeta(s.id);if(!f)return '';const mismatch=timeMismatch(f);
+    return `<article class="field-layer" data-layer="${s.id}"><div class="field-layer-heading"><label class="check"><input type="checkbox" data-field-visible="${s.id}" ${s.visible?'checked':''}><strong>${escape(f.source_label||f.source)}</strong></label><button class="text-button" data-field-up="${s.id}" ${i===FIELDS.stack.length-1?'disabled':''} aria-label="Выше в наложении">↑</button><button class="text-button" data-field-remove="${s.id}" aria-label="Убрать слой">✕</button></div><p>${escape(f.title)} ${f.level===null?'':escape(f.level)+' гПа'}</p><p class="micro">${escape(f.time.replace('T',' ').replace('Z',' UTC'))}</p>${mismatch?`<p class="field-time-warning">${escape(mismatch)}</p>`:''}<div class="row"><select data-field-style="${s.id}" aria-label="Отображение слоя">${fieldStyleOptions(f).map(([key,name])=>`<option value="${key}" ${s.style===key?'selected':''}>${name}</option>`).join('')}</select><a class="text-button" href="/field-export/${s.id}" download>NetCDF + отчёт</a></div><label class="field-opacity">Непрозрачность<input data-field-opacity="${s.id}" aria-label="Непрозрачность слоя" type="range" min="0" max="1" step=".05" value="${s.opacity}"></label><p class="field-render-error" role="status"></p><div class="field-legend"></div></article>`;
+  }).join('')||'<p class="hint">Добавьте давление, температуру или ветер поверх спутника — либо работайте только с реанализом.</p>';
+  $$('#fieldLayerRows [data-field-visible]').forEach(e=>e.onchange=()=>{FIELDS.stack.find(s=>s.id===e.dataset.fieldVisible).visible=e.checked;stackChanged();});
+  $$('#fieldLayerRows [data-field-style]').forEach(e=>e.onchange=()=>{FIELDS.stack.find(s=>s.id===e.dataset.fieldStyle).style=e.value;stackChanged();});
+  $$('#fieldLayerRows [data-field-remove]').forEach(e=>e.onclick=()=>{FIELDS.stack=FIELDS.stack.filter(s=>s.id!==e.dataset.fieldRemove);FIELDS.probeEpoch++;$('#fieldProbe')?.replaceChildren();stackChanged();});
+  $$('#fieldLayerRows [data-field-up]').forEach(e=>e.onclick=()=>{const i=FIELDS.stack.findIndex(s=>s.id===e.dataset.fieldUp);[FIELDS.stack[i],FIELDS.stack[i+1]]=[FIELDS.stack[i+1],FIELDS.stack[i]];stackChanged();});
+  $$('#fieldLayerRows [data-field-opacity]').forEach(e=>{
+    e.oninput=()=>{const s=FIELDS.stack.find(s=>s.id===e.dataset.fieldOpacity);s.opacity=Number(e.value);document.getElementById('field-map-'+s.id)?.setAttribute('opacity',s.opacity);};e.onchange=()=>saveFieldStack().catch(err=>toast(err.message));
+  });
+}
+function stackChanged(){FIELDS.probeEpoch++;$('#fieldProbe')?.replaceChildren();drawFieldStack();drawFieldCache();saveFieldStack().catch(e=>toast(e.message));renderFieldMaps();}
+function fieldMapGroup(){let g=$('#reanalysisLayers');if(!g){g=svgEl('g',{id:'reanalysisLayers'});$('#coast').before(g);}return g;}
+async function renderFieldMaps(){
+  const epoch=++FIELDS.epoch,g=fieldMapGroup();g.replaceChildren();
+  if(!S.map)return;
+  if(!S.product&&FIELDS.stack.some(s=>s.visible)){const times=[...new Set(FIELDS.stack.filter(s=>s.visible).map(s=>fieldMeta(s.id)?.time).filter(Boolean))];$('#mapTitle').textContent='Поля реанализа';$('#productTag').textContent=times.length===1?times[0].replace('T',' ').replace('Z',' UTC'):'Несколько сроков · время указано у каждого слоя';}
+  const context=S.product?{product:S.product.id}:{preset:S.map.grid.preset,width:S.map.grid.width};
+  for(const layer of FIELDS.stack){
+    if(!layer.visible)continue;
+    try{
+      const r=await api('/api/reanalysis/render',{id:layer.id,...context});if(epoch!==FIELDS.epoch)return;
+      const group=svgEl('g',{id:'field-map-'+layer.id,opacity:layer.opacity,'pointer-events':'none'});
+      if(layer.style.includes('fill'))group.append(svgEl('image',{href:r.image,x:0,y:0,width:r.grid.width,height:r.grid.height}));
+      if(layer.style.includes('contours'))for(const [i,c] of r.contours.entries()){
+        group.append(svgEl('polyline',{points:c.points.map(p=>p.join(',')).join(' '),class:'field-contour-halo'}),svgEl('polyline',{points:c.points.map(p=>p.join(',')).join(' '),class:'field-contour'}));
+        if(i%3===0&&c.points.length>30){const p=c.points[Math.floor(c.points.length/2)],t=svgEl('text',{x:p[0],y:p[1],class:'field-contour-label'});t.textContent=num(c.value);group.append(t);}
+      }
+      if(layer.style.includes('arrows'))for(const v of r.vectors){
+        const x2=v.x+v.dx,y2=v.y+v.dy,ux=v.dx/16,uy=v.dy/16;
+        const p=`M${v.x},${v.y} L${x2},${y2} M${x2-ux*5+uy*3},${y2-uy*5-ux*3} L${x2},${y2} L${x2-ux*5-uy*3},${y2-uy*5+ux*3}`;
+        group.append(svgEl('path',{d:p,class:'field-contour-halo'}),svgEl('path',{d:p,class:'field-arrow'}));
+      }
+      g.append(group);
+      const row=$(`#fieldLayerRows [data-layer="${layer.id}"]`);
+      if(row){row.querySelector('.field-render-error').textContent=r.valid_pixels?'':'В выбранной области карты нет данных.';
+        const legend=row.querySelector('.field-legend');legend.innerHTML=`<div class="field-colorbar"></div><div class="field-legend-numbers"><span>${num(r.legend.min)}</span><span>${escape(r.legend.unit)}</span><span>${num(r.legend.max)}</span></div>`;legend.querySelector('.field-colorbar').style.background=`linear-gradient(to right,${r.legend.colors.join(',')})`;legend.title=r.legend.sampling;}
+    }catch(e){if(epoch!==FIELDS.epoch)return;const row=$(`#fieldLayerRows [data-layer="${layer.id}"]`);if(row)row.querySelector('.field-render-error').textContent=e.message;}
+  }
+}
+async function probeFields(x,y){
+  const ids=FIELDS.stack.filter(s=>s.visible).map(s=>s.id);if(!ids.length)return;
+  const epoch=++FIELDS.probeEpoch,product=S.product?.id;
+  const xy=await api('/api/coordinates',{x,y,...(product?{product}:{preset:S.map.grid.preset,width:S.map.grid.width})});
+  const r=await api('/api/reanalysis/probe',{...xy,ids});if(epoch!==FIELDS.probeEpoch)return;
+  let box=$('#fieldProbe');if(!box){box=document.createElement('section');box.id='fieldProbe';$('#tab-point').append(box);}
+  box.innerHTML=`<h3>Поля в точке</h3><p class="micro">${num(xy.lat,4)}°, ${num(xy.lon,4)}° · ближайшие исходные узлы</p>`+r.rows.map(f=>`<article class="field-probe-row"><strong>${escape(f.source_label||f.source)} · ${escape(f.title)}</strong><b>${fieldNumber(f.value)} ${escape(f.unit)}</b><span>${f.level===null?'Поверхность':num(f.level)+' гПа'} · ${escape(f.time.replace('T',' ').replace('Z',' UTC'))}</span>${f.value===null?'<p>Нет данных в исходной маске.</p>':f.direction_from_deg!==undefined?`<p>Ветер от ${num(f.direction_from_deg,0)}°</p>`:''}</article>`).join('');
+  if(!S.product){$('#pixel').replaceChildren();$('#pointControls').hidden=true;}tab('point');
+}
+const baseFieldMap=setMap;
+setMap=async function(...args){const r=await baseFieldMap(...args);if(r){drawFieldStack();renderFieldMaps();}return r;};
+const baseFieldProduct=showProduct;
+showProduct=async function(...args){await baseFieldProduct(...args);drawFieldStack();renderFieldMaps();};
+const baseFieldClick=mapClick;
+mapClick=async function(e){const p=pointerPoint(e);if(S.drawing)return baseFieldClick(e);if(S.product&&!S.product.display_only)await baseFieldClick(e);if(S.map&&p.x>=0&&p.y>=0&&p.x<S.map.grid.width&&p.y<S.map.grid.height)await probeFields(p.x,p.y);};
+const baseFieldInvalidate=invalidatePoint;
+invalidatePoint=function(){FIELDS.probeEpoch++;$('#fieldProbe')?.replaceChildren();return baseFieldInvalidate();};
+function initFieldUI(){
+  if(!$('#taskGrid button')){setTimeout(initFieldUI,100);return;}
+  const block=document.createElement('section');block.id='fieldLayerPanel';block.innerHTML='<div class="section-heading"><h3>Поля реанализа</h3><button id="fieldAddOpen" class="tonal" aria-label="Добавить поле реанализа">＋</button></div><div id="fieldLayerRows"></div><p id="fieldLegacyNotice" class="notice" hidden></p><p id="fieldStatus" class="micro" role="status"></p><button id="fieldCancel" class="text-button" hidden>Остановить получение поля</button><hr>';
+  $('#productPanel').prepend(block);$('#productRail span').textContent='Слои';$('#productRail').setAttribute('aria-label','Слои и продукты');
+  $('#fieldAddOpen').onclick=()=>openFieldDialog().catch(e=>toast(e.message));
+  $('#fieldCancel').onclick=()=>api('/api/reanalysis/cancel',{id:FIELDS.job.id}).catch(e=>toast(e.message));
+  refreshFields().then(data=>{FIELDS.stack=data.stack.filter(s=>fieldMeta(s.id));drawFieldStack();renderFieldMaps();if(FIELDS.job.status==='running')pollFields();}).catch(e=>toast(e.message));
+}
+const baseFieldSaveAccess=saveSourceAccess;
+saveSourceAccess=async function(...args){await baseFieldSaveAccess(...args);if(FIELDS.accessReturn){const source=FIELDS.accessReturn;FIELDS.accessReturn=null;await openFieldDialog(source);}};
+$('#fieldConfigure').onclick=()=>{FIELDS.accessReturn=$('#fieldSource').value;fieldDialog.close();openSourceAccess(FIELDS.accessReturn).catch(e=>toast(e.message));};
+$('#fieldClose').onclick=()=>fieldDialog.close();$('#fieldSource').onchange=fieldSelectors;$('#fieldVariable').onchange=fieldLevels;
+$('#fieldDownload').onclick=()=>startField(false);$('#fieldImport').onclick=()=>startField(true);
+$('#fieldUseRegion').onclick=()=>{const box=({arctic:[90,-180,40,180],geographic:[90,-180,40,180],barents:[85,-25,60,70],kara:[85,45,65,145]})[$('#preset').value];if(box)['#fieldNorth','#fieldWest','#fieldSouth','#fieldEast'].forEach((id,i)=>$(id).value=box[i]);};
+$('#fieldDifference').onclick=async()=>{fieldError();try{const r=await api('/api/reanalysis/difference',{first:$('#fieldFirst').value,second:$('#fieldSecond').value});FIELDS.pending=r.id;FIELDS.job={id:r.id,status:'running',message:'Разность на более грубой исходной сетке'};fieldsJob();await pollFields();}catch(e){fieldError(e.message);}};
+document.addEventListener('click',e=>{const button=e.target.closest('[data-field-source]');if(button)openFieldDialog(button.dataset.fieldSource).catch(err=>toast(err.message));});
+initFieldUI();

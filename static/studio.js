@@ -248,9 +248,7 @@ function left(mode='catalog', force=true) {
   const visible=force || panel.hidden || UI.leftMode!==mode;
   panel.hidden=!visible;UI.leftMode=mode;
   $('#catalogPanel').hidden=mode!=='catalog';$('#productPanel').hidden=mode!=='product';
-  if($('#reanalysisPanel'))$('#reanalysisPanel').hidden=mode!=='fields';
-  if($('#fieldRail')){$('#fieldRail').classList.toggle('active',visible&&mode==='fields');$('#fieldRail').setAttribute('aria-expanded',String(visible&&mode==='fields'));}
-  $('#leftHeading').textContent=mode==='catalog'?'Снимки':mode==='fields'?'Полевые слои':'Продукты';
+  $('#leftHeading').textContent=mode==='catalog'?'Снимки':'Слои';
   $('#catalogRail').classList.toggle('active',visible&&mode==='catalog');
   $('#productRail').classList.toggle('active',visible&&mode==='product');
   $('#catalogRail').setAttribute('aria-expanded',String(visible&&mode==='catalog'));
@@ -276,7 +274,6 @@ function invalidateRoute() {
 }
 
 function invalidatePoint() {
-  if(typeof invalidateReanalysisPoint==='function')invalidateReanalysisPoint();
   UI.pointSequence++;UI.lastPoint=null;UI.analysis=null;
   $('#analysisExport').hidden=true;$('#analysisExport').removeAttribute('href');
   $('#profilePointResult').replaceChildren();
@@ -429,7 +426,6 @@ setMap = async function(preset,width=1000,product) {
   $('#coast').replaceChildren(...context.coast.map(l=>polyline(l,'coast-line')));
   $('#labels').replaceChildren(...context.labels.map(l=>{const t=svgEl('text',{x:l.x,y:l.y});t.textContent=l.text;return t;}));
   $('#projectionCaption').textContent=g.name;$('#projectionCaption').title=g.crs;
-  if(typeof reanalysisMapChanged==='function')reanalysisMapChanged();
   return context;
 };
 
@@ -505,8 +501,8 @@ drawLegend = function(l) {
 };
 
 mapClick = async function(e) {
+  if(!S.product){left('catalog');return;}
   const p=pointerPoint(e);
-  if(!S.product){if(typeof inspectFieldOnly==='function'&&FIELD_UI.state?.layers.some(l=>l.visible))await inspectFieldOnly(p.x,p.y);else left('catalog');return;}
   if(p.x<0||p.y<0||p.x>=S.map.grid.width||p.y>=S.map.grid.height)return;
   if(S.drawing) {
     const c=await api('/api/coordinates',{x:p.x,y:p.y,product:S.product.id});
@@ -532,11 +528,9 @@ async function inspectAt(x,y,keep=false) {
     const point=await api('/api/coordinates',{product:product.id,x,y});
     if(sequence!==UI.pointSequence||S.product?.id!==product.id)return;
     tab('point');$('#pixel').innerHTML=`<h3>${num(point.lat,3)}° · ${num(point.lon,3)}°</h3><p class="hint">Готовая RGB-композиция поставщика. В файле есть цвета, но нет исходных значений каналов для спектрального анализа.</p><p class="micro">${escape(product.time)} · ${escape(product.legend.source_level)}</p><a class="export-link" href="/docs/ARCHIVE.html" target="_blank" rel="noopener">Возможности архивного снимка</a>`;
-    if(typeof inspectReanalysisPoint==='function')await inspectReanalysisPoint(point.lon,point.lat);
     return;
   }
 
-  if(typeof invalidateReanalysisPoint==='function')invalidateReanalysisPoint();
   const id=++UI.pointSequence;UI.lastPoint={x,y};UI.analysis=null;
   $('#analysisExport').hidden=true;$('#analysisExport').removeAttribute('href');
   $('#profilePointResult').replaceChildren();$('#pixel').innerHTML='<p class="hint">Расчёт…</p>';
@@ -562,7 +556,6 @@ function drawPoint(r) {
   $('#pixel').innerHTML=html;$('#pointControls').hidden=false;syncProfileControls();
   $('#analysisExport').href='/analysis-export/'+r.id;$('#analysisExport').hidden=false;
   drawProfilePoint(r.profile_result);
-  if(typeof inspectReanalysisPoint==='function')inspectReanalysisPoint(p.lon,p.lat);
 }
 
 function drawProfilePoint(r) {
@@ -944,7 +937,6 @@ registerEvents = function() {
   });
   $('#calibrationDialog').addEventListener('close',()=>{if(UI.calSaved&&S.scene){UI.calSaved=false;clearRange();requestBuild();}});
   setupDialogShells();tasks();installProductFlow();installTooltips();
-  if(typeof initReanalysisUI==='function')initReanalysisUI();
   const helpObserver=new MutationObserver(()=>{for(const a of $$('a[href^="/docs/"]')){const href=a.getAttribute('href');if(/\.md(?:#.*)?$/.test(href))a.setAttribute('href','/docs/index.html#'+href.split('/').at(-1).split('.')[0].toLowerCase());}});
   helpObserver.observe(document.body,{subtree:true,childList:true});
 };

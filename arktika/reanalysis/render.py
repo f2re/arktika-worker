@@ -1,166 +1,155 @@
-"""Общая геометрия слоёв: ближайший исходный узел; без заполнения пропусков."""
+"""PNG/изолинии/ветер на той же сетке, что и спутник; исходники не изменяются."""
 from __future__ import annotations
-import math
+import json
 from pathlib import Path
 import numpy as np
+from PIL import Image
 from pyproj import Geod, Transformer
-from ..geo import grid, lonlat_grid
-from ..download import atomic_json
-from .catalog import FIELDS, identity, number
+from scipy.spatial import cKDTree
+from .catalog import VARIABLES
 
-EARTH_KM = 6371.0088
-
-
-def xyz(lon, lat):
-    lo, la = np.deg2rad(lon), np.deg2rad(lat)
-    c = np.cos(la)
-    return np.column_stack((c.ravel() * np.cos(lo).ravel(), c.ravel() * np.sin(lo).ravel(), np.sin(la).ravel()))
-
-
-def support(arrays, meta, lon, lat, distance):
-    # Threshold is below one full grid diagonal: a remote land/sea value cannot fill a missing cell.
-    valid = np.isfinite(lon + lat) & (distance <= meta['resolution_km'] * .82)
-    n, w, s, e = meta['request']['area']
-    valid &= (lat >= s) & (lat <= n) & (lon >= w) & (lon <= e)
-    if meta.get('regular'):
-        valid &= (lat >= np.nanmin(arrays['lat'])) & (lat <= np.nanmax(arrays['lat']))
-        # Native cropped geographic grid, including the two sides of a dateline.
-        span = np.nanmax(arrays['lon']) - np.nanmin(arrays['lon'])
-        if span < 359:
-            valid &= (lon >= np.nanmin(arrays['lon'])) & (lon <= np.nanmax(arrays['lon']))
-    return valid
+GEOD=Geod(ellps='WGS84')
+R=6371.0088
+PALETTES={
+    'temperature':['#243996','#55a7cf','#f7f7ed','#f8b365','#b2182b'],
+    'diverging':['#2166ac','#92c5de','#f7f7f7','#f4a582','#b2182b'],
+    'pressure':['#3b4cc0','#9ebeff','#f5f5f5','#f3a481','#b40426'],
+    'humidity':['#faf7ec','#ccebc5','#7bccc4','#2b8cbe','#084081'],
+    'wind':['#f7fcf0','#ccebc5','#7bccc4','#2b8cbe','#54278f'],
+    'height':['#f7fcf5','#c7e9c0','#74c476','#238b45','#00441b'],
+}
 
 
-def sample(arrays, meta, lon, lat, tree=True):
-    lon, lat = np.broadcast_arrays(np.asarray(lon, float), np.asarray(lat, float))
-    shape = lon.shape
-    lo, la = lon.ravel(), lat.ravel()
-    valid_geo = np.isfinite(arrays['lat'] + arrays['lon']).ravel()
-    ids = np.flatnonzero(valid_geo)
-    if not len(ids):
-        raise ValueError('Нет корректной геолокации поля.')
-    source_xyz = xyz(arrays['lon'], arrays['lat'])[valid_geo]
-    targets = xyz(np.where(np.isfinite(lo), lo, 0), np.where(np.isfinite(la), la, 0))
-    if tree:
-        from scipy.spatial import cKDTree
-        chord, local = cKDTree(source_xyz).query(targets, workers=1)
-    else:
-        # Point inspection does not require the optional worker runtime or scipy in the server.
-        if len(targets) != 1:
-            raise ValueError('Инспектор принимает одну точку.')
-        ds = np.sum((source_xyz - targets[0]) ** 2, axis=1)
-        local = np.array([int(np.argmin(ds))]); chord = np.sqrt(ds[local])
-    distance = 2 * EARTH_KM * np.arcsin(np.clip(chord / 2, 0, 1))
-    good = support(arrays, meta, lo, la, distance)
-    indices = ids[local]
-    result = {k: np.where(good, arrays[k].ravel()[indices], np.nan).reshape(shape) for k in arrays}
-    result['distance_km'] = np.where(good, distance, np.nan).reshape(shape)
-    return result
+def sphere(lon,lat):
+    lon=np.deg2rad(lon);lat=np.deg2rad(lat);c=np.cos(lat)
+    return np.column_stack((c.ravel()*np.cos(lon).ravel(),c.ravel()*np.sin(lon).ravel(),np.sin(lat).ravel()))
 
 
-def difference(left, lm, right, rm):
-    if lm.get('difference') or rm.get('difference'):
-        raise ValueError('Разности строятся между двумя исходными полями.')
-    for key in ('field', 'level', 'time', 'units', 'temporal'):
-        if lm[key] != rm[key]:
-            raise ValueError('Для разности должны совпадать поле, уровень, точный срок, единицы и временное осреднение.')
-    if lm['vector'] or rm['vector']:
-        raise ValueError('Выберите поле «Скорость ветра» для скалярной разности; компоненты не усредняются.')
-    base, bm = (left, lm) if lm['resolution_km'] >= rm['resolution_km'] else (right, rm)
-    a = sample(left, lm, base['lon'], base['lat'])['value']
-    b = sample(right, rm, base['lon'], base['lat'])['value']
-    delta = np.where(np.isfinite(a) & np.isfinite(b), a - b, np.nan).astype('float32')
-    if not np.isfinite(delta).any():
-        raise ValueError('Нет общей области с данными; пустая разность не создана.')
-    meta = dict(bm, source='difference', name=lm['name'] + ' − ' + rm['name'],
-                title=lm['title'],
-                difference=True, vector=False, valid_cells=int(np.isfinite(delta).sum()),
-                units='K' if FIELDS[lm['field']]['kind'] == 'temperature' else lm['units'],
-                provenance={'operation': 'A-B', 'inputs': [{'id': m['id'], 'sha256': m['sha256']} for m in (lm, rm)],
-                            'method': 'nearest_on_coarser_native_grid', 'target_source': bm['source'],
-                            'note': 'Разность не является погрешностью: ни один реанализ не принят за истину.'})
-    meta.pop('sha256', None); meta.pop('netcdf_sha256', None)
-    return {'lat': base['lat'], 'lon': base['lon'], 'value': delta}, meta
+def sampling(ds,lon,lat):
+    """Nearest coordinate, NOT nearest nonmissing value. Never fill nodata holes."""
+    la=ds.latitude.values;lo=ds.longitude.values
+    valid=np.isfinite(la)&np.isfinite(lo)&(np.abs(la)<=90)
+    positions=np.flatnonzero(valid.ravel())
+    if not positions.size: raise ValueError('Нет валидной геометрии поля.')
+    tree=cKDTree(sphere(lo[valid],la[valid]))
+    lon,lat=np.broadcast_arrays(lon,lat);good=np.isfinite(lon)&np.isfinite(lat)&(np.abs(lat)<=90)
+    safe_lon=np.where(good,lon,0);safe_lat=np.where(good,lat,0)
+    dist,index=tree.query(sphere(safe_lon,safe_lat),workers=1)
+    # Radius derives from native cell spacing, not visual-map resolution.
+    nominal=float(ds.attrs['resolution_km'])
+    steps=[]
+    for axis in range(2):
+        if la.shape[axis]>1:
+            a=[slice(None),slice(None)];b=a.copy();a[axis]=slice(None,-1);b[axis]=slice(1,None)
+            _,_,d=GEOD.inv(lo[tuple(a)],la[tuple(a)],lo[tuple(b)],la[tuple(b)])
+            d=np.asarray(d)/1000.;d=d[np.isfinite(d)&(d>0)&(d<nominal*5)]
+            if d.size: steps.append(float(np.median(d)))
+    radius=.85*max(steps or [nominal])
+    distances=2*R*np.arcsin(np.clip(dist.reshape(lon.shape)/2,0,1))
+    good &= (distances<=radius)
+    n,w,s,e=json.loads(ds.attrs['area'])
+    wrap=(safe_lon+180)%360-180
+    good &= (safe_lat>=s)&(safe_lat<=n)
+    good &= ((wrap>=w)&(wrap<=e)) if w<e else ((wrap>=w)|(wrap<=e))
+    indices=positions[index]
+    out={}
+    for key in ('value','u','v'):
+        if key in ds: out[key]=np.where(good,ds[key].values.ravel()[indices].reshape(lon.shape),np.nan)
+    out['distance_km']=np.where(good,distances,np.nan)
+    return out
 
 
-def palette(values, lo, hi, diverging=False):
-    # UI palette, not a change to numerical values. Missing cells are transparent.
-    from PIL import Image
-    colors = np.array([[40, 77, 150], [117, 178, 208], [247, 247, 240], [233, 169, 108], [162, 45, 49]], float) if diverging else np.array([[25, 56, 109], [36, 127, 155], [83, 178, 152], [224, 215, 121], [198, 80, 49]], float)
-    z = np.clip((np.nan_to_num(values, nan=lo) - lo) / (hi - lo), 0, 1)
-    rgba = np.empty((*z.shape, 4), dtype='uint8')
-    for k in range(3): rgba[..., k] = np.interp(z, np.linspace(0, 1, len(colors)), colors[:, k]).astype('uint8')
-    rgba[..., 3] = np.where(np.isfinite(values), 255, 0)
-    return Image.fromarray(rgba, 'RGBA'), colors.astype(int).tolist()
+def display_grid(g):
+    a=g['transform'];xx=a.c+(np.arange(g['width'])+.5)*a.a;yy=a.f+(np.arange(g['height'])+.5)*a.e
+    lon,lat=Transformer.from_crs(g['crs'],4326,always_xy=True).transform(*np.meshgrid(xx,yy))
+    return lon,lat
 
 
-def style(data, meta):
-    spec = FIELDS[meta['field']]
-    result = {'mode': data.get('mode', 'raster'), 'opacity': number(data.get('opacity', .55), 'Непрозрачность')}
-    if result['mode'] not in ('raster', 'contours', 'wind') or result['mode'] == 'wind' and not meta['vector']:
-        raise ValueError('Недопустимый способ отображения этого поля.')
-    if not math.isfinite(result['opacity']) or not 0 <= result['opacity'] <= 1:
-        raise ValueError('Прозрачность: 0–1.')
-    default = [-10, 10] if meta.get('difference') else spec['range']
-    result['min'] = number(data.get('min', default[0]), 'Нижняя граница'); result['max'] = number(data.get('max', default[1]), 'Верхняя граница')
-    result['step'] = number(data.get('step', 2 if meta.get('difference') else spec['step']), 'Шаг изолиний')
-    if not all(math.isfinite(result[k]) for k in ('min', 'max', 'step')) or not result['min'] < result['max'] or result['step'] <= 0:
-        raise ValueError('Нужны конечные границы шкалы (от < до) и положительный шаг изолиний.')
-    if (result['max'] - result['min']) / result['step'] > 100:
-        raise ValueError('Не более 100 изолиний; увеличьте шаг.')
-    return result
+def limits(ds,options):
+    values=ds.value.values;v=values[np.isfinite(values)]
+    if not v.size: raise ValueError('Нет значений для цветовой шкалы.')
+    difference=bool(ds.attrs.get('difference_of'))
+    key=ds.attrs['variable'];spec=VARIABLES[key]
+    lo,hi=spec.limits
+    if key=='z': lo,hi=np.quantile(v,[.02,.98]);hi=max(hi,lo+1.)
+    if difference:
+        hi=max(float(np.quantile(abs(v),.98)),.1);lo=-hi
+    if options.get('min') is not None: lo=float(options['min'])
+    if options.get('max') is not None: hi=float(options['max'])
+    if not np.isfinite(lo+hi) or not lo<hi: raise ValueError('Нижняя граница шкалы должна быть меньше верхней.')
+    return float(lo),float(hi)
 
 
-def render(arrays, meta, preset, width, options, root):
+def color_image(values,low,high,palette):
+    stops=PALETTES[palette];rgb=np.array([[int(c[k:k+2],16) for k in (1,3,5)] for c in stops])
+    ratio=np.clip((np.nan_to_num(values,nan=low)-low)/(high-low),0,1)
+    rgba=np.empty(values.shape+(4,),dtype='uint8')
+    for k in range(3): rgba[...,k]=np.interp(ratio,np.linspace(0,1,len(rgb)),rgb[:,k]).astype('uint8')
+    rgba[...,3]=np.where(np.isfinite(values),255,0)
+    return rgba
+
+
+def render(ds,g,target,options=None):
     import contourpy
-    import rasterio
-    g = grid(preset, width)
-    opts = style(options, meta)
-    key = identity({'field': meta['sha256'], 'id': meta['id'], 'preset': preset, 'width': width,
-                    'scale': [opts[k] for k in ('min', 'max', 'step')], 'version': 'overlay-1'})
-    folder = Path(root) / key
-    existing = folder / 'render.json'
-    if existing.is_file() and (folder/'map.png').is_file() and (folder/'values.tif').is_file():
-        import json
-        return json.loads(existing.read_text(encoding='utf-8'))
-    lon, lat = lonlat_grid(g)
-    picked = sample(arrays, meta, lon, lat)
-    values = picked['value']
-    image, colors = palette(values, opts['min'], opts['max'], meta.get('difference', False) or FIELDS[meta['field']]['kind'] == 'temperature')
-    folder.mkdir(parents=True, exist_ok=True)
-    image.save(folder / 'map.png')
-    with rasterio.open(folder / 'values.tif', 'w', driver='GTiff', height=g['height'], width=g['width'], count=1,
-                       dtype='float32', crs=g['crs'], transform=g['transform'], nodata=float('nan'), compress='deflate') as ds:
-        ds.write(values.astype('float32'), 1)
-        ds.update_tags(units=meta['units'], valid_time=meta['time'], field_id=meta['id'], method='nearest_native_node')
-    contours = []
-    if np.isfinite(values).sum() > 3:
-        contour = contourpy.contour_generator(x=np.arange(g['width']) + .5, y=np.arange(g['height']) + .5,
-                                               z=np.ma.masked_invalid(values), corner_mask=False)
-        for level in np.arange(opts['min'], opts['max'] + opts['step'] * .01, opts['step']):
-            for line in contour.lines(float(level)):
-                if len(line) > 1:
-                    contours.append({'value': round(float(level), 5), 'points': np.round(line, 2).tolist()})
-    vectors = []
-    if meta['vector']:
-        geod = Geod(ellps='WGS84'); tr = Transformer.from_crs(4326, g['crs'], always_xy=True)
-        for y in range(16, g['height'], 36):
-            for x in range(16, g['width'], 36):
-                u, v = picked['u'][y, x], picked['v'][y, x]
-                if not np.isfinite(u + v): continue
-                speed = float(np.hypot(u, v))
-                if speed < .2: continue
-                lon2, lat2, _ = geod.fwd(lon[y, x], lat[y, x], math.degrees(math.atan2(u, v)), 1000)
-                xx, yy = tr.transform(lon2, lat2)
-                px, py = (~g['transform']) * (xx, yy)
-                dx, dy = px - x - .5, py - y - .5
-                norm = math.hypot(dx, dy)
-                if not math.isfinite(norm) or norm < 1e-8: continue
-                vectors.append(dict(x=x + .5, y=y + .5, dx=round(dx / norm * 23, 2), dy=round(dy / norm * 23, 2), speed=round(speed, 2)))
-    result = dict(id=key, field_id=meta['id'], preset=preset, width=g['width'], height=g['height'], crs=g['crs'],
-                  bounds=g['bounds'], contours=contours, vectors=vectors, image='/reanalysis/render/' + key + '/map.png',
-                  legend={'title': meta['title'], 'units': meta['units'], 'min': opts['min'], 'max': opts['max'], 'colors': colors,
-                          'method': 'Ближайший исходный узел. Увеличение карты не повышает разрешение реанализа.'},
-                  valid_pixels=int(np.isfinite(values).sum()))
-    atomic_json(existing, result)
+    options=options or {};target=Path(target);target.mkdir(parents=True,exist_ok=True)
+    lon,lat=display_grid(g);sample=sampling(ds,lon,lat);values=sample['value']
+    low,high=limits(ds,options);spec=VARIABLES[ds.attrs['variable']]
+    palette='diverging' if ds.attrs.get('difference_of') else spec.palette
+    Image.fromarray(color_image(values,low,high,palette)).save(target/'map.png')
+    contours=[]
+    if np.isfinite(values).any():
+        generator=contourpy.contour_generator(x=np.arange(g['width'])+.5,y=np.arange(g['height'])+.5,z=np.ma.masked_invalid(values),corner_mask=False)
+        count=0
+        for level in np.linspace(low,high,11):
+            for line in generator.lines(float(level)):
+                if len(line)<3: continue
+                count+=len(line)
+                if count>150_000: break
+                contours.append({'value':round(float(level),3),'points':np.round(line,2).tolist()})
+            if count>150_000: break
+    vectors=[]
+    if 'u' in sample:
+        to_map=Transformer.from_crs(4326,g['crs'],always_xy=True);a=g['transform']
+        stride=max(24,int(g['width']/26))
+        for y in range(stride//2,g['height'],stride):
+            for x in range(stride//2,g['width'],stride):
+                u=float(sample['u'][y,x]);v=float(sample['v'][y,x])
+                if not np.isfinite(u+v): continue
+                speed=float(np.hypot(u,v))
+                if speed<.1: continue
+                az=float(np.degrees(np.arctan2(u,v)))
+                lon2,lat2,_=GEOD.fwd(lon[y,x],lat[y,x],az,10000.)
+                mx,my=to_map.transform(lon2,lat2);dx=(mx-a.c)/a.a-(x+.5);dy=(my-a.f)/a.e-(y+.5)
+                length=np.hypot(dx,dy)
+                if not np.isfinite(length) or length<1e-9: continue
+                vectors.append({'x':x+.5,'y':y+.5,'dx':float(dx/length*16),'dy':float(dy/length*16),'speed':round(speed,1)})
+    return {'grid':{k:v for k,v in g.items() if k!='transform'},'contours':contours,'vectors':vectors,
+            'legend':{'min':low,'max':high,'unit':spec.unit,'colors':PALETTES[palette],
+                      'title':spec.title,'nodata':'Прозрачно: нет данных; не нулевое значение.',
+                      'sampling':'Ближайший исходный узел. Масштаб карты не повышает разрешение.',
+                      'arrows':'Направление движения воздуха; длина условная. Скорость — в м/с.'},
+            'valid_pixels':int(np.isfinite(values).sum())}
+
+
+def difference(first,second,first_id,second_id):
+    """A−B on the COARSER native grid, not on an upsampled fine model grid."""
+    import xarray as xr
+    for name in ('variable','time','level','unit','time_kind'):
+        if first.attrs.get(name)!=second.attrs.get(name): raise ValueError('Для разности должны совпадать поле, срок, уровень, единицы и тип времени: '+name)
+    if first.attrs.get('difference_of') or second.attrs.get('difference_of'): raise ValueError('Выберите два исходных поля, не уже рассчитанные разности.')
+    coarse=max((first,second),key=lambda d:float(d.attrs['resolution_km']))
+    lon=coarse.longitude.values;lat=coarse.latitude.values
+    a=sampling(first,lon,lat)['value'];b=sampling(second,lon,lat)['value'];value=a-b
+    if not np.isfinite(value).any(): raise ValueError('У полей нет совместной области с данными.')
+    attrs=dict(coarse.attrs,source='difference',difference_of=json.dumps([first_id,second_id]),
+               source_label=first.attrs.get('source')+' − '+second.attrs.get('source'),
+               comparison='nearest_on_coarser_native_grid; no blending; intersection of masks')
+    result=xr.Dataset({'value':(('y','x'),value.astype('float32')),
+                       'latitude':(('y','x'),lat),'longitude':(('y','x'),lon)},attrs=attrs).set_coords(['latitude','longitude'])
+    for name in ('latitude','longitude','value'): result[name].attrs=dict(coarse[name].attrs)
+    result=result.assign_coords({k:v for k,v in coarse.coords.items() if v.ndim==0})
+    result.value.attrs.pop('standard_name',None)
+    result.value.attrs['long_name']='A minus B: '+VARIABLES[attrs['variable']].title
+    if attrs['variable'] in ('t','t2m','sst'): result.value.attrs['units']='K'
+    result.value.attrs['comment']='Difference, not an absolute quantity. Temperature increments in K equal increments in degrees Celsius.'
     return result

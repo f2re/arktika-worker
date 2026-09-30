@@ -6,6 +6,7 @@ Earthdata — для MERRA-2. Модуль не объявляет сетево�
 """
 from __future__ import annotations
 
+import copy
 import re
 import shlex
 
@@ -129,11 +130,21 @@ class SourceManagerMixin:
             if not hasattr(self, '_earthdata_credential'):
                 self._earthdata_credential = {}
 
+    def source_credential(self, source):
+        self._sources_init()
+        with self.lock:
+            if source == 'merra2': return copy.deepcopy(self._earthdata_credential)
+            if source not in ('era5','carra2'): raise ValueError('Неизвестный источник реанализа.')
+            # GDEX is not CDS. Keep the independently configured shared CDS credential.
+            if self._era5_credential.get('provider') == 'cds':
+                self._source_cds_credential = copy.deepcopy(self._era5_credential)
+            return copy.deepcopy(getattr(self, '_source_cds_credential', {}))
+
     def source_state(self):
         self._sources_init()
         gptl = self.client.token_info()
         with self.lock:
-            cds = public_credentials(self._era5_credential if self._era5_credential.get('provider') == 'cds' else {})
+            cds = public_credentials(self.source_credential('era5'))
             earthdata = public_earthdata(self._earthdata_credential)
 
         access = {
@@ -149,8 +160,8 @@ class SourceManagerMixin:
             row['access'] = state
             row['status'] = 'ready' if spec['auth'] == 'none' else ('credentials_present' if state['present'] else 'credentials_missing')
             if spec['id'] in ('era5','carra2','merra2'):
-                row['layer_status'] = 'fields_ready'
-                row['capabilities'] = list(row['capabilities']) + ['field_download','field_cache','field_map','field_comparison']
+                row['layer_status'] = 'fields_available'
+                row['capabilities'] = list(spec['capabilities']) + ['field_download','field_map','comparison']
             else:
                 row['layer_status'] = 'operational'
             rows.append(row)
@@ -165,13 +176,15 @@ class SourceManagerMixin:
     def source_credentials(self, data):
         provider = str(data.get('provider','')).lower()
         if provider == 'cds':
-            if data.get('clear') is not True and credentials_from_text(data.get('text',''), data.get('format','auto'))['provider'] != 'cds':
-                raise ValueError('В этом окне нужен доступ CDS, не NCAR/GDEX.')
             payload = {'clear': True} if data.get('clear') is True else {
                 'text': data.get('text',''),
                 'format': data.get('format','auto'),
             }
+            parsed = {} if payload.get('clear') else credentials_from_text(payload['text'],payload['format'])
+            if parsed and parsed.get('provider') != 'cds':
+                raise ValueError('Это реквизиты GDEX, а не CDS. Для полей ERA5/CARRA2 нужен токен CDS.')
             self.era5_credentials(payload)
+            with self.lock: self._source_cds_credential = parsed
             return self.source_state()
         if provider != 'earthdata':
             raise ValueError('Источник доступа должен быть cds или earthdata.')

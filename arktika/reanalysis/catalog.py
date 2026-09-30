@@ -1,162 +1,151 @@
-"""Контракты полей и запросов. Никаких данных или токенов в реестре."""
+"""Каталог скалярных полей и планы запросов. Никаких сетевых побочных эффектов.
+
+CARRA2: контракт /api/retrieve/v1/processes/reanalysis-pan-carra,
+проверен 2026-09-29: level_location, не pressure_level; product_type=analysis.
+MERRA-2: только instantaneous ASM, не усреднённые tavg-коллекции.
+"""
 from __future__ import annotations
+from dataclasses import dataclass
 import datetime as dt
 import hashlib
 import json
 import math
 
 VERSION = 'reanalysis-fields-1'
-UTC = dt.timezone.utc
-# Common levels supported by the selected collections, not every level in each archive.
-LEVELS = [1000, 925, 850, 700, 500, 400, 300, 250, 200, 150, 100]
 SOURCES = {
-    'era5': {'name': 'ERA5', 'auth': 'cds', 'resolution_km': 28., 'start_year': 1940},
-    'carra2': {'name': 'CARRA2', 'auth': 'cds', 'resolution_km': 2.5, 'start_year': 1986},
-    'merra2': {'name': 'MERRA-2', 'auth': 'earthdata', 'resolution_km': 56., 'start_year': 1980},
+    'era5': {'name': 'ERA5', 'auth': 'cds', 'start': 1940, 'step_hours': 1,
+             'resolution_km': 31., 'url': 'https://cds.climate.copernicus.eu/datasets/reanalysis-era5-pressure-levels'},
+    'carra2': {'name': 'CARRA2', 'auth': 'cds', 'start': 1986, 'step_hours': 3,
+              'resolution_km': 2.5, 'url': 'https://cds.climate.copernicus.eu/datasets/reanalysis-pan-carra'},
+    'merra2': {'name': 'MERRA-2', 'auth': 'earthdata', 'start': 1980, 'step_hours': 3,
+              'resolution_km': 55.6, 'url': 'https://www.earthdata.nasa.gov/data/catalog/ges-disc-m2i3npasm-5.12.4'},
 }
-# Each mapping lists the provider's actual variables. Wind is never inferred from clouds.
-FIELDS = {
-    't': {'name': 'Температура воздуха', 'units': '°C', 'vertical': 'pressure', 'range': [-60, 20], 'step': 5,
-          'era5': ['temperature'], 'carra2': ['temperature'], 'merra2': ['T'], 'kind': 'temperature'},
-    'h': {'name': 'Геопотенциальная высота', 'units': 'м', 'vertical': 'pressure', 'range': [0, 16000], 'step': 200,
-          'era5': ['geopotential'], 'carra2': ['geopotential'], 'merra2': ['H'], 'kind': 'height'},
-    'rh': {'name': 'Относительная влажность', 'units': '%', 'vertical': 'pressure', 'range': [0, 100], 'step': 10,
-           'era5': ['relative_humidity'], 'carra2': ['relative_humidity'], 'merra2': ['RH'], 'kind': 'humidity'},
-    'wind': {'name': 'Ветер', 'units': 'м/с', 'vertical': 'pressure', 'range': [0, 60], 'step': 10,
-             'era5': ['u_component_of_wind', 'v_component_of_wind'], 'merra2': ['U', 'V'], 'kind': 'wind'},
-    'wind_speed': {'name': 'Скорость ветра', 'units': 'м/с', 'vertical': 'pressure', 'range': [0, 60], 'step': 10,
-                   'carra2': ['wind_speed'], 'kind': 'speed'},
-    'mslp': {'name': 'Давление на уровне моря', 'units': 'гПа', 'vertical': 'surface', 'range': [960, 1040], 'step': 4,
-             'era5': ['mean_sea_level_pressure'], 'carra2': ['mean_sea_level_pressure'], 'kind': 'pressure'},
-    't2m': {'name': 'Температура на 2 м', 'units': '°C', 'vertical': 'surface', 'range': [-40, 30], 'step': 5,
-            'era5': ['2m_temperature'], 'carra2': ['2m_temperature'], 'kind': 'temperature'},
-    'wind10': {'name': 'Ветер на 10 м', 'units': 'м/с', 'vertical': 'surface', 'range': [0, 35], 'step': 5,
-               'era5': ['10m_u_component_of_wind', '10m_v_component_of_wind'], 'kind': 'wind'},
-    'wind_speed10': {'name': 'Скорость ветра на 10 м', 'units': 'м/с', 'vertical': 'surface', 'range': [0, 35], 'step': 5,
-                     'carra2': ['10m_wind_speed'], 'kind': 'speed'},
-    'sst': {'name': 'Температура поверхности моря', 'units': '°C', 'vertical': 'surface', 'range': [-2, 20], 'step': 2,
-            'era5': ['sea_surface_temperature'], 'carra2': ['sea_surface_temperature'], 'kind': 'temperature'},
-    'ice': {'name': 'Доля морского льда', 'units': '%', 'vertical': 'surface', 'range': [0, 100], 'step': 10,
-            'era5': ['sea_ice_cover'], 'carra2': ['sea_ice_area_fraction'], 'kind': 'fraction'},
-    'omega': {'name': 'Вертикальная скорость ω', 'units': 'Па/с', 'vertical': 'pressure', 'range': [-1, 1], 'step': .2,
-              'era5': ['vertical_velocity'], 'merra2': ['OMEGA'], 'kind': 'omega'},
+LEVELS = {
+    'era5': [1000,975,950,925,900,875,850,825,800,775,750,700,650,600,550,500,450,400,350,300,250,225,200,175,150,125,100,70,50,30,20,10,7,5,3,2,1],
+    'carra2': [1000,950,925,900,875,850,825,800,750,700,600,500,400,300,250,200,150,100,50,30,10],
+    'merra2': [1000,975,950,925,900,875,850,825,800,775,750,725,700,650,600,550,500,450,400,350,300,250,200,150,100,70,50,40,30,20,10,7,5,4,3,2,1,.7,.5,.4,.3,.1],
 }
-# MERRA-2 surface diagnostics are time means (00:30, ...), not instantaneous ERA5 analyses.
-# Expose them with their real temporal semantics; differences with instantaneous data are rejected.
-for _id, _var in [('mslp', 'SLP'), ('t2m', 'T2M'), ('wind10', ['U10M', 'V10M'])]:
-    FIELDS[_id]['merra2'] = _var if isinstance(_var, list) else [_var]
-for _id, _vars in [('wind_speed', ['u_component_of_wind', 'v_component_of_wind']), ('wind_speed10', ['10m_u_component_of_wind', '10m_v_component_of_wind'])]:
-    FIELDS[_id]['era5'] = _vars
-    FIELDS[_id]['merra2'] = ['U', 'V'] if _id == 'wind_speed' else ['U10M', 'V10M']
-ALIASES = {
-    'temperature': ['t', 'T', 'air_temperature'], 'geopotential': ['z', 'gh', 'geopotential'],
-    'relative_humidity': ['r', 'rh', 'RH'], 'u_component_of_wind': ['u', 'U'], 'v_component_of_wind': ['v', 'V'],
-    'mean_sea_level_pressure': ['msl', 'mslp', 'prmsl', 'MSL'], '2m_temperature': ['t2m', '2t', 't2', 'tas'],
-    '10m_u_component_of_wind': ['u10', '10u'], '10m_v_component_of_wind': ['v10', '10v'],
-    'wind_speed': ['si', 'ws', 'wind_speed'], '10m_wind_speed': ['si10', '10si', 'ws10'],
-    'sea_surface_temperature': ['sst'], 'sea_ice_cover': ['siconc', 'ci'], 'sea_ice_area_fraction': ['siconc', 'ci'],
-    'vertical_velocity': ['w', 'omega'],
+
+@dataclass(frozen=True)
+class Variable:
+    title: str
+    unit: str
+    vertical: str
+    palette: str
+    limits: tuple[float, float]
+    cds: str
+    carra: str | None
+    merra: str | None
+    aliases: tuple[str, ...]
+
+VARIABLES = {
+    't': Variable('Температура воздуха','°C','pressure','temperature',(-45,15),'temperature','temperature','T',('t','temperature','air_temperature')),
+    'q': Variable('Удельная влажность','г/кг','pressure','humidity',(0,12),'specific_humidity','specific_humidity','QV',('q','specific_humidity','qv')),
+    'rh': Variable('Относительная влажность','%','pressure','humidity',(0,100),'relative_humidity','relative_humidity',None,('r','rh','relative_humidity')),
+    'z': Variable('Геопотенциальная высота','м','pressure','height',(0,6000),'geopotential','geopotential','H',('z','geopotential','gh','h','geopotential_height')),
+    'wind': Variable('Скорость и направление ветра','м/с','pressure','wind',(0,50),'u_component_of_wind','wind_speed','U',('u','u_component_of_wind','eastward_wind','wind_speed','ws','ff')),
+    'omega': Variable('Вертикальная скорость ω','Па/с','pressure','diverging',(-2,2),'vertical_velocity',None,'OMEGA',('w','omega','vertical_velocity','lagrangian_tendency_of_air_pressure')),
+    'mslp': Variable('Давление на уровне моря','гПа','surface','pressure',(970,1030),'mean_sea_level_pressure','mean_sea_level_pressure','SLP',('msl','mslp','slp','prmsl','mean_sea_level_pressure','air_pressure_at_mean_sea_level')),
+    't2m': Variable('Температура на 2 м','°C','surface','temperature',(-40,20),'2m_temperature','2m_temperature','T2M',('t2m','2t','tas','2m_temperature')),
+    'wind10': Variable('Ветер на 10 м','м/с','surface','wind',(0,30),'10m_u_component_of_wind','10m_wind_speed','U10M',('u10','10u','u10m','10m_u_component_of_wind','10si','si10','10m_wind_speed')),
+    'sst': Variable('Температура поверхности моря','°C','surface','temperature',(-2,20),'sea_surface_temperature','sea_surface_temperature',None,('sst','sea_surface_temperature')),
+    'ice': Variable('Концентрация морского льда','%','surface','humidity',(0,100),'sea_ice_cover','sea_ice_area_fraction',None,('siconc','ci','sea_ice_cover','sea_ice_area_fraction')),
 }
 
 
-def stamp(value):
-    if not isinstance(value, str) or len(value) > 40:
-        raise ValueError('Укажите срок ISO 8601 с часовым поясом.')
+def supports(source: str, variable: str) -> bool:
+    v = VARIABLES[variable]
+    return source == 'era5' or (source == 'carra2' and v.carra is not None) or (source == 'merra2' and v.merra is not None)
+
+
+def catalogue() -> dict:
+    rows = []
+    for source, spec in SOURCES.items():
+        fields = []
+        for key, v in VARIABLES.items():
+            if supports(source, key):
+                fields.append(dict(id=key,title=v.title,unit=v.unit,vertical=v.vertical,
+                                   levels=LEVELS[source] if v.vertical=='pressure' else [],
+                                   styles=['fill','contours','fill_contours'] if not key.startswith('wind') else ['fill','arrows','fill_arrows']))
+        rows.append(dict(id=source,**spec,variables=fields))
+    return {'sources':rows,'version':VERSION,'time_policy':'exact_analysis_only'}
+
+
+def stamp(value: str) -> dt.datetime:
     try:
-        t = dt.datetime.fromisoformat(value.replace('Z', '+00:00'))
-    except ValueError:
-        raise ValueError('Неверный срок ISO 8601.') from None
+        t = dt.datetime.fromisoformat(str(value).replace('Z','+00:00'))
+    except (TypeError, ValueError):
+        raise ValueError('Укажите срок в ISO 8601 с часовым поясом.') from None
     if t.tzinfo is None:
         raise ValueError('У срока должен быть часовой пояс; интерфейс использует UTC.')
-    return t.astimezone(UTC)
+    t = t.astimezone(dt.timezone.utc)
+    if t.minute or t.second or t.microsecond:
+        raise ValueError('Нужен точный час анализа. Округление времени не выполняется.')
+    return t
 
 
-def iso(t):
-    return t.astimezone(UTC).isoformat(timespec='seconds').replace('+00:00', 'Z')
-
-
-def number(v, title):
-    if isinstance(v, bool):
-        raise ValueError(title + ': нужно число.')
+def validate_area(value) -> list[float]:
+    if not isinstance(value,(list,tuple)) or len(value)!=4 or any(isinstance(x,bool) for x in value):
+        raise ValueError('Область: [север, запад, юг, восток].')
     try:
-        n = float(v)
-    except (ValueError, TypeError):
-        raise ValueError(title + ': нужно число.') from None
-    if not math.isfinite(n):
-        raise ValueError(title + ': нужно конечное число.')
-    return n
+        n,w,s,e = map(float,value)
+    except (TypeError,ValueError):
+        raise ValueError('Границы области должны быть числами.') from None
+    if not all(math.isfinite(v) for v in (n,w,s,e)) or not -90<=s<n<=90 or not -180<=w<=180 or not -180<=e<=180 or w==e:
+        raise ValueError('Проверьте широты и долготы области; запад может быть больше востока при пересечении 180°.')
+    return [n,w,s,e]
 
 
-def area(value):
-    if not isinstance(value, (list, tuple)) or len(value) != 4:
-        raise ValueError('Область: север, запад, юг, восток.')
-    n, w, s, e = [number(v, 'Граница области') for v in value]
-    if not -90 <= s < n <= 90 or not -180 <= w < e <= 180:
-        raise ValueError('Неверная область. Область через 180° загрузите двумя частями.')
-    return [n, w, s, e]
-
-
-def request(data):
-    source, field = data.get('source'), data.get('field')
-    if source not in SOURCES or field not in FIELDS or source not in FIELDS[field]:
-        raise ValueError('Поле не поддерживается выбранным источником.')
-    spec = FIELDS[field]
-    t = stamp(data.get('time'))
-    if t.year < SOURCES[source]['start_year'] or t > dt.datetime.now(UTC):
-        raise ValueError('Срок вне доступного периода реанализа; будущие поля не запрашиваются.')
-    temporal = 'mean_1h' if source == 'merra2' and spec['vertical'] == 'surface' else 'instant'
-    minute = 30 if temporal == 'mean_1h' else 0
-    step = 3 if source == 'carra2' or (source == 'merra2' and spec['vertical'] == 'pressure') else 1
-    if t.minute != minute or t.second or t.microsecond or t.hour % step:
-        suffix = 'середина часового среднего, HH:30 UTC' if minute else f'каждые {step} ч, HH:00 UTC'
-        raise ValueError('Выберите исходный срок: ' + suffix + '. Соседний срок не подставляется.')
+def request_plan(data: dict) -> dict:
+    source = str(data.get('source',''))
+    key = str(data.get('variable',''))
+    if source not in SOURCES or key not in VARIABLES or not supports(source,key):
+        raise ValueError('Такого поля нет в каталоге выбранного источника.')
+    t = stamp(data.get('time',''))
+    if t.year < SOURCES[source]['start'] or t > dt.datetime.now(dt.timezone.utc):
+        raise ValueError('Дата вне возможного периода реанализа; прогнозы здесь не запрашиваются.')
+    step = 1 if source=='merra2' and VARIABLES[key].vertical=='surface' else SOURCES[source]['step_hours']
+    if t.hour % step:
+        raise ValueError(f'{SOURCES[source]["name"]}: анализ доступен с шагом {step} ч. Выберите точный срок, например 00, 03, 06 UTC.')
     level = None
-    if spec['vertical'] == 'pressure':
-        level = number(data.get('level'), 'Уровень, гПа')
-        if level not in LEVELS:
-            raise ValueError('Выберите один из доступных изобарических уровней.')
-        level = int(level)
-    elif data.get('level') not in (None, '', 'surface'):
-        raise ValueError('У поверхностного поля нет изобарического уровня.')
-    a = area(data.get('area', [85, -25, 60, 70]))
-    return dict(source=source, field=field, time=iso(t), level=level, area=a, temporal=temporal, version=VERSION)
-
-
-def identity(obj):
-    return hashlib.sha256(json.dumps(obj, sort_keys=True, ensure_ascii=True, allow_nan=False).encode()).hexdigest()[:24]
-
-
-def catalog():
-    rows = []
-    for source, meta in SOURCES.items():
-        fields = []
-        for name, f in FIELDS.items():
-            if source not in f:
-                continue
-            fields.append(dict(id=name, name=f['name'], units=f['units'], vertical=f['vertical'],
-                               levels=LEVELS if f['vertical'] == 'pressure' else [], vector=f['kind'] == 'wind',
-                               hour_step=3 if source == 'carra2' or (source == 'merra2' and f['vertical'] == 'pressure') else 1,
-                               minute=30 if source == 'merra2' and f['vertical'] == 'surface' else 0))
-        rows.append(dict(id=source, **meta, fields=fields))
-    return {'sources': rows, 'version': VERSION}
-
-
-def plan(r):
-    f, source, t = FIELDS[r['field']], r['source'], stamp(r['time'])
-    if source == 'merra2':
-        dataset = 'M2T1NXSLV' if f['vertical'] == 'surface' else 'M2I3NPASM'
-        return dict(dataset=dataset, version='5.12.4', variables=f[source], transport='CMR / Cloud OPeNDAP',
-                    time=r['time'], area=r['area'], level=r['level'])
-    q = dict(variable=f[source], year=[f'{t.year:04d}'], month=[f'{t.month:02d}'], day=[f'{t.day:02d}'],
-             time=[t.strftime('%H:%M')], area=r['area'], data_format='netcdf')
-    if source == 'era5':
-        dataset = 'reanalysis-era5-' + ('pressure-levels' if f['vertical'] == 'pressure' else 'single-levels')
-        q.update(product_type=['reanalysis'], download_format='unarchived')
-        if r['level'] is not None:
-            q['pressure_level'] = [str(r['level'])]
-    else:
-        dataset = 'reanalysis-pan-carra'
-        q.update(product_type='analysis', level_type='pressure_levels' if r['level'] is not None else 'single_levels')
-        if r['level'] is not None:
-            q['level_location'] = [str(r['level'])]
-    return {'dataset': dataset, 'request': q, 'transport': 'CDS'}
+    if VARIABLES[key].vertical=='pressure':
+        raw = data.get('level')
+        if isinstance(raw,bool): raise ValueError('Уровень давления должен быть числом.')
+        try: level = float(raw)
+        except (TypeError,ValueError): raise ValueError('Выберите изобарический уровень.') from None
+        if level not in LEVELS[source]: raise ValueError('Уровень отсутствует в каталоге источника.')
+    elif data.get('level') not in (None,''):
+        raise ValueError('Для поверхностного поля изобарический уровень не задаётся.')
+    area = validate_area(data.get('area',[82,-20,60,70]))
+    if source=='carra2' and area[2]<40:
+        raise ValueError('CARRA2 не глобальна. Южная граница области должна быть не ниже 40° с. ш.; фактическую маску задаёт файл.')
+    n,w,s,e = area
+    domains = [area] if w<e else [[n,w,s,180.],[n,-180.,s,e]]
+    base = {'year':[t.strftime('%Y')],'month':[t.strftime('%m')],'day':[t.strftime('%d')],'time':[t.strftime('%H:%M')]}
+    v = VARIABLES[key]
+    tasks = []
+    for domain in domains:
+        if domain[1]==domain[3]: continue
+        if source=='era5':
+            names = [v.cds]
+            if key=='wind': names += ['v_component_of_wind']
+            if key=='wind10': names += ['10m_v_component_of_wind']
+            req = dict(base,product_type=['reanalysis'],variable=names,area=domain,data_format='netcdf',download_format='unarchived')
+            if level is not None: req['pressure_level']=[f'{level:g}']
+            tasks.append({'dataset':'reanalysis-era5-'+('pressure-levels' if level is not None else 'single-levels'),'request':req})
+        elif source=='carra2':
+            names=[v.carra]
+            if key.startswith('wind'): names += ['wind_direction' if key=='wind' else '10m_wind_direction']
+            req=dict(base,product_type='analysis',variable=names,area=domain,data_format='netcdf',level_type='pressure_levels' if level is not None else 'single_levels')
+            if level is not None: req['level_location']=[f'{level:g}']
+            tasks.append({'dataset':'reanalysis-pan-carra','request':req})
+        else:
+            names=[v.merra]
+            if key=='wind': names+=['V']
+            if key=='wind10': names+=['V10M']
+            tasks.append({'dataset':'M2I3NPASM' if level is not None else 'M2I1NXASM','version':'5.12.4','variables':names,'area':domain})
+    plan = {'version':VERSION,'source':source,'variable':key,'time':t.isoformat().replace('+00:00','Z'),
+            'level':level,'area':area,'requests':tasks,'time_kind':'instantaneous_analysis',
+            'resolution_km':SOURCES[source]['resolution_km']}
+    plan['key']=hashlib.sha256(json.dumps(plan,sort_keys=True,separators=(',',':')).encode()).hexdigest()[:24]
+    return plan

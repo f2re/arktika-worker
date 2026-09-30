@@ -21,6 +21,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT), str(ROOT / 'tests')]
 from server import LocalServer
+from browser_support import mount
 from arktika.workstation import Workstation
 from test_science import fixture
 from test_interpretation import profile
@@ -62,46 +63,7 @@ def main():
                 context = browser.new_context(viewport={'width': 1536, 'height': 960})
                 page = context.new_page()
                 page.on('pageerror', lambda error: report['browser_errors'].append(str(error)))
-                if args.bridge:
-                    def bridge(payload):
-                        headers = {'Cookie': 'arktika_session=' + server.key, 'Origin': base,
-                                   'Content-Type': 'application/json', 'X-Arktika-Request': '1'}
-                        req = urllib.request.Request(base + payload['path'], headers=headers,
-                            data=payload.get('body', '').encode() if payload.get('body') is not None else None,
-                            method=payload.get('method', 'GET'))
-                        try:
-                            response = proxy.open(req, timeout=30)
-                        except urllib.error.HTTPError as exc:
-                            response = exc
-                        with response:
-                            return {'status': response.status, 'headers': dict(response.headers),
-                                    'body': base64.b64encode(response.read()).decode()}
-                    page.expose_function('httpBridge', bridge)
-                    html = (ROOT/'static/index.html').read_text(encoding='utf-8')
-                    html = re.sub(r'<script[^>]+src=[^>]+></script>', '', html)
-                    html = re.sub(r'<link[^>]+>', '', html)
-                    html = html.replace('</head>', '<style>' + (ROOT/'static/style.css').read_text(encoding='utf-8') + (ROOT/'static/catalog.css').read_text(encoding='utf-8') + '</style></head>')
-                    page.set_content(html)
-                    page.evaluate(r"""() => {
-                        window.fetch = async (path, options={}) => {
-                            const r = await window.httpBridge({path:String(path),method:options.method||'GET',body:options.body??null});
-                            return new Response(Uint8Array.from(atob(r.body),c=>c.charCodeAt(0)),{status:r.status,headers:r.headers});
-                        };
-                        const setter=Element.prototype.setAttribute;
-                        Element.prototype.setAttribute=function(name,value){
-                            if((name==='href'||name==='src')&&(this.tagName==='image'||this.tagName==='IMG')&&String(value).startsWith('/')){
-                                const wanted=String(value);this.__wantedSource=wanted;
-                                fetch(wanted).then(r=>r.blob()).then(b=>{if(this.__wantedSource===wanted)setter.call(this,name,URL.createObjectURL(b));});
-                            }else setter.call(this,name,value);
-                        };
-                    }""")
-                    page.add_script_tag(content=(ROOT/'static/app.js').read_text(encoding='utf-8'))
-                    page.add_script_tag(content=(ROOT/'static/catalog.js').read_text(encoding='utf-8'))
-                    for script in ('product_flow.js','era5.js','reanalysis.js'):
-                        page.add_script_tag(content=(ROOT/'static'/script).read_text(encoding='utf-8'))
-                    page.add_script_tag(content=(ROOT/'static/studio.js').read_text(encoding='utf-8'))
-                else:
-                    page.goto(base + '/#' + server.key)
+                mount(page,ROOT,server,args.bridge)
 
                 def wait_js(expression, arg=None, timeout=30000):
                     deadline = time.monotonic() + timeout/1000

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Real browser/server checks on explicitly synthetic SOFTWARE fixtures, not weather observations."""
+"""Native HTTP/Chromium checks. All weather fields are SYNTHETIC software fixtures."""
 from __future__ import annotations
 import argparse
 import json
@@ -8,113 +8,115 @@ import sys
 import tempfile
 import threading
 import time
-from unittest.mock import patch
 
 ROOT=Path(__file__).resolve().parents[1]
 sys.path[:0]=[str(ROOT),str(ROOT/'tests')]
-import numpy as np
-from test_reanalysis import fixture
-from test_science import fixture as satellite_fixture
-from arktika.geo import project_points
-from arktika.workstation import Workstation
+from playwright.sync_api import sync_playwright
+from pyproj import Transformer
 from server import LocalServer
 from browser_support import mount
-from playwright.sync_api import sync_playwright
+from arktika.workstation import Workstation
+from test_reanalysis import dataset
 
 
 def main():
-    parser=argparse.ArgumentParser();parser.add_argument('--bridge',action='store_true');parser.add_argument('--executable');parser.add_argument('--output',default='browser-results/reanalysis');args=parser.parse_args()
-    out=Path(args.output);out.mkdir(parents=True,exist_ok=True)
-    report={'mode':'explicit-http-bridge' if args.bridge else 'native-http','fixture':'SYNTHETIC SOFTWARE FIXTURES; NOT WEATHER OBSERVATIONS','checks':[],'browser_errors':[]}
-    with tempfile.TemporaryDirectory() as tmp,patch('arktika.reanalysis.service.ensure_runtime',return_value={'python':sys.executable}):
-        root=Path(tmp);app=Workstation(root/'state')
-        a,r=fixture(value=278.15);a['temperature'].values+=np.arange(a.sizes['lon'])[None,None,None,:]*.4
-        file=root/'SYNTHETIC-ERA5.nc';a.to_netcdf(file,engine='scipy')
-        b,rb=fixture('merra2',value=273.15);other=root/'SYNTHETIC-MERRA2.nc';b.to_netcdf(other,engine='scipy')
+    p=argparse.ArgumentParser();p.add_argument('--executable');p.add_argument('--bridge',action='store_true');p.add_argument('--output',default='browser-results/reanalysis');a=p.parse_args()
+    out=Path(a.output).resolve();out.mkdir(parents=True,exist_ok=True)
+    report={'mode':'explicit-http-bridge; browser Origin/cookies/CSP not verified' if a.bridge else 'native-http','fixture':'SYNTHETIC SOFTWARE TESTS, NOT WEATHER OBSERVATIONS','checks':[],'browser_errors':[],'network':'localhost only; no live CDS/Earthdata test'}
+    with tempfile.TemporaryDirectory() as tmp:
+        root=Path(tmp);app=Workstation(root/'state');app.store.set_setting('last_date','2024-01-01')
         app.store.set_setting('view_settings',{'preset':'barents','product':'channel','channel':9})
-        app.store.set_setting('last_date','2024-01-01')
-        server=LocalServer(('127.0.0.1',0),app);threading.Thread(target=server.serve_forever,daemon=True).start()
+        paths={}
+        for source,offset in [('era5',0),('merra2',2)]:
+            path=root/('SYNTHETIC-'+source+'.nc');dataset(source,offset=offset).to_netcdf(path,engine='scipy');paths[source]=path
+        server=LocalServer(('127.0.0.1',0),app);thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
         base='http://127.0.0.1:'+str(server.server_address[1])
         try:
             with sync_playwright() as pw:
-                options={'headless':True}
-                if args.executable:options['executable_path']=args.executable
-                browser=pw.chromium.launch(**options);page=browser.new_page(viewport={'width':1536,'height':960})
-                page.on('pageerror',lambda e:report['browser_errors'].append(str(e)))
-                def wait(fn,timeout=45):
-                    end=time.monotonic()+timeout
+                launch={'headless':True}
+                if a.executable:launch['executable_path']=a.executable
+                browser=pw.chromium.launch(**launch);context=browser.new_context(viewport={'width':1536,'height':960})
+                page=context.new_page();page.on('pageerror',lambda e:report['browser_errors'].append(str(e)))
+                def wait(expression,timeout=30000):
+                    end=time.monotonic()+timeout/1000
                     while time.monotonic()<end:
-                        try:
-                            if page.evaluate(fn):return
-                        except Exception:pass
+                        if page.evaluate(expression):return
                         page.wait_for_timeout(100)
-                    raise AssertionError('Browser condition failed: '+fn)
-                def check(name,fn):wait(fn);report['checks'].append({'name':name,'passed':True});print(name,flush=True)
-                def card():return page.locator('#fieldLayers .field-card').first
-                mount(page,ROOT,server,bridge=args.bridge,scripts=('app.js','catalog.js','product_flow.js','era5.js','reanalysis.js','studio.js'))
-                wait('()=>FIELD_UI.catalog&&S.map')
-                page.locator('#fieldRail').click()
-                check('Field flow does not require satellite', '()=>!S.product&&!document.querySelector("#reanalysisPanel").hidden')
-                page.locator('#fieldTime').fill('2024-01-01T00:00')
-                page.locator('#fieldLevel').select_option('850')
-                page.locator('#fieldPath').evaluate('(e)=>e.closest("details").open=true')
-                page.locator('#fieldPath').fill(str(file))
-                page.locator('#fieldLoad').click()
-                check('Local NetCDF rendered through worker and API','()=>FIELD_UI.state.layers.length===1&&document.querySelectorAll("#reanalysisOverlays image").length===1')
-                wait('()=>!FIELD_UI.state.busy')
-                card().locator('[data-opacity]').evaluate('(e)=>{e.value="0.30";e.dispatchEvent(new Event("input"));}');card().locator('[data-opacity]').dispatch_event('change')
-                check('Opacity saved','()=>FIELD_UI.state.layers[0].style.opacity===0.3')
-                page.evaluate('()=>inspectReanalysisPoint(30,70)')
-                check('Native point contains source and exact time','()=>document.querySelector("#reanalysisPoint").textContent.includes("ERA5")&&document.querySelector("#reanalysisPoint").textContent.includes("2024-01-01")')
-                page.evaluate('()=>tab("point")')
-                page.screenshot(path=str(out/'field-native-inspector.png'))
-                # Mode change does not download or change numeric field.
-                card().locator('[data-mode]').select_option('contours')
-                check('Contours displayed separately','()=>document.querySelectorAll("#reanalysisOverlays .field-contour").length>0&&!document.querySelector("#reanalysisOverlays image")')
-                card().locator('[data-mode]').select_option('raster')
-                page.locator('#fieldSource').select_option('merra2')
-                page.locator('#fieldPath').fill(str(other));page.locator('#fieldLoad').click()
-                check('Two independent sources','()=>FIELD_UI.state.layers.length===2&&document.querySelectorAll("#reanalysisOverlays image").length===2')
-                wait('()=>!FIELD_UI.state.busy')
-                page.locator('#fieldLeft').evaluate('(e)=>e.closest("details").open=true')
-                ids=page.evaluate('()=>FIELD_UI.state.layers.map(l=>l.field_id)')
-                page.locator('#fieldLeft').select_option(ids[0]);page.locator('#fieldRight').select_option(ids[1]);page.locator('#fieldDifference').click()
-                check('Difference source added as explicit product','()=>FIELD_UI.state.layers.length===3&&FIELD_UI.state.layers.some(l=>l.source==="difference")')
-                wait('()=>!FIELD_UI.state.busy')
-                page.evaluate('()=>inspectReanalysisPoint(30,70)')
-                check('Difference is Kelvin and not an error estimate','()=>FIELD_UI.state.layers.find(l=>l.source==="difference").units==="K"')
-                page.screenshot(path=str(out/'three-layers.png'))
-                layer=page.evaluate('()=>FIELD_UI.state.layers[2].id')
-                card().locator('[data-down]').click()
-                check('Order persisted',f'()=>FIELD_UI.state.layers[1].id==="{layer}"')
-                card().locator('[data-visible]').uncheck()
-                check('Visibility hides only one layer','()=>FIELD_UI.state.layers.filter(l=>l.visible).length===2&&document.querySelectorAll("#reanalysisOverlays > g").length===2')
-                # Switch geographic context; overlays are regenerated, not stretched into another CRS.
-                page.locator('#preset').select_option('arctic')
-                check('Map CRS changed and compatible overlays rendered','()=>S.map.grid.preset==="arctic"&&FIELD_UI.state.layers.filter(l=>l.visible).every(l=>l.views["arctic:1000"])&&document.querySelectorAll("#reanalysisOverlays > g").length===2')
-                # Surface average cannot be requested as an instantaneous field.
-                page.locator('#fieldVariable').select_option('mslp');page.locator('#fieldTime').fill('2024-01-01T00:00');page.locator('#fieldPath').fill('')
-                page.locator('#fieldLoad').click()
-                check('MERRA mean timestamps not silently shifted','()=>document.querySelector("#fieldError").textContent.includes("HH:30")')
-                # The same stack must survive selecting a satellite, without silently advancing field times.
-                satellite=root/'SYNTHETIC-SATELLITE';satellite.mkdir();satellite_fixture(satellite);app.scan_local(satellite)
-                page.evaluate('()=>setDate("2026-01-01")')
-                check('Satellite and field overlays share the map','()=>S.product&&!S.busy&&document.querySelectorAll("#reanalysisOverlays > g").length===2')
-                check('Changing scene does not replace pinned model time','()=>FIELD_UI.state.layers.every(l=>l.time.startsWith("2024-01-01"))')
-                g=app.product_grid(app.product(page.evaluate('()=>S.product.id')))
-                px,py=project_points(g,[(30,70)])[0]
-                page.evaluate('(p)=>inspectAt(p[0],p[1])',[px,py])
-                check('Click shows satellite plus independent reanalysis numbers','()=>UI.analysis&&document.querySelector("#reanalysisPoint").textContent.includes("MERRA-2")')
-                page.screenshot(path=str(out/'satellite-and-fields.png'))
-                for width,height in [(1536,960),(1024,768),(390,844)]:
-                    page.set_viewport_size({'width':width,'height':height});page.evaluate('()=>left("fields")');page.screenshot(path=str(out/f'layers-{width}.png'))
-                    check(f'No document overflow at {width}','()=>document.documentElement.scrollWidth<=innerWidth+2')
+                    raise AssertionError('Condition not reached: '+expression+'; errors='+str(report['browser_errors'])+'; status='+str(page.locator('#fieldError').text_content()))
+                def check(name,expression):
+                    wait(expression);report['checks'].append({'name':name,'passed':True});print(name,flush=True)
+                def screenshot(name):page.screenshot(path=str(out/name))
+                def import_field(source,count):
+                    page.locator('#fieldSource').select_option(source)
+                    page.locator('#fieldVariable').select_option('t');page.locator('#fieldLevel').select_option('850')
+                    page.locator('#fieldTime').fill('2024-01-01T00:00')
+                    page.locator('#fieldPath').evaluate('(e)=>e.closest("details").open=true')
+                    page.locator('#fieldPath').fill(str(paths[source]));page.locator('#fieldImport').click()
+                    check('Локальное поле '+source+' прошло настоящий обработчик',f'()=>FIELDS.stack.length==={count}&&FIELDS.job.status==="done"')
+                    page.locator('#fieldClose').click()
+                    check('Растровое наложение '+source+' показано',f'()=>document.querySelectorAll("#reanalysisLayers>g").length==={count}')
+                mount(page,ROOT,server,a.bridge)
+                check('Запуск без спутниковых файлов', '()=>typeof FIELDS!=="undefined"&&FIELDS.catalogue.length===3&&S.map!==null&&S.scene===null')
+                page.locator('#authOpen').click();page.locator('#sourcesDialog [data-field-source=era5]').click()
+                check('Источник ведёт непосредственно к полям', '()=>document.querySelector("#fieldDialog").open&&!document.querySelector("#calibrationDialog").open')
+                page.locator('#fieldDownload').click()
+                check('Без доступа нет скрытого сетевого запроса', '()=>document.querySelector("#fieldError").textContent.includes("Настройте доступ")')
+                screenshot('01-field-dialog.png')
+                import_field('era5',1)
+                page.locator('#productRail').click()
+                check('Слой содержит срок и единицы','()=>document.querySelector("#fieldLayerRows").textContent.includes("2024-01-01")&&document.querySelector(".field-legend").textContent.includes("°C")')
+                identity=page.evaluate('()=>FIELDS.stack[0].id')
+                page.locator(f'[data-field-style="{identity}"]').select_option('fill_contours')
+                check('Изолинии поверх заливки','()=>document.querySelectorAll("#reanalysisLayers .field-contour").length>0')
+                page.locator(f'[data-field-opacity="{identity}"]').fill('0.35')
+                page.locator(f'[data-field-opacity="{identity}"]').dispatch_event('change')
+                check('Прозрачность меняется без загрузки поля','()=>document.querySelector("#reanalysisLayers>g").getAttribute("opacity")==="0.35"')
+                page.locator(f'[data-field-visible="{identity}"]').uncheck()
+                check('Скрытый слой снят с карты','()=>document.querySelectorAll("#reanalysisLayers>g").length===0')
+                page.locator(f'[data-field-visible="{identity}"]').check()
+                check('Скрытый слой возвращается из кэша','()=>document.querySelectorAll("#reanalysisLayers>g").length===1')
+                # Mouse click, transformed from known model coordinates into the native map viewport.
+                g=page.evaluate('()=>S.map.grid');xx,yy=Transformer.from_crs(4326,g['crs'],always_xy=True).transform(30,70)
+                bounds=g['bounds'];x=(xx-bounds[0])/(bounds[2]-bounds[0])*g['width'];y=(bounds[3]-yy)/(bounds[3]-bounds[1])*g['height']
+                xy=page.evaluate('(p)=>{const q=document.querySelector("#map").createSVGPoint();q.x=p[0];q.y=p[1];const c=q.matrixTransform(document.querySelector("#map").getScreenCTM());return [c.x,c.y]}',[x,y])
+                page.mouse.click(*xy)
+                check('Анализ точки работает без снимка','()=>document.querySelector("#fieldProbe")?.textContent.includes("ERA5")&&S.product===null')
+                screenshot('02-model-map-probe.png')
+                page.locator('#closeInspector').click();page.locator('#fieldAddOpen').click()
+                import_field('merra2',2)
+                page.locator('#fieldAddOpen').click()
+                page.locator('#fieldSource').select_option('era5');page.locator('#fieldConfigure').click()
+                check('Настройка доступа из окна поля','()=>document.querySelector("#cdsAccessDialog").open')
+                page.locator('#cdsToken').fill('SYNTHETIC-BROWSER-TOKEN-NOT-A-CREDENTIAL');page.locator('#cdsSave').click()
+                check('Возврат к полю после настройки CDS','()=>document.querySelector("#fieldDialog").open&&document.querySelector("#fieldSource").value==="era5"')
+                page.locator('#fieldDifferenceDetails').evaluate('(e)=>e.open=true')
+                second=page.evaluate('()=>FIELDS.fields.find(f=>f.source==="merra2").id')
+                page.locator('#fieldFirst').select_option(second);page.locator('#fieldSecond').select_option(identity)
+                page.locator('#fieldDifference').click()
+                check('Разность создана на сервере','()=>FIELDS.stack.length===3&&FIELDS.fields.some(f=>f.source==="difference")')
+                page.locator('#fieldClose').click()
+                check('Три независимых слоя одновременно','()=>document.querySelectorAll("#reanalysisLayers>g").length===3')
+                screenshot('03-difference-stack.png')
+                if a.bridge:
+                    page.close();page=context.new_page();page.on('pageerror',lambda e:report['browser_errors'].append(str(e)));mount(page,ROOT,server,True)
+                else: page.reload()
+                check('Стек восстанавливается после перезагрузки страницы','()=>typeof FIELDS!=="undefined"&&FIELDS.stack.length===3&&document.querySelectorAll("#reanalysisLayers>g").length===3')
+                page.locator('#authOpen').click();page.locator('#sourcesDialog [data-field-source=carra2]').click()
+                page.locator('#fieldTime').fill('2024-01-01T01:00');page.locator('#fieldDownload').click()
+                check('Промежуточный прогноз CARRA2 не подменяет анализ','()=>document.querySelector("#fieldError").textContent.includes("шагом 3")')
+                for width,height in ((1536,960),(1024,768),(390,844)):
+                    page.set_viewport_size({'width':width,'height':height})
+                    check(f'Закрытие окна доступно при {width}×{height}', '()=>{const b=document.querySelector("#fieldClose").getBoundingClientRect();return b.top>=0&&b.right<=innerWidth&&b.bottom<=innerHeight;}')
+                    screenshot(f'04-dialog-{width}.png')
+                page.locator('#fieldClose').click()
                 self_errors=report['browser_errors'];assert not self_errors,self_errors
+                report['checks'].append({'name':'Ошибок JavaScript не было','passed':True})
                 browser.close()
         finally:
-            app.cancel.set();server.shutdown();server.server_close()
-            if app.task:app.task.join(5)
-            app.close();(out/'report.json').write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')
-    print(json.dumps({'checks':len(report['checks']),'browser_errors':report['browser_errors']}))
+            (out/'report.json').write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')
+            app.cancel.set()
+            if app.task and app.task.is_alive():app.task.join(5)
+            server.shutdown();server.server_close();app.close()
+    print('Passed',len(report['checks']),'browser checks',flush=True)
 
 if __name__=='__main__':main()

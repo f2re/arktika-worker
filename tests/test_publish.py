@@ -40,7 +40,7 @@ class PublishChecks(unittest.TestCase):
     kwargs['capture']=True;return original_git(*args,**kwargs)
    with patch.dict(os.environ,env,clear=True),patch.object(sys,'argv',['publish.py','--checkout',str(checkout),'--push']),patch.object(module,'git',side_effect=quiet_git),contextlib.redirect_stdout(io.StringIO()):module.main()
    self.assertEqual(old_main,git('--git-dir',str(remote),'rev-parse','main'))
-   branch='feature/meteo-workstation-v0.2.2'
+   branch='feature/meteo-workstation-v0.3.0'
    self.assertIn('MVP fixture',git('--git-dir',str(remote),'show',branch+':README.md'))
    self.assertIn('program.py',git('--git-dir',str(remote),'ls-tree','--name-only',branch))
  def test_tampered_supply_rejected_before_git(self):

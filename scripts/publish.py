@@ -11,7 +11,7 @@ REPO='https://github.com/f2re/arktika-worker.git'
 def git(*args,cwd=None,capture=False):
  return subprocess.run(['git',*args],cwd=cwd,check=True,text=True,capture_output=capture)
 def main():
- p=argparse.ArgumentParser(description=__doc__);p.add_argument('--checkout',required=True,help='Отдельная папка клона, не папка распакованной поставки');p.add_argument('--branch',default='feature/meteo-workstation-v0.2.2');p.add_argument('--push',action='store_true');args=p.parse_args()
+ p=argparse.ArgumentParser(description=__doc__);p.add_argument('--checkout',required=True,help='Отдельная папка клона, не папка распакованной поставки');p.add_argument('--branch',default='feature/meteo-workstation-v0.3.0');p.add_argument('--push',action='store_true');args=p.parse_args()
  manifest=json.loads((ROOT/'MANIFEST.json').read_text())['files']
  for name,expected in manifest.items():
   path=ROOT/name

@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import json
+import re
 from pathlib import Path, PurePosixPath
 ROOT = Path(__file__).resolve().parents[1]
 SKIP = {'.git','.venv','__pycache__','node_modules','.pytest_cache','browser-results','.delivery'}
@@ -36,7 +37,8 @@ def main():
         return name!='MANIFEST.json' and not (ROOT/name).is_symlink() and (ROOT/name).is_file()
     files = {name: hashlib.sha256((ROOT/name).read_bytes()).hexdigest()
              for name in sorted(names) if eligible(name)}
-    result = {'version':'0.2.2','files':files}
+    version = re.search(r'__version__ = "([^"]+)"', (ROOT/'arktika/__init__.py').read_text(encoding='utf-8'))[1]
+    result = {'version':version,'files':files}
     (ROOT/'MANIFEST.json').write_text(json.dumps(result,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
     print(len(files),'source files')
 if __name__ == '__main__':
