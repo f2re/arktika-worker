@@ -125,7 +125,7 @@
     "static/studio.js": "edfe4af53af6cf120030c5e9bd94c32af2b8e43426bdfe1222205bee69e7b2a3",
     "static/style.css": "9ac63e76e69e2979c2b567c9473510fb44100389e4f26f7c652ccc9882bb4f43",
     "tests/test_analysis_http.py": "916fd98e81819d62918874659d412a24abe2593a2c7e33c63fb9df87cb628b57",
-    "tests/test_archive.py": "b3299defed5ddbcb74abab878e0b6228904c116c1a288b8dc73e09d29ba495d7",
+    "tests/test_archive.py": "6a80cbe0d003a85dbb21f871d874b0549abd0549c05a66df843cfef494f0fd2f",
     "tests/test_audit_regressions.py": "59c296c853019e2718c1783f48d54ebd7dd94a90c25b3c368b417a7cb27fb706",
     "tests/test_catalog.py": "39439e0348edc29af9996dce504096bd7bd76f8b6ab343be459d34b86723220a",
     "tests/test_catalog_integration.py": "8400e17ca75bec5cdc8cedf876a8cbbc8ac4d68270922f9e3008c494c201940a",
