@@ -34,7 +34,9 @@ def unit_text(v):
 
 
 def convert(v, kind):
-    a = np.asarray(v.values,dtype=np.float64)
+    # Own the buffer: xarray/pandas coordinates and data may be read-only views.
+    # Conversions and nodata masking must never change the input dataset.
+    a = np.array(v.values,dtype=np.float64,copy=True)
     u = unit_text(v)
     # CF decoding must have been applied by xarray. No assumptions from DN ranges.
     if kind in ('t','t2m','sst'):
@@ -79,7 +81,7 @@ def exact_slice(ds, plan):
         lev=_coord(ds,('pressure_level','isobaricInhPa','plev','lev','level_location','level'),'air_pressure')
         values=np.asarray(lev.values,dtype=float).reshape(-1)
         units=unit_text(lev)
-        if units in ('pa','pascal'): values/=100.
+        if units in ('pa','pascal'): values=values/100.
         elif units not in ('hpa','mbar','millibar') and lev.name not in ('pressure_level','isobaricInhPa'):
             raise ValueError('У координаты давления нет подтверждённых единиц Па/гПа.')
         hits=np.flatnonzero(np.isclose(values,plan['level'],rtol=0,atol=1e-5))
