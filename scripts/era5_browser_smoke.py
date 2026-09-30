@@ -101,7 +101,6 @@ def main():
                     page.locator('#calibrationOpen').click();page.locator('#era5Open').click();wait('()=>ERA5_UI.preflight&&ERA5_UI.state&&!document.querySelector("#era5Run").disabled')
                 try:
                     mount(page,ROOT,server,args.bridge)
-                    if args.bridge:page.add_script_tag(content=(ROOT/'static/era5.js').read_text())
                     wait('()=>typeof S!=="undefined"&&S.product&&!S.busy&&!UI.activeBuild')
                     # Prepare stale-channel situation directly; all interactions below use UI.
                     page.locator('#product').evaluate('(e)=>e.value="micro24"')

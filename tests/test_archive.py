@@ -6,6 +6,7 @@ import threading
 import time
 import unittest
 import zipfile
+from unittest.mock import patch
 from pathlib import Path
 
 import numpy as np
@@ -69,11 +70,36 @@ class ArchiveTests(unittest.TestCase):
     def local(self,epsg=4326,**options):
         asset=next(a for a in self.assets if a['epsg']==epsg);path=self.root/asset['filename']
         rgb_fixture(path,epsg,**options)
-        self.app.store.enqueue(asset,path);self.app.store.update_job(asset['id'],state='done',done=path.stat().st_size)
+        # Publish this completed fixture atomically to the running scheduler.
+        with self.app.queue.control:
+            self.app.store.enqueue(asset,path)
+            self.app.store.update_job(asset['id'],state='done',done=path.stat().st_size)
         self.app.sync_downloads();return asset,path
     def build(self):
         scene=self.app.scene(self.app.scenes()[0]['id'])
         return build_composite(scene,self.app.product_root,dict(preset='barents',width=256,channel=9))
+    def test_completed_fixture_is_atomic_for_scheduler(self):
+        # Force a second thread into the exact enqueue -> done gap. The fixture
+        # represents a completed download, not a new job that may be scheduled.
+        enqueue = self.app.store.enqueue
+        acquired = []
+        def enqueue_with_probe(asset, path):
+            enqueue(asset, path)
+            def scheduler_probe():
+                allowed = self.app.queue.control.acquire(blocking=False)
+                acquired.append(allowed)
+                if allowed:
+                    self.app.queue.control.release()
+            thread = threading.Thread(target=scheduler_probe)
+            thread.start()
+            thread.join(2)
+            self.assertFalse(thread.is_alive())
+        with patch.object(self.app.store, 'enqueue', side_effect=enqueue_with_probe):
+            asset, _ = self.local()
+        self.assertEqual(acquired, [False])
+        self.assertEqual(self.app.store.job(asset['id'])['state'], 'done')
+        self.assertEqual(len(self.app.scenes()), 1)
+
     def test_remote_archive_not_missing_ten_channels(self):
         row=self.app.sessions('2024-09-20',{})['sessions'][0]
         self.assertTrue(row['archive_only']);self.assertEqual(len(row['imagery']),2)
@@ -152,7 +178,9 @@ class ArchiveTests(unittest.TestCase):
     def test_missing_rgb_layout_is_explained(self):
         asset=self.assets[0];path=self.root/'gray.tif'
         with rasterio.open(path,'w',driver='GTiff',crs=4326,count=1,width=8,height=8,dtype='uint16',transform=from_bounds(20,65,50,85,8,8)) as ds:ds.write(np.ones((8,8),dtype='uint16'),1)
-        self.app.store.enqueue(asset,path);self.app.store.update_job(asset['id'],state='done')
+        with self.app.queue.control:
+            self.app.store.enqueue(asset,path)
+            self.app.store.update_job(asset['id'],state='done')
         r=self.app.session('ARCM1',STAMP);self.assertEqual(r['imagery'][0]['state'],'unregistered')
         item=next(a for a in r['assets'] if a['id']==asset['id'])
         self.assertTrue(item['map_error']);self.assertIsNone(item['composite_id'])

@@ -42,6 +42,9 @@ class AutoCalibrationMixin(Era5WorkflowMixin):
             if self.busy: raise ValueError('Дождитесь завершения операции перед изменением доступа ERA5.')
             parsed={} if data.get('clear') is True else credentials_from_text(data.get('text'),data.get('format','auto'))
             self._era5_credential=parsed
+            # Unified CDS credentials also serve map fields; a clear really clears them.
+            if not parsed or parsed.get('provider')=='cds':
+                self._source_cds_credential=copy.deepcopy(parsed)
             return public_credentials(parsed)
 
     def era5_coefficient_download(self,data):

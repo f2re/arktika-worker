@@ -21,6 +21,7 @@ from arktika.service import App,parse_filters,open_folder
 from arktika.network import NetworkError,redact
 from arktika.instance import InstanceLock
 from arktika.workstation import Workstation
+from arktika import __version__
 from arktika.products import registry
 from arktika.interpretation import GUIDES
 from arktika.profiles import integrate,cloud_top
@@ -44,7 +45,7 @@ class LocalServer(ThreadingHTTPServer):
         finally:self.slots.release()
 
 class Handler(BaseHTTPRequestHandler):
-    server_version='ArktikaWorker/0.2'
+    server_version='ArktikaWorker/'+__version__
     protocol_version='HTTP/1.1'
     def setup(self):
         super().setup();self.connection.settimeout(120)
@@ -95,14 +96,14 @@ class Handler(BaseHTTPRequestHandler):
                 self.send(303,b'',extra={'Location':'/'})
             except Exception as e:self.error(e)
             return
-        if path in ('/','/app.js','/style.css','/icon.svg','/favicon.ico','/studio.js','/catalog.js','/catalog.css','/product_flow.js','/era5.js','/reanalysis.js'):
+        if path in ('/','/app.js','/style.css','/icon.svg','/favicon.ico','/studio.js','/catalog.js','/catalog.css','/product_flow.js','/era5.js','/reanalysis.js','/reanalysis.css'):
             if not self.gate(False):return
-            names={'/reanalysis.js':'reanalysis.js','/era5.js':'era5.js','/':'index.html','/app.js':'app.js','/style.css':'style.css','/icon.svg':'icon.svg','/favicon.ico':'icon.svg','/studio.js':'studio.js','/product_flow.js':'product_flow.js','/catalog.js':'catalog.js','/catalog.css':'catalog.css'}
+            names={'/reanalysis.js':'reanalysis.js','/reanalysis.css':'reanalysis.css','/era5.js':'era5.js','/':'index.html','/app.js':'app.js','/style.css':'style.css','/icon.svg':'icon.svg','/favicon.ico':'icon.svg','/studio.js':'studio.js','/product_flow.js':'product_flow.js','/catalog.js':'catalog.js','/catalog.css':'catalog.css'}
             p=ROOT/'static'/names[path]
-            ctype={'reanalysis.js':'application/javascript; charset=utf-8','era5.js':'application/javascript; charset=utf-8','index.html':'text/html; charset=utf-8','app.js':'application/javascript; charset=utf-8','studio.js':'application/javascript; charset=utf-8','product_flow.js':'application/javascript; charset=utf-8','catalog.js':'application/javascript; charset=utf-8','catalog.css':'text/css; charset=utf-8','style.css':'text/css; charset=utf-8','icon.svg':'image/svg+xml'}[p.name]
+            ctype={'reanalysis.js':'application/javascript; charset=utf-8','reanalysis.css':'text/css; charset=utf-8','era5.js':'application/javascript; charset=utf-8','index.html':'text/html; charset=utf-8','app.js':'application/javascript; charset=utf-8','studio.js':'application/javascript; charset=utf-8','product_flow.js':'application/javascript; charset=utf-8','catalog.js':'application/javascript; charset=utf-8','catalog.css':'text/css; charset=utf-8','style.css':'text/css; charset=utf-8','icon.svg':'image/svg+xml'}[p.name]
             self.send(200,p.read_bytes(),ctype);return
         if path=='/health':
-            if self.gate(False):self.send(200,{'app':'arktika-web','version':'0.2.2'})
+            if self.gate(False):self.send(200,{'app':'arktika-web','version':__version__})
             return
         if not self.gate():return
         try:
@@ -111,16 +112,13 @@ class Handler(BaseHTTPRequestHandler):
             if path=='/api/era5/state':result=app.era5_state()
             elif path=='/api/era5/report':result=app.era5_report(q.get('id'))
             elif path=='/api/sources':result=app.source_state()
-            elif path=='/api/reanalysis/catalog':
-                from arktika.reanalysis.catalog import catalog
-                result=catalog()
-            elif path=='/api/reanalysis/state':result=app.reanalysis_state()
-            elif path.startswith('/reanalysis/'):
+            elif path=='/api/reanalysis/state':result=app.fields_state()
+            elif path.startswith('/field-render/'):
                 bits=path.split('/')
-                if len(bits)!=5 or bits[2] not in ('render','field'):raise ValueError('Неверный адрес полевого продукта.')
-                p=app.reanalysis_artifact(bits[2],bits[3],bits[4])
-                ctype=mimetypes.guess_type(str(p))[0] or 'application/octet-stream'
-                self.send(200,p.read_bytes(),ctype,{'Content-Disposition':'attachment; filename="'+p.name+'"'} if p.suffix in ('.nc','.tif') else None);return
+                if len(bits)!=4 or bits[3]!='map.png': raise ValueError('Неверный путь изображения.')
+                self.send(200,app.field_image(bits[2]).read_bytes(),'image/png');return
+            elif path.startswith('/field-export/'):
+                self.send(200,app.fields_export(path.split('/')[-1]),'application/zip',{'Content-Disposition':'attachment; filename="reanalysis-field.zip"'});return
             elif path=='/api/registry':result=registry()
             elif path=='/api/guides':result=GUIDES
             elif path=='/api/profiles':result={'profiles':app.profiles()}
@@ -188,12 +186,13 @@ class Handler(BaseHTTPRequestHandler):
             app=self.server.app;result={'ok':True}
             if path=='/api/era5/credentials':result=app.era5_credentials(data)
             elif path=='/api/sources/credentials':result=app.source_credentials(data)
-            elif path=='/api/reanalysis/prepare':result=app.reanalysis_prepare(data)
-            elif path=='/api/reanalysis/layers':result=app.reanalysis_layers(data)
-            elif path=='/api/reanalysis/map':result=app.reanalysis_map(data)
-            elif path=='/api/reanalysis/difference':result=app.reanalysis_difference(data)
-            elif path=='/api/reanalysis/point':result=app.reanalysis_point(data)
-            elif path=='/api/reanalysis/cancel':result=app.reanalysis_cancel(data)
+            elif path=='/api/reanalysis/add':result=app.fields_add(data)
+            elif path=='/api/reanalysis/import':result=app.fields_add(data,local=True)
+            elif path=='/api/reanalysis/stack':result=app.fields_stack(data)
+            elif path=='/api/reanalysis/render':result=app.fields_render(data)
+            elif path=='/api/reanalysis/probe':result=app.fields_probe(data)
+            elif path=='/api/reanalysis/difference':result=app.fields_difference(data)
+            elif path=='/api/reanalysis/cancel':result=app.fields_cancel(data)
             elif path=='/api/era5/plan':result=app.era5_plan(data)
             elif path=='/api/era5/preflight':result=app.era5_preflight(data)
             elif path=='/api/era5/setup':result=app.era5_setup(data)
@@ -317,7 +316,7 @@ def main(argv=None):
         app.close();lock.close();raise SystemExit('Не удалось открыть локальный порт. Укажите --port 9000.')
     url='http://127.0.0.1:{}/#{}'.format(server.server_address[1],server.key)
     lock.publish(url)
-    print('\nАрктика-М — рабочее место метеоролога 0.2.2\n')
+    print('\nАрктика-М — рабочее место метеоролога '+__version__+'\n')
     print('Откройте в браузере:\n'+url+'\n')
     print('Сервер работает только на этом компьютере. Не закрывайте это окно во время загрузки.')
     print('Остановка: Ctrl+C или кнопка «Завершить работу» в интерфейсе.\n',flush=True)

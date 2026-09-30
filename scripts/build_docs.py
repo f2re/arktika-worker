@@ -37,7 +37,7 @@ def main():
   body=re.sub(r'href="([^"]+)"',local_link,body)
   sections.append('<section id="'+slug+'">'+body+'</section>')
  links+='<a href="ERA5.html">ERA5 и опорная шкала</a>'
- doc='<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Арктика-М — руководство и план ГИС</title><style>'+CSS+'</style></head><body><nav><strong>АРКТИКА-М<br>Рабочее место метеоролога</strong>'+links+'<small>Версия 0.2.2<br>Автономное руководство<br>Наблюдения ≠ прогноз</small></nav><main>'+''.join(sections)+'</main></body></html>'
+ doc='<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Арктика-М — руководство и план ГИС</title><style>'+CSS+'</style></head><body><nav><strong>АРКТИКА-М<br>Рабочее место метеоролога</strong>'+links+'<small>Версия 0.3.0<br>Автономное руководство<br>Наблюдения ≠ прогноз</small></nav><main>'+''.join(sections)+'</main></body></html>'
  (ROOT/'docs/index.html').write_text(doc,encoding='utf-8')
  print('docs/index.html создан: '+str(len(doc.encode('utf-8')))+' байт')
 if __name__=='__main__':main()

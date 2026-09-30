@@ -12,7 +12,7 @@ from .download import atomic_json, digest
 from .era5_access import cancelled
 
 ROOT = Path(__file__).resolve().parents[1]
-PACKAGES = ('numpy', 'rasterio', 'pyproj', 'PIL', 'xarray', 'netCDF4', 'cdsapi', 'requests', 'scipy', 'contourpy', 'pydap', 'cfgrib')
+PACKAGES = ('numpy', 'rasterio', 'pyproj', 'PIL', 'xarray', 'netCDF4', 'cdsapi', 'requests', 'scipy', 'contourpy', 'pydap')
 _LOCK = threading.Lock()
 _CACHE = {}
 PROBE = '''import importlib,json,re

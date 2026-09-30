@@ -4,4 +4,7 @@ xarray>=2025.4,<2027
 netCDF4>=1.6,<2
 requests>=2.32,<3
 
--r requirements-reanalysis.txt
+# Пространственные поля реанализа и OPeNDAP-поднаборы MERRA-2.
+scipy>=1.11,<2
+contourpy>=1.2,<2
+pydap>=3.5,<4

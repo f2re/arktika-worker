@@ -89,3 +89,53 @@ jobs:
           name: browser-results
           path: browser-results
           retention-days: 7
+
+  package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python scripts/build_release.py --output dist --commit "${{ github.sha }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-package
+          path: dist/
+          retention-days: 14
+  release:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'f2re/arktika-worker'
+    needs: [python, era5-install, browser, coefficients, package]
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python scripts/build_release.py --output dist --commit "${{ github.sha }}"
+      - name: Publish the tested commit and verified archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="$(python -c 'import json; print(json.load(open("dist/build-info.json"))["tag"])')"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag already exists; nothing is overwritten."
+            exit 0
+          fi
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            test "$(git rev-list -n 1 "$tag")" = "$GITHUB_SHA"
+          fi
+          cp dist/RELEASE_NOTES.md "$RUNNER_TEMP/release-notes.md"
+          printf '\nПроверенный коммит: `%s`. [Журнал CI](https://github.com/%s/actions/runs/%s).\n' "$GITHUB_SHA" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" >> "$RUNNER_TEMP/release-notes.md"
+          gh release create "$tag" dist/*.zip dist/SHA256SUMS.txt dist/build-info.json dist/RELEASE_NOTES.md \
+            --target "$GITHUB_SHA" --title "Арктика-М $tag — поля реанализа и карта" \
+            --notes-file "$RUNNER_TEMP/release-notes.md" --latest
