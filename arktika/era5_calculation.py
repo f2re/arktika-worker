@@ -9,6 +9,17 @@ from .era5_sync import collocate, fit_reference, load_group
 from .network import Cancelled
 
 
+CANDIDATE_AREAS = [
+    {'name': 'Каспийское море', 'area': [47.0, 48.0, 44.0, 53.0]},
+    {'name': 'Белое море', 'area': [66.0, 33.0, 64.0, 41.0]},
+    {'name': 'Норвежское море (юг)', 'area': [68.0, 0.0, 62.0, 10.0]},
+    {'name': 'Норвежское море (север)', 'area': [76.0, 10.0, 70.0, 20.0]},
+    {'name': 'Северное море', 'area': [60.0, 2.0, 55.0, 8.0]},
+    {'name': 'Баренцево море (юг)', 'area': [72.0, 35.0, 68.0, 48.0]},
+    {'name': 'Охотское море', 'area': [56.0, 145.0, 51.0, 153.0]},
+]
+
+
 def calculate_reference(scene, plan, options, root, credential, identity, cancel=None, progress=lambda message: None):
     root=Path(root);folder=root/'era5'/'runs'/identity;folder.mkdir(parents=True,exist_ok=True)
     only=options.get('data_only') is True;zenith=options.get('zenith_deg')
@@ -43,7 +54,44 @@ def calculate_reference(scene, plan, options, root, credential, identity, cancel
             pairs=collocate(scene,plan,files,zenith,cancel)
             report['selection']={k:v for k,v in pairs.items() if k not in ('profiles','dn','groups')}
             report['n_references']=len(pairs['profiles'])
-            if len(pairs['profiles'])<24: raise ValueError('Недостаточно подходящих опор (нужно 24). Измените опорную область или срок; лёд и облака не заменяются эталонами.')
+            if len(pairs['profiles'])<24:
+                from .orbit import calculate_viewing_geometry
+                from .era5_access import plan_requests
+                tried=[plan['area']]
+                when_dt=dt.datetime.fromisoformat(scene['time'].replace('Z','+00:00'))
+                for cand in CANDIDATE_AREAS:
+                    cancelled(cancel)
+                    c_area=cand['area']
+                    if c_area in tried: continue
+                    tried.append(c_area)
+                    center_lat=(c_area[0]+c_area[2])/2.0
+                    center_lon=(c_area[1]+c_area[3])/2.0
+                    try:
+                        geom=calculate_viewing_geometry(scene['platform'],when_dt,center_lat,center_lon,root/'orbit')
+                        c_zenith=geom['zenith_deg']
+                    except Exception:
+                        continue
+                    if not (0<=c_zenith<=70.0): continue
+                    progress(f'В области облачно ({len(pairs["profiles"])} опор). Проверяю резервный район: {cand["name"]} (угол {c_zenith}°)...')
+                    c_plan=plan_requests(scene['time'],plan['channels'],c_area,plan['provider'])
+                    c_plan.update(scene=scene['id'],platform=scene['platform'],srf_sha256=plan['srf_sha256'],
+                                  spectral_proxy=plan.get('spectral_proxy',''))
+                    try:
+                        c_files=retrieve_plan(c_plan,credential,root/'era5'/'cache',cancel,progress)
+                        c_pairs=collocate(scene,c_plan,c_files,c_zenith,cancel)
+                        if len(c_pairs['profiles'])>=24:
+                            plan=c_plan;files=c_files;pairs=c_pairs;zenith=c_zenith
+                            report['plan']={k:v for k,v in plan.items() if k!='runtime'}
+                            report['era5_files']=[{k:v for k,v in f.items() if k!='path'} for f in files]
+                            report['selection']={k:v for k,v in pairs.items() if k not in ('profiles','dn','groups')}
+                            report['n_references']=len(pairs['profiles'])
+                            report['fallback_area']=cand['name']
+                            progress(f'Найдена чистая акватория: {cand["name"]} ({len(pairs["profiles"])} опор, угол {c_zenith}°).')
+                            break
+                    except Exception as e:
+                        if isinstance(e,Cancelled): raise
+                        continue
+            if len(pairs['profiles'])<24: raise ValueError('Недостаточно подходящих опор (нужно 24). Область и проверенные резервные районы закрыты облаками или льдом.')
             progress('RTTOV: рассчитываю сигнал спектрального аналога Электро-Л №2.')
             bt=forward_isolated(pairs['profiles'],plan['channels'],root,folder,cancel)
             import numpy as np

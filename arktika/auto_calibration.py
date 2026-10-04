@@ -18,6 +18,13 @@ class AutoCalibrationMixin(Era5WorkflowMixin):
             if not hasattr(self,'_era5_credential'):
                 self._era5_credential={};self._era5_job={'status':'idle'}
                 try:
+                    p=Path('~/.cdsapirc').expanduser()
+                    if p.is_file():
+                        self._era5_credential=credentials_from_text(p.read_text(encoding='utf-8'),'auto')
+                        if self._era5_credential.get('provider')=='cds':
+                            self._source_cds_credential=copy.deepcopy(self._era5_credential)
+                except Exception:pass
+                try:
                     saved=json.loads((self.store.root/'era5'/'workflow.json').read_text(encoding='utf-8'))
                     if saved.get('status')=='running':
                         saved.update(status='interrupted',phase='Сервер был остановлен. Готовые файлы сохранены; нажмите «Продолжить».',next_action='retry')

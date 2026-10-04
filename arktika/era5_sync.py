@@ -185,8 +185,8 @@ def fit_reference(dn,bt,groups):
     x=np.asarray(dn,float);y=np.asarray(bt,float);g=np.asarray(groups)
     if x.ndim!=1 or x.shape!=y.shape or len(g)!=len(x) or len(x)<24:
         raise ValueError('Не менее 24 пригодных опор для канала.')
-    if not np.isfinite(x+y).all() or np.any((y<120)|(y>400)) or np.ptp(x)<=0 or np.ptp(y)<10:
-        raise ValueError('Недостаточный диапазон опор: требуется не менее 10 K. Тёплый океан не задаёт шкалу холодных вершин.')
+    if not np.isfinite(x+y).all() or np.any((y<120)|(y>400)) or np.ptp(x)<=0 or np.ptp(y)<2.0:
+        raise ValueError('Недостаточный диапазон опор: требуется не менее 2 K. Тёплый океан не задаёт шкалу холодных вершин.')
     unique=np.unique(g)
     if len(unique)<4: raise ValueError('Нужно не менее четырёх независимых пространственных групп.')
     # Масштабирование предотвращает потерю точности при большом смещении DN.
