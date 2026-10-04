@@ -79,7 +79,14 @@ class Era5WorkflowMixin:
         if plan['provider']=='cds': access=credential['provider']=='cds'
         latest=(dt.datetime.now(dt.timezone.utc)-dt.timedelta(days=6)).date().isoformat()
         recent=plan['likely_not_available'] and data.get('try_recent') is not True
-        return dict(plan=plan,inventory=inventory,credentials=credential,
+        orbit=None
+        try:
+            from .orbit import calculate_viewing_geometry
+            when=dt.datetime.fromisoformat(scene['time'].replace('Z','+00:00'))
+            area=plan.get('area',[76.0,10.0,70.0,20.0])
+            orbit=calculate_viewing_geometry(scene['platform'],when,(area[0]+area[2])/2.0,(area[1]+area[3])/2.0,self.store.root/'orbit')
+        except Exception:pass
+        return dict(plan=plan,inventory=inventory,credentials=credential,orbit=orbit,
                     runtime={'data_dependencies_missing':runtime['missing'],'pyrttov':runtime['pyrttov'],
                              'coefficient':coefficient_info(self.store.root),'managed':runtime['managed']},
                     next_action='archive' if recent else 'credentials' if not access else 'start',
@@ -121,6 +128,19 @@ class Era5WorkflowMixin:
     def era5_engine(self,data):
         if self.busy: raise ValueError('Дождитесь завершения подготовки.')
         return configure_engine(self.store.root,data.get('path'))
+
+    def era5_orbit(self,data):
+        from .orbit import calculate_viewing_geometry
+        scene_id=data.get('scene') or (self._era5_job.get('scene') if self._era5_job else None)
+        if not scene_id: raise ValueError('Сцена не указана.')
+        scene=self.scene(scene_id)
+        if not scene: raise ValueError('Сцена не найдена.')
+        when=dt.datetime.fromisoformat(scene['time'].replace('Z','+00:00'))
+        area=data.get('area')
+        if not area or len(area)!=4 or any(x is None for x in area):
+            area=[76.0,10.0,70.0,20.0]
+        orbit=calculate_viewing_geometry(scene['platform'],when,(area[0]+area[2])/2.0,(area[1]+area[3])/2.0,self.store.root/'orbit')
+        return orbit
 
     def era5_cancel(self,data):
         self._era5_init()

@@ -171,10 +171,11 @@ def simulate_profiles(profiles,channels,coef):
 
 def forward_isolated(profiles,channels,root,workdir,cancel=None):
     """Fortran/RTTOV не прерывается потоком Python: процесс с ограниченным временем."""
+    from .era5_runtime import runtime_env
     workdir=Path(workdir);inp=workdir/'forward-input.json';out=workdir/'forward-output.json'
     atomic_json(inp,{'profiles':profiles,'channels':channels,'coefficient':str(coefficient_path(root))})
     script=Path(__file__).resolve().parents[1]/'scripts/rttov_forward.py'
-    proc=subprocess.Popen([sys.executable,str(script),str(inp),str(out)],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+    proc=subprocess.Popen([sys.executable,str(script),str(inp),str(out)],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,env=runtime_env(root))
     try:
         end=time.monotonic()+600
         while proc.poll() is None:
