@@ -484,9 +484,12 @@ drawLegend = function(l) {
   if(l.stats)html+=`<details><summary>Диапазон данных: ${num(value(l.stats.min))}…${num(value(l.stats.max))} ${escape(unit)}</summary><p class="hint">Минимум и максимум валидных значений на расчётной сетке. Это не границы цветовой шкалы. Автоконтраст DN использует 2-й и 98-й процентили.</p></details>`;
   if(l.classes){
     html+=l.classes.map(c=>`<div class="legend-item"><span class="swatch" style="background:${c.color}"></span><span>${escape(c.name)}</span></div>`).join('');
-    miniature=`<div class="mini-swatches">${l.classes.filter(c=>c.value>0).slice(0,3).map(c=>`<span><i style="background:${c.color}"></i>${escape(c.name.split(':')[0])}</span>`).join('')}</div>`;
+    miniature=`<div class="mini-swatches">${l.classes.filter(c=>c.value>0).map(c=>`<span><i style="background:${c.color}"></i>${escape(c.name.split(':')[0])}</span>`).join('')}</div>`;
   }
-  if(guide.swatches?.length)miniature=`<div class="mini-swatches">${guide.swatches.map(c=>`<span><i style="background:${c.color}"></i>${escape(c.title.split(' / ')[0])}</span>`).join('')}</div>`;
+  if(guide.swatches?.length){
+    miniature=`<div class="mini-swatches">${guide.swatches.map(c=>`<span title="${escape(c.meaning + (c.application?' · '+c.application:''))}"><i style="background:${c.color}"></i>${escape(c.label || c.title.split(' / ')[0])}</span>`).join('')}</div>`;
+  }
+  html+=`<div class="hint" style="margin-top:14px;padding:9px 12px;background:#eef4fb;border-radius:10px;font-size:11px;color:#28486e">💡 <b>Точные значения и качество:</b> кликните по любой точке на карте — во вкладке <b>«Точка»</b> отобразятся точные температуры каналов (в °C и K), разности и проверка калибровки.</div>`;
   html+='<details><summary>Компоненты, шкалы и качество</summary>';
   if(l.components)html+=l.components.map(c=>`<div class="component" style="border-color:${c.component==='R'?'#bf6576':c.component==='G'?'#43977e':'#5587c7'}"><b>${c.component}</b> <code>${escape(c.formula)}</code><small>${c.min}…${c.max} K · γ ${c.gamma}</small><small>В области: ${num(c.stats.min)}…${num(c.stats.max)} K</small></div>`).join('');
   html+=`<p class="micro">${escape(l.data_stats_scope||'')}<br>${escape(l.nodata||'')}<br>Калибровка: ${escape(sourceCal[l.status]||l.status)}.</p><pre>${escape(JSON.stringify({flags:l.quality_flags,version:l.version},null,2))}</pre></details><a class="export-link" href="/docs/QUICKSTART.html#signal" target="_blank" rel="noopener">Как читать значения и цвета</a>`;
@@ -496,7 +499,8 @@ drawLegend = function(l) {
     $('#legendFullRange').disabled=!Number.isFinite(l.stats?.min)||!Number.isFinite(l.stats?.max);
     $('#legendFullRange').onclick=()=>{$('#displayMin').value=value(l.stats.min);$('#displayMax').value=value(Math.max(l.stats.max,l.stats.min+1));requestBuild();};
   }
-  $('#miniLegend').innerHTML=`<div class="mini-legend-title">${icon('info')}${escape(guide.title||l.title)}</div>${miniature}`;
+  const calBadge=l.status&&displayCal[l.status]?`<span class="mini-legend-pill" title="Калибровка: ${escape(sourceCal[l.status]||l.status)}">${escape(displayCal[l.status])}</span>`:'';
+  $('#miniLegend').innerHTML=`<div class="mini-legend-title">${icon('info')}<span>${escape(guide.title||l.title)}</span>${calBadge}</div>${miniature}<div class="mini-legend-hint">Кликните на карту: точные Tя, разности и качество</div>`;
   $('#miniLegend').hidden=false;
 };
 

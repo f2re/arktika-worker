@@ -150,6 +150,8 @@ summary {font-size:12px;cursor:pointer;color:#55657a;line-height:1.8}
 .mini-legend {position:absolute;bottom:36px;left:16px;max-width:calc(100% - 90px);padding:10px 13px;border-radius:14px;background:#fffffff2;box-shadow:var(--shadow);display:block;font-size:11px;text-align:left;white-space:normal}
 .mini-legend-title {display:flex;align-items:center;gap:7px;font-weight:600;font-size:11px;margin-bottom:6px}
 .mini-legend-title .icon {width:15px;height:15px;color:var(--primary)}
+.mini-legend-pill {margin-left:auto;font-size:9px;font-weight:600;padding:1px 5px;border-radius:4px;background:#eef3fa;color:#2f5888}
+.mini-legend-hint {font-size:9px;color:#7b8ea0;margin-top:6px;line-height:1.2}
 .mini-swatches {display:flex;flex-wrap:wrap;gap:10px}
 .mini-swatches span {display:flex;gap:5px;align-items:center;font-size:10px;color:#657080}
 .mini-swatches i {width:8px;height:8px;border-radius:50%;display:block}
