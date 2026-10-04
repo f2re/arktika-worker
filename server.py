@@ -197,6 +197,7 @@ class Handler(BaseHTTPRequestHandler):
             elif path=='/api/era5/preflight':result=app.era5_preflight(data)
             elif path=='/api/era5/setup':result=app.era5_setup(data)
             elif path=='/api/era5/engine':result=app.era5_engine(data)
+            elif path=='/api/era5/orbit':result=app.era5_orbit(data)
             elif path=='/api/era5/cancel':result=app.era5_cancel(data)
             elif path=='/api/era5/start':result=app.era5_start(data)
             elif path=='/api/era5/coefficients':result=app.era5_coefficient_download(data)
@@ -293,6 +294,7 @@ def main(argv=None):
     parser.add_argument('--import-local')
     parser.add_argument('--config',default=str(ROOT/'config'/'app.json'))
     parser.add_argument('--token-file')
+    parser.add_argument('--key')
     args=parser.parse_args(argv)
     os.umask(0o077)
     lock=InstanceLock(args.data_dir)
@@ -310,7 +312,7 @@ def main(argv=None):
     app.client.oauth.update(app.store.setting('oauth',{}))
     server=None
     for port in range(args.port,args.port+1):
-        try:server=LocalServer(('127.0.0.1',port),app);break
+        try:server=LocalServer(('127.0.0.1',port),app,key=args.key);break
         except OSError:continue
     if server is None:
         app.close();lock.close();raise SystemExit('Не удалось открыть локальный порт. Укажите --port 9000.')

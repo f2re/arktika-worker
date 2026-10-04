@@ -13,8 +13,9 @@ era5Dialog.innerHTML=`<div class="dialog-head era5-head"><div class="era5-headin
 <section id="era5EngineHelp" hidden><h3>Подключить RTTOV 13.2</h3><p class="hint">Коэффициенты скачиваются автоматически и показаны отдельным этапом выше. Здесь требуется сама программа RTTOV — таблица её не заменяет. Получите дистрибутив NWP SAF, установите Python-обёртку и укажите папку один раз.</p>
 <a class="text-button" href="https://nwp-saf.eumetsat.int/site/software/rttov/download/" target="_blank" rel="noopener">Получить RTTOV и принять лицензию</a>
 <label>Папка установленного RTTOV<input id="era5EnginePath" placeholder="Например, /opt/rttov132"></label><button id="era5ConnectEngine" class="tonal">Проверить и подключить</button><p id="era5EngineMessage" class="hint"></p></section>
-<section id="era5GeometryHelp" hidden><h3>Угол наблюдения</h3><p class="hint">В этих данных угол не указан. Введите его из геометрии спутника. Для опорной области он будет принят постоянным; нулевой угол автоматически не подставляется.</p>
-<label>Зенитный угол, °<input id="era5Zenith" type="number" min="0" max="70" step="0.1" placeholder="Из геометрии наблюдения"></label></section>
+<section id="era5GeometryHelp" hidden><h3>Угол наблюдения</h3><p class="hint">В этих данных угол не указан. Введите его вручную или рассчитайте по актуальной орбите спутника (SGP4 / CelesTrak / SatNOGS).</p>
+<div class="row" style="align-items:flex-end;gap:8px;"><label style="flex:1;">Зенитный угол, °<input id="era5Zenith" type="number" min="0" max="70" step="0.1" placeholder="Из геометрии наблюдения"></label><button id="era5CalcZenith" type="button" class="tonal" style="white-space:nowrap;margin-bottom:2px;">Рассчитать по орбите SGP4</button></div>
+<p id="era5OrbitInfo" class="micro" style="margin-top:6px;color:#285a9e;"></p></section>
 <div id="era5Report"></div>
 <details id="era5Advanced"><summary>Область, источник и подробности</summary><p id="era5Channels" class="hint"></p><p class="micro">По умолчанию — небольшой участок Норвежского моря. Используются открытая вода и малое покрытие облаками ERA5. Это не гарантирует наличие опор.</p>
 <div class="row"><label>Север, °<input id="era5North" type="number" step="0.25" value="76"></label><label>Юг, °<input id="era5South" type="number" step="0.25" value="70"></label></div>
@@ -78,10 +79,14 @@ async function era5Refresh(){
     if(!state.busy&&next!=='coefficients'&&p?.next_action==='archive')next='archive';
     if(!state.busy&&p?.next_action==='credentials'&&!['archive','coefficients'].includes(next))next='credentials';
     const message=!context?'Выбранный срок или продукт изменился. Результат относится к показанному сроку; откройте подготовку для нового выбора.':state.busy?(active?j.phase:state.operation):own&&j.status!=='idle'?j.phase:p?.message||'Проверяю готовность…';
-    $('#era5Next').textContent=message;$('#era5Progress').textContent=active?'Можно закрыть окно: подготовка продолжится. Возврат покажет тот же этап.':'';
     $('#era5Access').hidden=next!=='credentials'&&(c.present&&c.provider===$('#era5Provider').value||$('#era5Provider').value==='gdex');
     $('#era5EngineHelp').hidden=!(own&&!r.pyrttov&&['data_ready','coefficients_ready'].includes(j.status));
     $('#era5GeometryHelp').hidden=!(r.pyrttov||own&&j.next_action==='geometry');
+    if(p?.orbit?.zenith_deg!=null && $('#era5Zenith').value===''){
+      $('#era5Zenith').value=p.orbit.zenith_deg;
+      $('#era5OrbitInfo').textContent=`Орбита SGP4 (${p.orbit.tle_source}): подспутниковая точка ${p.orbit.subpoint.lat}°N, ${p.orbit.subpoint.lon}°E, высота ${p.orbit.subpoint.alt_km} км. Зенитный угол: ${p.orbit.zenith_deg}°.`;
+      if(next==='geometry')next='start';
+    }
     const button=$('#era5Run');button.disabled=state.busy||!context;
     button.textContent=next==='archive'?'Выбрать архивный срок':next==='credentials'?'Подключить доступ':next==='coefficients'?'Загрузить коэффициенты':next==='engine'?'Подключить RTTOV':next==='geometry'?'Указать угол':next==='apply'?'Применить шкалу и открыть продукт':next==='queue'?'Открыть загрузки':next==='files'?'Открыть файлы':j.status==='data_ready'&&own?'Продолжить расчёт':j.status==='error'||j.status==='cancelled'||j.status==='interrupted'?'Повторить подготовку':'Подготовить и рассчитать';
     button.dataset.action=next||'start';
@@ -180,6 +185,19 @@ for(const id of ['#era5Provider','#era5North','#era5South','#era5West','#era5Eas
   era5Error();try{await era5Check();if(ERA5_UI.state?.job.status==='data_ready'&&$('#era5Zenith').value!=='')ERA5_UI.state.job.next_action='start';await era5Refresh();if(id==='#era5Zenith'&&$('#era5Zenith').value!==''){$('#era5Run').dataset.action='start';$('#era5Run').textContent='Продолжить расчёт';}}catch(e){era5Error(e.message);}
 };
 $('#era5ConnectEngine').onclick=async()=>{era5Error();try{const r=await api('/api/era5/engine',{path:$('#era5EnginePath').value});$('#era5EngineMessage').textContent=r.message;await era5Check();await era5Refresh();if(r.pyrttov){$('#era5EngineHelp').hidden=true;$('#era5GeometryHelp').hidden=false;$('#era5Run').dataset.action=$('#era5Zenith').value!==''?'start':'geometry';$('#era5Run').textContent=$('#era5Zenith').value!==''?'Продолжить расчёт':'Указать угол';}}catch(e){era5Error(e.message);}};
+$('#era5CalcZenith').onclick=async()=>{
+  era5Error();$('#era5OrbitInfo').textContent='Запрашиваю актуальные TLE и рассчитываю положение спутника…';
+  try{
+    const area=['#era5North','#era5West','#era5South','#era5East'].map(id=>$(id).value===''?null:Number($(id).value));
+    const r=await api('/api/era5/orbit',{scene:ERA5_UI.scene,area});
+    if(r.zenith_deg!=null){
+      $('#era5Zenith').value=r.zenith_deg;
+      $('#era5OrbitInfo').textContent=`Орбита SGP4 (${r.tle_source}): подспутниковая точка ${r.subpoint.lat}°N, ${r.subpoint.lon}°E, высота ${r.subpoint.alt_km} км. Зенитный угол: ${r.zenith_deg}°.`;
+      await era5Check();await era5Refresh();
+      if($('#era5Zenith').value!==''){$('#era5Run').dataset.action='start';$('#era5Run').textContent='Продолжить расчёт';}
+    }
+  }catch(e){era5Error(e.message);$('#era5OrbitInfo').textContent='';}
+};
 $('#era5Setup').onclick=async()=>{era5Error();try{await api('/api/era5/setup',{});await era5Refresh();}catch(e){era5Error(e.message);}};
 $('#era5Cancel').onclick=async()=>{try{await api('/api/era5/cancel',{id:ERA5_UI.state?.job.id});await era5Refresh();}catch(e){era5Error(e.message);}};
 era5Dialog.addEventListener('close',()=>{clearInterval(ERA5_UI.timer);ERA5_UI.generation++;ERA5_UI.requestSerial++;$('#era5Token').value='';});
