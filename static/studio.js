@@ -6,12 +6,19 @@ const UI = {
   pointSequence: 0, mapSequence: 0, wantedBuild: null, buildTimer: null,
   activeBuild: null, resultSeen: '', profileText: '', routeRevision: 0,
   selectedScene: null, autoBuild: true, profileLoaded: false, contextEpoch: 0, activeEpoch: 0,
+  miniLegendExpanded: false,
 };
 const original = {setMap, showProduct, selectScene, registerEvents, productHint, clearMapProduct, setDate};
 const icon = name => `<svg class="icon" aria-hidden="true"><use href="#i-${escape(name)}"/></svg>`;
 const readableDate = day => new Date(day+'T12:00:00Z').toLocaleDateString('ru-RU', {day:'numeric',month:'long',year:'numeric',timeZone:'UTC'}).replace(' г.','');
 const displayCal = {not_applicable:'RGB',unknown:'DN', assumed:'K · прибл.', declared:'K', metadata:'K'};
 const sourceCal = {not_applicable:'Готовые цвета поставщика — не физические каналы',unknown:'Единицы не объявлены',assumed:'Исследовательская температурная шкала',declared:'Задана калибровка',metadata:'Калибровка GeoTIFF'};
+const componentRoles = {
+  micro24: {R: 'Оптическая толщина облака', G: 'Фазовое состояние частиц (вода/лёд)', B: 'Температура вершины / фона'},
+  night: {R: 'Оптическая толщина', G: 'Ночной водяной признак (3,7 мкм)', B: 'Яркостная температура'},
+  dust: {R: 'Оптическая толщина', G: 'Контраст силикатных частиц пыли', B: 'Температура поверхности'},
+  ash: {R: 'Оптическая толщина', G: 'Контраст силикатного пепла', B: 'Температура излучения'}
+};
 
 // Сохраняем существующие элементы и контракты API, группируя дополнительные
 // параметры по задаче. Профиль не является условием просмотра снимка.
@@ -457,13 +464,29 @@ showProduct = async function(p) {
 
 function interpretedGuide(product) {return (S.product?.legend?.interpretation && S.product.product===product?S.product.legend.interpretation:UI.guides[product])||{};}
 function legendSwatches(guide) {
-  return (guide.swatches||[]).map(c=>`<article class="color-guide"><header><span class="swatch" style="background:${c.color}"></span>${escape(c.title)}</header><p>${escape(c.meaning)}</p><p class="guide-use">${escape(c.application)}</p></article>`).join('');
+  return (guide.swatches||[]).map(c=>`
+    <article class="color-guide">
+      <header>
+        <span class="swatch" style="background:${c.color}"></span>
+        <div class="color-guide-head">
+          <div class="color-guide-title">
+            <strong>${escape(c.label || c.title.split(' / ')[0])}</strong>
+            <span class="color-guide-subtitle">${escape(c.title)}</span>
+          </div>
+          ${c.criteria ? `<span class="criteria-badge" title="Спектральные критерии">${escape(c.criteria)}</span>` : ''}
+        </div>
+      </header>
+      <p class="meaning">${escape(c.meaning)}</p>
+      ${c.hazards ? `<div class="guide-hazard">${icon('warning')}<span>${escape(c.hazards)}</span></div>` : ''}
+      <div class="guide-use"><small><b>Методика анализа:</b> ${escape(c.application)}</small></div>
+    </article>
+  `).join('');
 }
 
 drawLegend = function(l) {
   if(l.product==='archive_rgb'){
     $('#legend').innerHTML=`<h3>Готовая цветовая композиция</h3><p class="hint">${escape(l.meaning)}</p><p class="hint">${escape(l.source_level)} · ${escape(l.source_crs)}</p><details><summary>Исходный файл и отображение</summary><p class="micro">${escape(l.source_filename)}<br>${escape(l.color_conversion)}<br>${escape(l.nodata)}</p></details><a class="export-link" href="/docs/ARCHIVE.html" target="_blank" rel="noopener">Как работать с архивным снимком</a>`;
-    $('#miniLegend').innerHTML='<div class="mini-legend-title">'+icon('info')+'Готовые цвета поставщика</div><span>RGB · не температурная шкала</span>';$('#miniLegend').hidden=false;return;
+    $('#miniLegend').innerHTML='<div class="mini-legend-header"><div class="mini-legend-title">'+icon('info')+'<span>Готовые цвета поставщика</span></div><span class="mini-legend-pill">RGB</span></div><div class="mini-legend-hint">RGB-растр · не температурная шкала</div>';$('#miniLegend').hidden=false;return;
   }
 
   let guide=interpretedGuide(l.product);if(l.product==='channel'&&l.units!=='K')guide={title:'Значения канала · DN',purpose:'Числа из файла, не температура. Цвет помогает сравнивать сигнал и различать структуру.',swatches:[]};
@@ -471,36 +494,126 @@ drawLegend = function(l) {
   const temperature=l.units==='K'&&l.product==='channel';
   const value=v=>temperature&&v!==null?v-273.15:v;
   const unit=temperature?'°C':l.units;
-  let html=`<h3>${escape(guide.title||l.title)}</h3><p class="hint">${escape(guide.purpose||l.meaning||'')}</p>`;
+
+  let html=`<div class="legend-header"><h3>${escape(guide.title||l.title)}</h3>${l.status?`<span class="pill" title="Калибровка: ${escape(sourceCal[l.status]||l.status)}">${escape(displayCal[l.status]||'K')}</span>`:''}</div>`;
+  html+=`<p class="hint">${escape(guide.purpose||l.meaning||'')}</p>`;
   if(l.status==='assumed')html+=`<div class="caveat">${icon('tune')}<span>Исследовательская шкала — не калибровка поставщика</span></div>`;
-  html+=legendSwatches(guide);
+
+  if(guide.swatches?.length){
+    html+=`<div class="legend-section-title">Метеорологическая расшифровка цветов</div>`;
+    html+=legendSwatches(guide);
+  }
+
   let miniature='';
   if(l.palette) {
     const grad=l.palette.map(c=>'rgb('+c.join(',')+')').join(',');
     const bar=`<div class="colorbar" style="background:linear-gradient(to right,${grad})"></div><div class="scale-labels"><span>${num(value(l.display_min))} ${escape(unit)}</span><span>${num(value(l.display_max))} ${escape(unit)}</span></div>`;
-    html+='<h3>Цветовая шкала</h3>'+bar;miniature=bar;
+    html+='<div class="legend-section-title">Цветовая шкала</div>'+bar;miniature=bar;
     if(l.product==='channel')html+='<p class="hint">За пределами шкалы — крайние цвета. Исходные значения сохранены.</p><div class="row"><button id="legendAutoRange" class="text-button">Автоконтраст</button><button id="legendFullRange" class="text-button">Весь диапазон</button></div>';
   }
-  if(l.stats)html+=`<details><summary>Диапазон данных: ${num(value(l.stats.min))}…${num(value(l.stats.max))} ${escape(unit)}</summary><p class="hint">Минимум и максимум валидных значений на расчётной сетке. Это не границы цветовой шкалы. Автоконтраст DN использует 2-й и 98-й процентили.</p></details>`;
+  if(l.stats)html+=`<details class="legend-details"><summary>Статистика кадра: ${num(value(l.stats.min))}…${num(value(l.stats.max))} ${escape(unit)}</summary><p class="hint">Минимум и максимум валидных значений на расчётной сетке. Автоконтраст DN использует 2-й и 98-й процентили.</p></details>`;
+
   if(l.classes){
+    html+=`<div class="legend-section-title">Классы спектральных признаков</div>`;
     html+=l.classes.map(c=>`<div class="legend-item"><span class="swatch" style="background:${c.color}"></span><span>${escape(c.name)}</span></div>`).join('');
-    miniature=`<div class="mini-swatches">${l.classes.filter(c=>c.value>0).map(c=>`<span><i style="background:${c.color}"></i>${escape(c.name.split(':')[0])}</span>`).join('')}</div>`;
+    miniature=`<div class="mini-swatches">${l.classes.filter(c=>c.value>0).map(c=>`<span class="mini-swatch-item"><i style="background:${c.color}"></i><span class="mini-swatch-label">${escape(c.name.split(':')[0])}</span></span>`).join('')}</div>`;
   }
+
   if(guide.swatches?.length){
-    miniature=`<div class="mini-swatches">${guide.swatches.map(c=>`<span title="${escape(c.meaning + (c.application?' · '+c.application:''))}"><i style="background:${c.color}"></i>${escape(c.label || c.title.split(' / ')[0])}</span>`).join('')}</div>`;
+    miniature=`<div class="mini-swatches">${guide.swatches.map(c=>`<span class="mini-swatch-item" title="${escape(c.meaning + (c.criteria?' · '+c.criteria:''))}"><i style="background:${c.color}"></i><span class="mini-swatch-label">${escape(c.label || c.title.split(' / ')[0])}</span></span>`).join('')}</div>`;
   }
-  html+=`<div class="hint" style="margin-top:14px;padding:9px 12px;background:#eef4fb;border-radius:10px;font-size:11px;color:#28486e">💡 <b>Точные значения и качество:</b> кликните по любой точке на карте — во вкладке <b>«Точка»</b> отобразятся точные температуры каналов (в °C и K), разности и проверка калибровки.</div>`;
-  html+='<details><summary>Компоненты, шкалы и качество</summary>';
-  if(l.components)html+=l.components.map(c=>`<div class="component" style="border-color:${c.component==='R'?'#bf6576':c.component==='G'?'#43977e':'#5587c7'}"><b>${c.component}</b> <code>${escape(c.formula)}</code><small>${c.min}…${c.max} K · γ ${c.gamma}</small><small>В области: ${num(c.stats.min)}…${num(c.stats.max)} K</small></div>`).join('');
-  html+=`<p class="micro">${escape(l.data_stats_scope||'')}<br>${escape(l.nodata||'')}<br>Калибровка: ${escape(sourceCal[l.status]||l.status)}.</p><pre>${escape(JSON.stringify({flags:l.quality_flags,version:l.version},null,2))}</pre></details><a class="export-link" href="/docs/QUICKSTART.html#signal" target="_blank" rel="noopener">Как читать значения и цвета</a>`;
+
+  if(l.components && l.components.length){
+    html+=`<div class="legend-section">
+      <div class="legend-section-title">Спектральные компоненты RGB (МСУ-ГС/А)</div>
+      <div class="components-grid">
+        ${l.components.map(c=>{
+          const role=(componentRoles[l.product]||{})[c.component]||'';
+          return `<div class="component-card component-${c.component}">
+            <div class="component-head">
+              <span class="component-badge component-badge-${c.component}">${c.component}</span>
+              <strong class="component-formula">${escape(c.formula)}</strong>
+              <span class="component-range">${c.min} … ${c.max} K</span>
+            </div>
+            ${role?`<div class="component-role" style="font-size:10px;color:#475569;margin-top:2px">${escape(role)}</div>`:''}
+            <div class="component-stats">
+              <span>В кадре: <b>${num(c.stats?.min)} … ${num(c.stats?.max)} K</b></span>
+              <span>γ = ${c.gamma}</span>
+            </div>
+          </div>`;
+        }).join('')}
+      </div>
+    </div>`;
+  }
+
+  const validPct = l.total_pixels ? Math.round((l.valid_pixels / l.total_pixels) * 100) : null;
+  html+=`<div class="legend-section quality-section">
+    <div class="legend-section-title">Контроль качества данных и калибровка</div>
+    <div class="quality-card">
+      <div class="quality-row">
+        <span class="quality-label">Статус калибровки:</span>
+        <span class="quality-val">${escape(sourceCal[l.status] || l.status)}</span>
+      </div>
+      ${validPct!==null?`<div class="quality-row"><span class="quality-label">Валидные пиксели:</span><span class="quality-val">${num(l.valid_pixels)} из ${num(l.total_pixels)} (${validPct}%)</span></div>`:''}
+      <div class="quality-row">
+        <span class="quality-label">Контроль оконных каналов:</span>
+        <span class="quality-val">|T10 − T9| ≤ 15 K · диапазон 120…400 K</span>
+      </div>
+      ${l.nodata?`<p class="micro">${escape(l.nodata)}</p>`:''}
+    </div>
+  </div>`;
+
+  html+=`<div class="legend-callout">
+    ${icon('probe')}
+    <div>
+      <strong>Инспектор точки (спектральный анализ)</strong>
+      <p>Кликните по любой точке на карте — во вкладке <b>«Анализ»</b> отобразятся точные температуры каналов в °C и K, разности и диагностические карточки фазы.</p>
+    </div>
+  </div>`;
+
+  if(guide.source){
+    html+=`<a class="export-link" href="${escape(guide.source)}" target="_blank" rel="noopener">Руководство EUMETSAT / WMO по этой композиции</a>`;
+  }
+
   $('#legend').innerHTML=html;
   if($('#legendAutoRange'))$('#legendAutoRange').onclick=()=>{clearRange();requestBuild();};
   if($('#legendFullRange')){
     $('#legendFullRange').disabled=!Number.isFinite(l.stats?.min)||!Number.isFinite(l.stats?.max);
     $('#legendFullRange').onclick=()=>{$('#displayMin').value=value(l.stats.min);$('#displayMax').value=value(Math.max(l.stats.max,l.stats.min+1));requestBuild();};
   }
+
+  let expandedBlock = '';
+  if(UI.miniLegendExpanded) {
+    let compsHtml = '';
+    if(l.components?.length) {
+      compsHtml = l.components.map(c=>{
+        const role = (componentRoles[l.product]||{})[c.component] || '';
+        return `<div class="mini-comp-row"><span class="mini-comp-badge ${c.component}">${c.component}</span><code class="mini-comp-formula">${escape(c.formula)}</code><span class="mini-comp-desc">${escape(role)}</span></div>`;
+      }).join('');
+    }
+    const calText = sourceCal[l.status] || l.status;
+    expandedBlock = `
+      <div class="mini-legend-expanded-box">
+        ${compsHtml}
+        <div class="mini-legend-hint"><b>Калибровка:</b> ${escape(calText)}</div>
+        <button id="miniLegendOpenFull" class="mini-legend-btn" type="button">Открыть подробную легенду и справку</button>
+      </div>
+    `;
+  }
+
   const calBadge=l.status&&displayCal[l.status]?`<span class="mini-legend-pill" title="Калибровка: ${escape(sourceCal[l.status]||l.status)}">${escape(displayCal[l.status])}</span>`:'';
-  $('#miniLegend').innerHTML=`<div class="mini-legend-title">${icon('info')}<span>${escape(guide.title||l.title)}</span>${calBadge}</div>${miniature}<div class="mini-legend-hint">Кликните на карту: точные Tя, разности и качество</div>`;
+  const toggleBtn = (l.components?.length || guide.swatches?.length) ? `<button id="miniLegendToggle" class="mini-legend-toggle" type="button" title="Развернуть / свернуть подробности">${UI.miniLegendExpanded ? '▴ Свернуть' : '▾ Подробнее'}</button>` : '';
+
+  $('#miniLegend').innerHTML=`
+    <div class="mini-legend-header">
+      <div class="mini-legend-title">${icon('info')}<span>${escape(guide.title||l.title)}</span></div>
+      ${calBadge}
+      ${toggleBtn}
+    </div>
+    ${miniature}
+    ${expandedBlock}
+    <div class="mini-legend-hint"><span>💡 Клик по точке — точные Tя, разности и качество</span></div>
+  `;
   $('#miniLegend').hidden=false;
 };
 
@@ -896,9 +1009,21 @@ registerEvents = function() {
   bind('#productRail',()=>left('product',false));bind('#productQuick',()=>left('product'));
   bind('#closeLeft',()=>{left(UI.leftMode,false);});
   bind('#routeRail',()=>{tab('route');});
-  bind('#closeInspector',()=>{$('#inspector').hidden=true;$('#routeRail').classList.remove('active');});
-  bind('#legendOpen',()=>tab('legend'));bind('#miniLegend',()=>tab('legend'));
-  bind('#profilesOpen',()=>showProfiles());bind('#pointProfileAdd',()=>showProfiles('point'));bind('#routeProfileAdd',()=>showProfiles('route'));
+  bind('#legendOpen',()=>tab('legend'));
+  bind('#miniLegend', (e) => {
+    if (e.target.closest('#miniLegendToggle')) {
+      e.stopPropagation();
+      UI.miniLegendExpanded = !UI.miniLegendExpanded;
+      if (S.product?.legend) drawLegend(S.product.legend);
+      return;
+    }
+    if (e.target.closest('#miniLegendOpenFull')) {
+      e.stopPropagation();
+      tab('legend');
+      return;
+    }
+    tab('legend');
+  });
   bind('#importProfile',importProfile);
   $('#profileFile').onchange=()=>profileFileChanged().catch(e=>inlineError('#profileImportError',e.message));
   for(const id of ['#profileSource','#profileLat','#profileLon','#profileTime','#profileRadius','#profileHours'])$(id).addEventListener('input',profileReady);
