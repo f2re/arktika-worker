@@ -307,6 +307,13 @@ def main(argv=None):
         return
     cfg_path=Path(args.config)
     cfg=json.loads(cfg_path.read_text(encoding='utf-8')) if cfg_path.exists() else {}
+    if 'calibration' not in cfg:
+        for cal_candidate in (ROOT/'config'/'calibration.json', ROOT/'config'/'calibration.example.json'):
+            if cal_candidate.is_file():
+                try:
+                    cfg['calibration']=json.loads(cal_candidate.read_text(encoding='utf-8'))
+                    break
+                except Exception:pass
     token=Path(args.token_file).read_text(encoding='utf-8').strip() if args.token_file else os.environ.pop('GPTL_TOKEN','')
     app=Workstation(args.data_dir,args.download_dir or cfg.get('download_dir'),token,config=cfg)
     app.client.oauth.update(app.store.setting('oauth',{}))

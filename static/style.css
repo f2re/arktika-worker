@@ -375,3 +375,42 @@ dialog.fixed-dialog .table-scroll{max-height:none;overflow:visible}
 @media(max-width:600px){.era5-stage-status{display:none}.era5-steps li{gap:9px}.era5-dialog .dialog-footer a{font-size:12px}.era5-dialog .dialog-footer button{font-size:12px}.era5-dialog .era5-head .micro{font-size:10px}}
 
 .source-groups{display:grid;gap:20px}.source-group>h3{margin:0 0 10px;font-size:13px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}.source-card{border:1px solid var(--line);border-radius:16px;padding:14px 16px;margin:8px 0;background:var(--surface)}.source-card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px}.source-card-head strong{display:block;font-size:15px}.source-card-head small{display:block;color:var(--muted);margin-top:3px}.source-card p{margin:9px 0}.source-state{font-size:10px;padding:5px 8px;border-radius:999px;white-space:nowrap;background:var(--bg);color:var(--muted)}.source-state.ready{background:#e8f4ef;color:#236c57}.source-state.missing{background:#fff3e4;color:#8a5b18}@media(max-width:600px){.source-card-head{display:block}.source-state{display:inline-block;margin-top:8px}}
+
+.heading-badges{display:flex;align-items:center;gap:6px}
+.pill-auto{background:#ede9fe;color:#6d28d9;border:1px solid #ddd6fe}
+.cth-banner{background:linear-gradient(135deg,#f5f3ff 0%,#ede9fe 100%);border:1px solid #c4b5fd;border-radius:14px;padding:12px 14px;margin:12px 0;box-shadow:0 1px 3px rgba(124,58,237,0.06)}
+.cth-banner.cth-ambiguous{background:linear-gradient(135deg,#fffbeb 0%,#fef3c7 100%);border-color:#fde68a}
+.cth-main{display:flex;align-items:center;gap:12px}
+.cth-icon{width:32px;height:32px;min-width:32px;display:grid;place-items:center;background:#8b5cf6;color:white;border-radius:10px}
+.cth-banner.cth-ambiguous .cth-icon{background:#f59e0b}
+.cth-icon svg{width:18px;height:18px}
+.cth-body{flex:1;min-width:0}
+.cth-label{display:block;font-size:11px;color:#6d28d9;font-weight:600;margin-bottom:2px}
+.cth-banner.cth-ambiguous .cth-label{color:#b45309}
+.cth-val-row{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+.cth-val{font-size:20px;font-weight:750;color:#4c1d95;font-feature-settings:"tnum"}
+.cth-banner.cth-ambiguous .cth-val{color:#78350f}
+.cth-temp{font-size:14px;font-weight:600;color:#6d28d9}
+.cth-banner.cth-ambiguous .cth-temp{color:#92400e}
+.cth-badge{font-size:10px;font-weight:600;background:rgba(255,255,255,0.7);padding:2px 6px;border-radius:4px;color:#6d28d9}
+.cth-note{font-size:11px;color:#92400e;margin:6px 0 0;line-height:1.4}
+
+.geometry-details{border:1px solid var(--line);border-radius:12px;padding:10px 12px;margin:10px 0;background:#f8fafc}
+.geometry-details summary{font-size:11px;font-weight:600;color:#334155;cursor:pointer}
+.geom-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}
+.geom-cell{background:white;padding:7px 10px;border-radius:8px;border:1px solid #e2e8f0}
+.geom-cell small{display:block;font-size:10px;color:#64748b;margin-bottom:2px}
+.geom-cell b{font-size:12px;color:#1e293b}
+.geom-wide{grid-column:1 / -1}
+
+.spectrum-section{border:1px solid var(--line);border-radius:12px;padding:11px 13px;margin:10px 0;background:#f8fafc}
+.spectrum-head{display:flex;justify-content:space-between;align-items:center;font-size:11px;font-weight:600;color:#334155;margin-bottom:8px}
+.spectrum-head small{color:#64748b;font-weight:normal}
+.spectrum-bars{display:flex;flex-direction:column;gap:5px}
+.spectrum-row{display:flex;align-items:center;gap:8px;font-size:11px}
+.spectrum-ch{width:85px;min-width:85px;color:#475569;font-weight:500}
+.spectrum-ch small{color:#94a3b8;font-size:9px;margin-left:2px}
+.spectrum-bar-wrap{flex:1;height:10px;background:#e2e8f0;border-radius:5px;overflow:hidden}
+.spectrum-bar{height:100%;border-radius:5px;transition:width 0.2s ease}
+.spectrum-val{width:68px;min-width:68px;text-align:right;font-size:11px;font-family:ui-monospace,SFMono-Regular,monospace;color:#1e293b;font-weight:600}
+

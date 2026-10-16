@@ -216,7 +216,15 @@ class Workstation(ReanalysisMixin, SourceManagerMixin, AutoCalibrationMixin, Pro
   value=None
   if 'values.tif' in p['files']:
    with rasterio.open(self.artifact(p['id'],'values.tif')) as ds:v=float(ds.read(1,window=((iy,iy+1),(ix,ix+1)))[0,0]);value=v if np.isfinite(v) else None
-  return dict(**xy,channels=values,display_rgba=display_rgba,quality_flags=quality,product_value=value,product_unit=p['legend']['units'],sun_elevation=float(solar_elevation(xy['lon'],xy['lat'],p['time'])),time=p['time'],note='Каналы: исходные пиксели. Продукт: итоговая сетка карты; значения могут отличаться из-за перепроецирования.')
+  geom=None
+  try:
+   from .orbit import calculate_viewing_geometry
+   import datetime as dt
+   when_dt=dt.datetime.fromisoformat(p['time'].replace('Z','+00:00'))
+   geom=calculate_viewing_geometry(scene.get('platform','ARCM1'),when_dt,xy['lat'],xy['lon'],self.store.root/'orbit')
+  except Exception:
+   pass
+  return dict(**xy,channels=values,display_rgba=display_rgba,quality_flags=quality,product_value=value,product_unit=p['legend']['units'],sun_elevation=float(solar_elevation(xy['lon'],xy['lat'],p['time'])),time=p['time'],viewing_geometry=geom,note='Каналы: исходные пиксели. Продукт: итоговая сетка карты; значения могут отличаться из-за перепроецирования.')
  def route(self,data):
   p=self.product(data['product']);scene=self.frozen_scene(p)
   inputs_before=self.sample_provenance(scene)

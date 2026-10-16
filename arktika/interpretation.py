@@ -441,6 +441,27 @@ def profile_diagnostics(profile, pixel, analysis, altitude_m, cloud_confirmed=Fa
     indices=np.unique(np.linspace(0,len(profile['height'])-1,min(128,len(profile['height']))).astype(int))
     result['profile_plot']=dict(height_m=[profile['height'][i] for i in indices],temperature_c=[profile['temperature'][i]-273.15 for i in indices])
     values = {c['channel']:c['value'] for c in pixel['channels'] if c['unit']=='K' and c['value'] is not None}
+    if 9 in values:
+        try:
+            bt_val = float(values[9])
+            match_cand = cloud_top(dict(mode='cloud_top', cloud_confirmed=True, height_units='m',
+                                        temperature_units='K', height=profile['height'],
+                                        temperature=profile['temperature'], brightness_temperature=bt_val))
+            delta_val = float(delta_k) if isinstance(delta_k, (int, float)) and 0.5 <= delta_k <= 10 else 2.0
+            ranges_cand = height_ranges(profile['height'], profile['temperature'], bt_val, delta_val)
+            result['candidate_cloud_top'] = dict(
+                match_cand,
+                temperature_c=round(bt_val - 273.15, 1),
+                temperature_k=round(bt_val, 2),
+                sensitivity_ranges_m=ranges_cand,
+                delta_k=delta_val,
+                status=('no_solution' if not match_cand['has_solution'] else 'ambiguous' if match_cand['ambiguous'] else 'estimated'),
+                title=('Нет соответствия в пределах профиля' if not match_cand['has_solution'] else 'Кандидат ВГО по T(z)'),
+                method='Tя9 = Tвершины = T(z)',
+                note='AMSL; сопоставление Tя канала 9 с температурным профилем реанализа T(z) без поправки на полупрозрачность.'
+            )
+        except Exception:
+            pass
     if cloud_confirmed is True and opaque_confirmed is True:
         delta = number(delta_k, 'Допуск температуры')
         if not .5 <= delta <= 10:
