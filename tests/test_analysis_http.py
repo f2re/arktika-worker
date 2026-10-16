@@ -52,3 +52,16 @@ class AnalysisHTTPTests(unittest.TestCase):
     def test_bad_profile_is_400(self):
         with self.assertRaises(urllib.error.HTTPError) as cm:self.request('/api/profiles/import',{'source':'TEST','height':[]})
         self.assertEqual(cm.exception.code,400)
+    def test_auto_profile_and_candidate_cloud_top(self):
+        x,y=project_points(self.app.product_grid(self.product),[(30,70)])[0]
+        a=json.loads(self.request('/api/analyse',dict(product=self.product['id'],x=x,y=y))[2])
+        self.assertTrue(a.get('profile_auto'))
+        self.assertIn('profile_result',a)
+        self.assertIn('candidate_cloud_top',a['profile_result'])
+        ct=a['profile_result']['candidate_cloud_top']
+        self.assertTrue(ct.get('has_solution'))
+        self.assertTrue(len(ct.get('candidate_heights_m',[]))>0)
+        self.assertIn('viewing_geometry',a['pixel'])
+        if a['pixel']['viewing_geometry']:
+            self.assertIn('zenith_deg',a['pixel']['viewing_geometry'])
+            self.assertIn('azimuth_deg',a['pixel']['viewing_geometry'])

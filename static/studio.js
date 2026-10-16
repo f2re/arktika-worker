@@ -491,7 +491,7 @@ drawLegend = function(l) {
 
   let guide=interpretedGuide(l.product);if(l.product==='channel'&&l.units!=='K')guide={title:'Значения канала · DN',purpose:'Числа из файла, не температура. Цвет помогает сравнивать сигнал и различать структуру.',swatches:[]};
   if(l.product==='channel'&&l.units==='K'&&Number(S.product?.request.channel)!==9)guide={title:'Яркостная температура выбранного канала',purpose:channelMeta(S.product.request.channel)?.description||'Температура излучения; не температура воздуха.',swatches:[]};
-  const temperature=l.units==='K'&&l.product==='channel';
+  const temperature=l.units==='K';
   const value=v=>temperature&&v!==null?v-273.15:v;
   const unit=temperature?'°C':l.units;
 
@@ -529,15 +529,20 @@ drawLegend = function(l) {
       <div class="components-grid">
         ${l.components.map(c=>{
           const role=(componentRoles[l.product]||{})[c.component]||'';
+          const isTemp = c.min > 120 && c.max < 400;
+          const rangeStr = isTemp ? `${num(c.min - 273.15)} … ${num(c.max - 273.15)} °C` : `${c.min} … ${c.max} ${c.units || 'K'}`;
+          const inFrame = isTemp && c.stats?.min != null
+            ? `${num(c.stats.min - 273.15)} … ${num(c.stats.max - 273.15)} °C`
+            : `${num(c.stats?.min)} … ${num(c.stats?.max)} ${c.units || 'K'}`;
           return `<div class="component-card component-${c.component}">
             <div class="component-head">
               <span class="component-badge component-badge-${c.component}">${c.component}</span>
               <strong class="component-formula">${escape(c.formula)}</strong>
-              <span class="component-range">${c.min} … ${c.max} K</span>
+              <span class="component-range">${rangeStr}</span>
             </div>
             ${role?`<div class="component-role" style="font-size:10px;color:#475569;margin-top:2px">${escape(role)}</div>`:''}
             <div class="component-stats">
-              <span>В кадре: <b>${num(c.stats?.min)} … ${num(c.stats?.max)} K</b></span>
+              <span>В кадре: <b>${inFrame}</b></span>
               <span>γ = ${c.gamma}</span>
             </div>
           </div>`;
@@ -664,12 +669,92 @@ async function inspectAt(x,y,keep=false) {
 function drawPoint(r) {
   const p=r.pixel,a=r.analysis;
   const coordinates=`${num(Math.abs(p.lat),3)}° ${p.lat>=0?'с.':'ю.'} ш. · ${num(Math.abs(p.lon),3)}° ${p.lon>=0?'в.':'з.'} д.`;
-  let html=`<div class="point-heading"><h3>${coordinates}</h3><span class="pill" data-tip="${escape(sourceCal[a.calibration])}">${escape(displayCal[a.calibration]||'K')}</span></div>`;
-  const featured=['t'+(S.product?.request.channel||9),'t9','d97','d109','d94'].filter((v,i,a)=>a.indexOf(v)===i);
+  let html=`<div class="point-heading"><h3>${coordinates}</h3><div class="heading-badges">${r.profile_auto?'<span class="pill pill-auto" title="Профиль реанализа получен в фоне">ERA5 реанализ</span>':''}<span class="pill" data-tip="${escape(sourceCal[a.calibration])}">${escape(displayCal[a.calibration]||'K')}</span></div></div>`;
+
+  const cth = r.profile_result?.candidate_cloud_top || (r.profile_result?.height?.candidate_heights_m?.length ? r.profile_result.height : null);
+  if(cth && cth.candidate_heights_m && cth.candidate_heights_m.length) {
+    const hKm = cth.candidate_heights_m.map(v => num(v/1000, 1)).join(' / ');
+    const tVal = cth.temperature_c ?? (cth.temperature_k ? cth.temperature_k - 273.15 : null);
+    const tStr = tVal != null ? num(tVal, 1) + ' °C' : '';
+    html += `
+      <div class="cth-banner ${cth.ambiguous ? 'cth-ambiguous' : ''}">
+        <div class="cth-main">
+          <div class="cth-icon">${icon('cloud')}</div>
+          <div class="cth-body">
+            <span class="cth-label">ВГО (Верхняя граница облачности по T(z)):</span>
+            <div class="cth-val-row">
+              <strong class="cth-val">${hKm} км</strong>
+              ${tStr ? `<span class="cth-temp">(${tStr})</span>` : ''}
+              <span class="cth-badge">${cth.ambiguous ? 'Инверсия T(z)' : 'AMSL'}</span>
+            </div>
+          </div>
+        </div>
+        ${cth.ambiguous ? '<p class="cth-note">Многозначное соответствие из-за инверсии температуры в профиле; показаны все пересечения.</p>' : ''}
+      </div>
+    `;
+  }
+
+  const featured=['t'+(S.product?.request.channel||9),'t9','d97','d109','d94','d59'].filter((v,i,a)=>a.indexOf(v)===i);
   if(a.metrics.length)html+=`<div class="metric-grid">${featured.map(id=>a.metrics.find(m=>m.id===id)).filter(Boolean).map(m=>`<div class="metric ${m.id==='t9'?'primary-metric':''}" tabindex="0" data-tip="${escape(m.explanation)}"><small>${escape(m.label)}</small><b>${num(m.value)} <small>${m.units}</small></b></div>`).join('')}</div>`;
   if(!a.metrics.length){const ch=p.channels.find(c=>Number(c.channel)===Number(S.product?.request.channel))||p.channels.find(c=>c.value!==null);if(ch)html+=`<div class="metric"><small>Канал ${ch.channel} · значение в точке</small><b>${num(ch.value)} <small>${escape(ch.unit)}</small></b></div>`;}
+
+  if(p.viewing_geometry) {
+    const g=p.viewing_geometry;
+    const sunIcon = p.sun_elevation <= -6 ? '🌙 Ночь' : p.sun_elevation < 0 ? '🌅 Сумерки' : '☀️ День';
+    html += `
+      <details class="geometry-details" open>
+        <summary>${icon('globe')} Геометрия наблюдения (${escape(g.satellite_name || g.platform)})</summary>
+        <div class="geom-grid">
+          <div class="geom-cell"><small>Зенитный угол спутника (θₛₐₜ)</small><b>${num(g.zenith_deg, 1)}°</b></div>
+          <div class="geom-cell"><small>Азимут визирования</small><b>${num(g.azimuth_deg, 1)}°</b></div>
+          <div class="geom-cell"><small>Наклонная дальность</small><b>${num(g.distance_km, 0)} км</b></div>
+          <div class="geom-cell"><small>Высота солнца</small><b>${num(p.sun_elevation, 1)}° <small>${sunIcon}</small></b></div>
+          <div class="geom-cell geom-wide"><small>Подспутниковая точка (${escape(g.platform)})</small><b>${num(g.subpoint.lat, 2)}° с.ш., ${num(g.subpoint.lon, 2)}° в.д. · апогей H = ${num(g.subpoint.alt_km, 0)} км</b></div>
+        </div>
+      </details>
+    `;
+  }
+
+  if(p.channels && p.channels.length) {
+    html += `
+      <div class="spectrum-section">
+        <div class="spectrum-head">
+          <span>Спектральный профиль точки (МСУ-ГС/А)</span>
+          <small>каналы 1–10</small>
+        </div>
+        <div class="spectrum-bars">
+          ${p.channels.map(c => {
+            const isIr = c.unit === 'K';
+            const valC = (isIr && c.value !== null) ? c.value - 273.15 : c.value;
+            const meta = channelMeta(c.channel);
+            let barColor = '#64748b';
+            let barWidth = 0;
+            if (isIr && valC !== null) {
+              barColor = valC < -40 ? '#8b5cf6' : valC < -10 ? '#38bdf8' : valC < 10 ? '#2dd4bf' : valC < 25 ? '#fbbf24' : '#f87171';
+              barWidth = Math.max(5, Math.min(100, (valC + 80) / 1.2));
+            } else if (c.value !== null) {
+              barColor = '#10b981';
+              barWidth = Math.max(5, Math.min(100, c.value));
+            }
+            return `
+              <div class="spectrum-row">
+                <span class="spectrum-ch">К${c.channel} <small>${meta?.wavelength_um || ''}мкм</small></span>
+                <div class="spectrum-bar-wrap">
+                  <div class="spectrum-bar" style="width:${barWidth}%;background:${barColor}"></div>
+                </div>
+                <span class="spectrum-val">${valC !== null ? num(valC, 1) + (isIr ? ' °C' : ' ' + c.unit) : '—'}</span>
+              </div>
+            `;
+          }).join('')}
+        </div>
+      </div>
+    `;
+  }
+
   html+=a.cards.map(c=>`<article class="evidence-card ${escape(c.tone)}"><div class="evidence-card-head">${icon(c.icon)}<h3>${escape(c.title)}</h3></div><p>${escape(c.meaning)}</p>${c.evidence.length?`<details><summary>На чём основано</summary>${c.evidence.map(t=>`<div class="evidence-row">${escape(t)}</div>`).join('')}<p class="micro">Пороговая гипотеза МСУ-ГС/А; не калиброванная вероятность.</p></details>`:''}<div class="action">${escape(c.action)}</div></article>`).join('');
-  html+=`<details><summary>Все каналы и исходные значения</summary><table><thead><tr><th>Канал</th><th>Tя / DN</th><th>Единицы</th></tr></thead><tbody>${p.channels.map(c=>`<tr><td>${c.channel}<small>${channelMeta(c.channel)?.wavelength_um} мкм</small></td><td>${num(c.unit==='K'&&c.value!==null?c.value-273.15:c.value)}</td><td>${c.unit==='K'?'°C':escape(c.unit)}</td></tr>`).join('')}</tbody></table><p class="micro">Солнце: ${num(p.sun_elevation)}° · флаги продукта: ${p.quality_flags}. Спектральные разности вычислены из исходных пикселей.</p></details>`;
+
+  html+=`<details><summary>Таблица каналов и калибровка</summary><table><thead><tr><th>Канал</th><th>Спектр</th><th>Tя / DN</th><th>Калибровка</th></tr></thead><tbody>${p.channels.map(c=>`<tr><td>${c.channel}</td><td>${channelMeta(c.channel)?.wavelength_um||'—'} мкм</td><td><b>${num(c.unit==='K'&&c.value!==null?c.value-273.15:c.value)}</b> ${c.unit==='K'?'°C':escape(c.unit)}</td><td><span class="micro">${escape(c.calibration||'—')}</span></td></tr>`).join('')}</tbody></table><p class="micro">Солнце: ${num(p.sun_elevation)}° · флаги продукта: ${p.quality_flags}. Спектральные разности вычислены из исходных пикселей.</p></details>`;
+
   $('#pixel').innerHTML=html;$('#pointControls').hidden=false;syncProfileControls();
   $('#analysisExport').href='/analysis-export/'+r.id;$('#analysisExport').hidden=false;
   drawProfilePoint(r.profile_result);
@@ -682,21 +767,22 @@ function drawProfilePoint(r) {
   if(!src.applicable){$('#profilePointResult').innerHTML=html+`<div class="caveat">${icon('info')}<span>${src.reasons.map(escape).join('<br>')}</span></div>`;return;}
   if(r.profile_plot)html+=profileChart(r);
   const h=r.height;
-  if(!$('#cloudHeightDetails').hidden&&($('#cloudHeightDetails').open||h.candidate_heights_m)){
-  html+=`<section class="profile-result"><h3>${icon('height')} ${escape(h.title)}</h3>`;
-  if(h.candidate_heights_m){
-    html+=`<div class="profile-value">${h.candidate_heights_m.length?h.candidate_heights_m.map(v=>num(v/1000,2)).join(' / '):'—'} <small>км AMSL</small></div>`;
-    if(h.ambiguous)html+='<p class="hint">Неоднозначное соответствие T(z); единственная высота не выбрана.</p>';
-    html+=`<p class="micro">При Tя ± ${num(h.delta_k)} K: ${(h.sensitivity_ranges_m||[]).map(x=>num(x[0]/1000,2)+'–'+num(x[1]/1000,2)+' км').join('; ')||'нет пересечения'}. Диапазон чувствительности, не доверительный интервал.</p>`;
-    html+=`<details><summary>Допущения высоты</summary><p class="micro">${escape(h.method)}. Атмосферная поправка не выполнена. Облачность и непрозрачность подтверждены оператором только для этой точки.</p></details>`;
-  }
-  html+='</section>';
+  const cth = r.candidate_cloud_top || (h?.candidate_heights_m ? h : null);
+  if(cth && cth.candidate_heights_m){
+    html+=`<section class="profile-result"><h3>${icon('height')} ${escape(cth.title || 'ВГО по T(z)')}</h3>`;
+    html+=`<div class="profile-value">${cth.candidate_heights_m.length?cth.candidate_heights_m.map(v=>num(v/1000,2)).join(' / '):'—'} <small>км AMSL</small></div>`;
+    if(cth.ambiguous)html+='<p class="hint">Неоднозначное соответствие T(z); единственная высота не выбрана.</p>';
+    html+=`<p class="micro">При Tя ± ${num(cth.delta_k||2)} K: ${(cth.sensitivity_ranges_m||[]).map(x=>num(x[0]/1000,2)+'–'+num(x[1]/1000,2)+' км').join('; ')||'нет пересечения'}. Диапазон чувствительности, не доверительный интервал.</p>`;
+    html+=`<details><summary>Допущения высоты</summary><p class="micro">${escape(cth.method||'Tя9 = Tвершины = T(z)')}. Атмосферная поправка не выполнена. Сопоставление радиояркостной температуры канала 9 с высотным профилем температуры реанализа.</p></details>`;
+    html+='</section>';
   }
   const l=r.layer;
-  html+=`<section class="profile-result"><h3>На ${num(l.altitude_m??Number($('#analysisAltitude').value),0)} м</h3><div class="layer-state ${l.status==='supercooled'?'supercooled':''}">${escape(l.title)}</div>`;
-  if(l.temperature_c!==undefined)html+=`<div class="metric-grid"><div class="metric"><small>Температура воздуха</small><b>${num(l.temperature_c)} <small>°C</small></b></div>${l.liquid_water_g_m3!==undefined?`<div class="metric"><small>Жидкая вода</small><b>${num(l.liquid_water_g_m3,3)} <small>г/м³</small></b></div>`:''}</div>`;
-  if(l.cloud_liquid_kg_kg!==undefined)html+=`<details><summary>Основание оценки слоя</summary><p class="micro">qₗ = ${num(l.cloud_liquid_kg_kg*1e6,2)} мг/кг. Порог выделения: ${num(l.liquid_floor_kg_kg*1e6,2)} мг/кг. Плотность: ${escape(l.density_method||'не определена')}. Оценка не задаёт интенсивность обледенения, размер капель или безопасность полёта.</p></details>`;
-  html+='</section>';
+  if(l){
+    html+=`<section class="profile-result"><h3>На ${num(l.altitude_m??Number($('#analysisAltitude').value),0)} м</h3><div class="layer-state ${l.status==='supercooled'?'supercooled':''}">${escape(l.title)}</div>`;
+    if(l.temperature_c!==undefined)html+=`<div class="metric-grid"><div class="metric"><small>Температура воздуха</small><b>${num(l.temperature_c)} <small>°C</small></b></div>${l.liquid_water_g_m3!==undefined?`<div class="metric"><small>Жидкая вода</small><b>${num(l.liquid_water_g_m3,3)} <small>г/м³</small></b></div>`:''}</div>`;
+    if(l.cloud_liquid_kg_kg!==undefined)html+=`<details><summary>Основание оценки слоя</summary><p class="micro">qₗ = ${num(l.cloud_liquid_kg_kg*1e6,2)} мг/кг. Порог выделения: ${num(l.liquid_floor_kg_kg*1e6,2)} мг/кг. Плотность: ${escape(l.density_method||'не определена')}. Оценка не задаёт интенсивность обледенения, размер капель или безопасность полёта.</p></details>`;
+    html+='</section>';
+  }
   if(r.column)html+=`<section class="profile-result"><h3>В заданном столбе профиля</h3><div class="metric-grid"><div class="metric"><small>Водяной пар</small><b>${num(r.column.vapor_mm)} <small>мм</small></b></div>${r.column.ivt_kg_m_s!==undefined?`<div class="metric"><small>Перенос влаги</small><b>${num(r.column.ivt_kg_m_s,0)} <small>кг/(м·с)</small></b></div>`:''}</div><p class="micro">${r.column.pressure_range_pa.map(v=>num(v/100,0)).join('–')} гПа · из профиля, не из цвета снимка.</p></section>`;
   $('#profilePointResult').innerHTML=html;
 }
@@ -711,8 +797,22 @@ function profileChart(result) {
   let guides='';
   for(let v=lo;v<=hi;v+=10)guides+=`<line x1="${x(v)}" y1="24" x2="${x(v)}" y2="190" stroke="#e0e6ef"/><text x="${x(v)}" y="207" text-anchor="middle" fill="#65768b" font-size="10">${v}</text>`;
   for(let j=0;j<=3;j++){const v=bottom+j*(top-bottom)/3;guides+=`<line x1="40" y1="${y(v)}" x2="270" y2="${y(v)}" stroke="#e0e6ef"/><text x="35" y="${y(v)+3}" text-anchor="end" fill="#65768b" font-size="10">${num(v/1000,1)}</text>`;}
-  if(layer.temperature_c!==undefined)guides+=`<line x1="40" y1="${y(layer.altitude_m)}" x2="270" y2="${y(layer.altitude_m)}" stroke="#2d8e80" stroke-dasharray="4 3"/><circle cx="${x(layer.temperature_c)}" cy="${y(layer.altitude_m)}" r="4" fill="#2d8e80"/>`;
-  return `<svg class="profile-chart" viewBox="0 0 300 224" role="img" aria-label="Температурный профиль: высота в километрах, температура в градусах Цельсия"><text x="40" y="13" fill="#4a627c" font-size="11">T(z) · ${escape(result.profile.source.slice(0,24))}</text>${guides}<polyline points="${path}" fill="none" stroke="#345dca" stroke-width="2"/><text x="250" y="220" fill="#65768b" font-size="10">°C</text><text x="4" y="14" fill="#65768b" font-size="10">км</text></svg>`;
+  if(lo<=0 && hi>=0)guides+=`<line x1="${x(0)}" y1="24" x2="${x(0)}" y2="190" stroke="#f97316" stroke-dasharray="3 2" stroke-width="1"/><text x="${x(0)}" y="20" text-anchor="middle" fill="#f97316" font-size="9" font-weight="600">0°C</text>`;
+  if(layer && layer.temperature_c!==undefined)guides+=`<line x1="40" y1="${y(layer.altitude_m)}" x2="270" y2="${y(layer.altitude_m)}" stroke="#2d8e80" stroke-dasharray="4 3"/><circle cx="${x(layer.temperature_c)}" cy="${y(layer.altitude_m)}" r="4" fill="#2d8e80"/>`;
+  const cth = result.candidate_cloud_top || (result.height?.candidate_heights_m ? result.height : null);
+  if(cth && cth.candidate_heights_m) {
+    const tBt = cth.temperature_c != null ? cth.temperature_c : (cth.temperature_k ? cth.temperature_k - 273.15 : null);
+    for(const hVal of cth.candidate_heights_m) {
+      if(hVal >= bottom && hVal <= top) {
+        guides += `<line x1="40" y1="${y(hVal)}" x2="270" y2="${y(hVal)}" stroke="#8b5cf6" stroke-width="1.5" stroke-dasharray="4 2"/>`;
+        if(tBt != null && tBt >= lo && tBt <= hi) {
+          guides += `<circle cx="${x(tBt)}" cy="${y(hVal)}" r="5" fill="#8b5cf6" stroke="#ffffff" stroke-width="1.5"/>`;
+          guides += `<text x="268" y="${Math.max(32, y(hVal)-4)}" text-anchor="end" fill="#7c3aed" font-size="9" font-weight="bold">ВГО ${(hVal/1000).toFixed(1)} км</text>`;
+        }
+      }
+    }
+  }
+  return `<svg class="profile-chart" viewBox="0 0 300 224" role="img" aria-label="Температурный профиль: высота в километрах, температура в градусах Цельсия"><text x="40" y="13" fill="#4a627c" font-size="11">T(z) · ${escape(result.profile?.source?.slice(0,24)||'профиль')}</text>${guides}<polyline points="${path}" fill="none" stroke="#345dca" stroke-width="2"/><text x="250" y="220" fill="#65768b" font-size="10">°C</text><text x="4" y="14" fill="#65768b" font-size="10">км</text></svg>`;
 }
 
 async function refreshProfiles(selectId) {
