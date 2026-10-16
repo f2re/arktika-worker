@@ -41,12 +41,13 @@ def parse_tle_text(text: str) -> tuple[str, str] | None:
 
 
 def fetch_tle(norad_id: int, cache_dir: Path | None = None) -> tuple[tuple[str, str], str]:
-    """Получение TLE: CelesTrak -> SatNOGS -> локальный кэш -> встроенный опорный TLE."""
+    """Получение TLE: локальный кэш -> CelesTrak -> SatNOGS -> встроенный опорный TLE."""
     cache_file = (cache_dir / f'{norad_id}.json') if cache_dir else None
-    cached = None
     if cache_file and cache_file.is_file():
         try:
             cached = json.loads(cache_file.read_text(encoding='utf-8'))
+            if cached and 'tle' in cached:
+                return tuple(cached['tle']), f"кэш ({cached.get('source', 'локальный')})"
         except (OSError, ValueError):
             pass
 
@@ -54,7 +55,7 @@ def fetch_tle(norad_id: int, cache_dir: Path | None = None) -> tuple[tuple[str, 
     celestrak_url = f'https://celestrak.org/NORAD/elements/gp.php?CATNR={norad_id}&FORMAT=TLE'
     try:
         req = urllib.request.Request(celestrak_url, headers={'User-Agent': 'Arktika-M-Workstation/0.3'})
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        with urllib.request.urlopen(req, timeout=1) as resp:
             content = resp.read().decode('utf-8', errors='ignore')
             pair = parse_tle_text(content)
             if pair:
@@ -69,7 +70,7 @@ def fetch_tle(norad_id: int, cache_dir: Path | None = None) -> tuple[tuple[str, 
     satnogs_url = f'https://db.satnogs.org/api/tle/?norad_cat_id={norad_id}'
     try:
         req = urllib.request.Request(satnogs_url, headers={'User-Agent': 'Arktika-M-Workstation/0.3'})
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        with urllib.request.urlopen(req, timeout=1) as resp:
             data = json.loads(resp.read().decode('utf-8', errors='ignore'))
             if isinstance(data, list) and data:
                 l1 = data[0].get('tle1')
@@ -83,13 +84,16 @@ def fetch_tle(norad_id: int, cache_dir: Path | None = None) -> tuple[tuple[str, 
     except Exception:
         pass
 
-    # 3. Локальный кэш
-    if cached and 'tle' in cached:
-        return tuple(cached['tle']), f"кэш ({cached.get('source', 'локальный')})"
-
-    # 4. Встроенный опорный TLE
+    # 3. Встроенный опорный TLE
     if norad_id in BASELINE_TLES:
-        return BASELINE_TLES[norad_id], 'базовый TLE каталога'
+        pair = BASELINE_TLES[norad_id]
+        if cache_file:
+            try:
+                cache_dir.mkdir(parents=True, exist_ok=True)
+                cache_file.write_text(json.dumps({'tle': pair, 'source': 'базовый TLE каталога', 'time': datetime.now(timezone.utc).isoformat()}), encoding='utf-8')
+            except OSError:
+                pass
+        return pair, 'базовый TLE каталога'
 
     raise ValueError(f'Не удалось получить TLE для спутника NORAD {norad_id}')
 
