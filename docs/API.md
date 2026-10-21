@@ -1,100 +1,128 @@
-# HTTP API 0.1
+# HTTP API 0.3.0
 
-Это локальный API, а не публичный сервис. Для программного клиента сначала POST `/api/bootstrap` с `{"key":"ключ запуска"}`, сохранить cookie. Во всех POST обязательны `Content-Type: application/json`, `X-Arktika-Request: 1`, корректные Host и Origin. Лимит тела — 4 МиБ. Без сессии доступны только статический интерфейс и `/health`. OAuth callback защищён одноразовым state, а не cookie.
+Это локальный API геоинформационной рабочей станции «Арктика-М», а не открытый веб-сервис в сети.
+Для программного взаимодействия сначала выполните `POST /api/bootstrap` с `{"key":"ключ запуска"}`, полученным из вывода терминала при запуске сервера, и сохраните сессионную cookie `arktika_session`.
+Во всех `POST`-запросах обязательны:
+- `Content-Type: application/json`
+- `X-Arktika-Request: 1`
+- Допустимые заголовки `Host` (127.0.0.1) и `Origin`
+- Лимит размера тела запроса — 4 МиБ
 
-## Каталог, авторизация, файлы
+Без сессионной cookie доступны только статический интерфейс и `/health`. Секреты и токены хранятся исключительно в оперативной памяти процесса сервера и никогда не возвращаются в ответах API.
 
-| Метод и путь | Вход | Выход/действие |
+---
+
+## 1. Авторизация и источники данных
+
+| Метод и путь | Входные параметры | Описание / результат |
 |---|---|---|
-| GET `/api/state` | — | Операция, журнал без токенов, время, очередь, срок access/STS, режим калибровки |
-| POST `/api/credentials` | token, необязательный refresh_token | Сохранение только в памяти; пустой token очищает |
-| POST `/api/oauth/configure` | client_id, redirect_uri, scope | Несекретная конфигурация OAuth |
-| POST `/api/oauth/start` | {} | URL входа с state/PKCE |
-| GET `/oauth/callback` | code, state | Обмен кода и redirect на локальную страницу |
-| POST `/api/oauth/refresh` | {} | Обновление токена при наличии refresh |
-| POST `/api/search` | date YYYY-MM-DD, scope day/month, platform ARCM1/ARCM2/пусто | Фоновый поиск |
-| GET `/api/calendar` | month YYYY-MM, platform, category | Состояние дней и локальных сцен |
-| GET `/api/catalog` | day, platform, category, channel, epsg, offset, limit | Сеансы и идентификаторы файлов |
-| GET `/api/session` | platform, time | Файлы и описание сеанса |
-| POST `/api/import` | path | Импорт результатов прежнего каталога |
-| POST `/api/local/import` | path | Фоновая регистрация GeoTIFF |
-| GET `/api/scenes` | date (день/месяц/пусто), platform | Скачанные сцены, без внутренних файловых путей |
-| POST `/api/check` | id файла | Пробное чтение фрагмента |
-| POST `/api/queue` | ids: массив | Постановка в сохраняемую очередь |
-| GET `/api/queue` | — | Состояния, прогресс и диагностические ошибки |
-| POST `/api/queue/action` | action pause/resume/restart/remove, необязательный id | Управление загрузками |
-| POST `/api/settings` | download_dir / last_date / access_mode | Локальные настройки |
-| POST `/api/folders` | path | Папки сервера и свободное место |
-| POST `/api/folders/create` | parent, name | Создание одной папки |
-| POST `/api/open-folder` | job или {} | Открыть папку средствами ОС сервера |
-| GET `/api/storage/roots` | — | Опубликованные корни S3 из каталога |
-| POST `/api/storage` | bucket,prefix,cursor | Чтение разрешённого списка объектов |
-| POST `/api/add-uri` | uri,size | Регистрация конкретного URI без угадывания |
-| POST `/api/cancel` | {} | Отмена фоновой операции каталога/обработки |
+| `GET /api/state` | — | Состояние сервера: текущая операция, журнал без секретов, очередь, статус токенов GPTL/STS, режим калибровки |
+| `POST /api/credentials` | `{token, refresh_token?}` | Сохранение токена доступа GPTL только в памяти; пустой токен очищает доступ |
+| `GET /api/sources` | — | Реестр источников данных (GPTL, CDS, Earthdata, локальные), их статус, доступные слои и наличие реквизитов |
+| `POST /api/sources/credentials` | `{provider: "cds" \| "earthdata", text, format?, clear?}` | Запись персонального токена/ключа для CDS (ERA5, CARRA2) или Earthdata (MERRA-2) в память сервера |
+| `POST /api/oauth/configure` | `{client_id, redirect_uri, scope}` | Несекретная конфигурация OAuth PKCE для GPTL |
+| `POST /api/oauth/start` | `{}` | Генерация URL входа с криптографическим `state` и PKCE `code_challenge` |
+| `GET /oauth/callback` | `code`, `state` | Приём кода авторизации OAuth, обмен на токены и редирект на главную страницу |
+| `POST /api/oauth/refresh` | `{}` | Обновление токена GPTL через refresh_token при его наличии |
 
-Старые `/api/token` и `/preview/{id}` сохранены для совместимости. Основной новый интерфейс использует `/api/credentials`. S3-браузер доступен через API, отдельный расширенный экран S3 в новом интерфейсе пока не реализован.
+---
 
-## ГИС и наука
+## 2. Каталог снимков, файлы и очередь загрузки
 
-| Метод и путь | Вход | Выход/действие |
+| Метод и путь | Входные параметры | Описание / результат |
 |---|---|---|
-| GET `/api/registry` | — | Каналы, продукты, статусы, области, версия рецептов |
-| GET `/api/map` | preset, width | Геометрия берегов/сетки/подписей в пикселях общей сетки |
-| POST `/api/calibration` | mode,reference,channels | Калибровка новых расчётов |
-| POST `/api/process` | scene,product,channel,preset,width,display_min/max | Фоновый расчёт; итог через state.result |
-| GET `/api/products` | — | Готовые неизменяемые продукты |
-| GET `/artifact/{id}/{name}` | ID продукта, имя из files | Разрешённый файл продукта |
-| GET `/artifact/{id}/export.zip` | — | Комплект с легендой и происхождением |
-| POST `/api/coordinates` | x,y,preset,width | Координаты карты → lon,lat |
-| POST `/api/pixel` | product,x,y | Каналы исходника, продукт, RGBA, флаги, Солнце |
-| POST `/api/route` | product,points,step_km,speed_kmh,departure | Выборка вдоль маршрута и ETA |
-| GET `/route-export/{id}/{csv|geojson|json}` | — | Выгрузка маршрута |
-| POST `/api/motion` | first,second,preset,channel | Фоновое экспериментальное слежение |
-| GET `/api/motion-result` | — | Последний результат слежения |
-| POST `/api/profile` | Явный профиль; mode=cloud_top для T(z) | Интегралы либо пересечения |
-| GET `/api/diagnostic` | — | Ограниченный технический отчёт |
-| POST `/api/shutdown` | {} | Пауза загрузок и завершение сервера |
+| `POST /api/search` | `{date, scope: "day" \| "month", platform: "ARCM1" \| "ARCM2" \| "", legacy?}` | Фоновый поиск сеансов съёмки в каталоге |
+| `GET /api/calendar` | `month=YYYY-MM`, `platform?`, `category?` | Сводка по дням месяца: доступные сеансы, наличие каналов на диске |
+| `GET /api/catalog` | `day=YYYY-MM-DD`, `platform?`, `category?`, `channel?`, `epsg?`, `offset?`, `limit?` | Список сеансов выбранного дня, файлы каналов и проекции |
+| `GET /api/session` | `platform`, `time` | Детальный состав сеанса: файлы каналов, размеры, CRS и проекции |
+| `GET /api/scenes` | `date?`, `platform?` | Список локально сохранённых сцен с зарегистрированными каналами |
+| `POST /api/check` | `{id}` | Пробное чтение фрагмента файла из архива GPTL (проверка прав и сети) |
+| `POST /api/queue` | `{ids: [...]}` | Постановка выбранных файлов каналов в сохраняемую очередь скачивания |
+| `GET /api/queue` | — | Состояние очереди загрузок: прогресс, скорость, ошибки |
+| `POST /api/queue/action` | `{action: "pause" \| "resume" \| "restart" \| "remove", id?}` | Управление заданиями очереди скачивания |
+| `POST /api/import` | `{path}` | Импорт готового отчёта каталога из JSON-файла |
+| `POST /api/local/import` | `{path}` | Фоновое сканирование папки сервера и регистрация локальных GeoTIFF |
+| `POST /api/settings` | `{download_dir?, last_date?, access_mode?, view_settings?}` | Настройки папок и параметров рабочего стола |
+| `POST /api/folders` | `{path?}` | Просмотр папок файловой системы сервера и свободного места на диске |
+| `POST /api/folders/create` | `{parent, name}` | Создание новой локальной папки для сохранения снимков |
+| `POST /api/open-folder` | `{job?}` | Открытие папки с файлами в системном проводнике ОС сервера |
+| `GET /api/storage/roots` | — | Опубликованные корни S3 из каталога снимков |
+| `POST /api/storage` | `{bucket, prefix?, cursor?}` | Просмотр разрешённого списка объектов в S3-хранилище |
+| `POST /api/add-uri` | `{uri, size?}` | Ручная регистрация URI конкретного GeoTIFF без автопоиска |
+| `POST /api/cancel` | `{}` | Отмена текущей фоновой операции (поиск, импорт, расчёт) |
+| `POST /api/shutdown` | `{}` | Приостановка очереди и корректное завершение локального сервера |
 
-`POST /api/process` не возвращает готовый растр синхронно. Клиент читает `/api/state`; после завершения `result.ok=true`, `result.result` содержит метаданные продукта. При ошибке `result.ok=false`, исходники остаются нетронутыми.
+---
 
-Пока один общий фоновой слот каталога/импорта/обработки и независимый загрузчик. Новый тяжёлый запрос при занятом слоте отвергается, а не запускает неограниченное число GDAL-процессов. Публичных batch/job API, многопользовательского ACL и распределённой очереди нет.
+## 3. Спутниковые продукты, цветосинтез и геометрия
 
-
-## Дополнения 0.2
-
-`GET /api/guides` — тематические справочные легенды. `GET /api/profiles` — список импортированных профилей. `POST /api/profiles/import` — профиль JSON либо `{text, metadata}` для CSV/JSON; схема в ANALYSIS.md. `POST /api/analyse` — `{product,x,y,profile_id?,altitude_m?,cloud_confirmed?,opaque_confirmed?,delta_k?}`. Координаты x/y — координаты сетки отображаемого продукта. Ответ включает исходный пиксель, метрики, спектральные гипотезы, профильные расчёты и id воспроизводимого анализа.
-
-`GET /analysis-export/<id>` — JSON анализа с происхождением и допущениями. `POST /api/project-points` — `{product,points:[[lon,lat],...]}`, возвращает узлы и геодезическую линию в координатах карты. `POST /api/route` дополнительно принимает profile_id и altitude_m. `POST /api/settings` поддерживает view_settings с preset/product/channel.
-
-Все перечисленные API сохраняют проверку локальной сессии; POST требует `X-Arktika-Request`. Методика кандидатов не превращается в прогноз через имя endpoint.
-
-## ERA5 и модельно-опорная калибровка (эксперимент)
-
-Все маршруты используют прежнюю локальную сессию и защиту Origin. Секреты в ответах не возвращаются.
-
-| Метод | Маршрут | Вход / результат |
+| Метод и путь | Входные параметры | Описание / результат |
 |---|---|---|
-| GET | `/api/era5/state` | Готовность библиотек/RTTOV/коэффициентов, провайдер без реквизитов, стадия операции |
-| POST | `/api/era5/credentials` | `{text, format: "auto"|"token"}` либо `{clear:true}`; только память процесса |
-| POST | `/api/era5/plan` | `{scene, channels:[9,10], area:[80,0,60,40], provider:"cds"|"gdex"}`; точные сроки, поля и уровни |
-| POST | `/api/era5/coefficients` | `{acknowledged:true}`; получение одного файла из ограниченного архива NWP SAF |
-| POST | `/api/era5/start` | Поля плана; `data_only:true` только для загрузки. Для расчёта: `zenith_deg`, `constant_angle_acknowledged:true`, `acknowledged:true`, `allow_coefficient_download:true` |
-| GET | `/api/era5/report?id=…` | Завершённый отчёт: источники, хеши, опоры, диапазоны и групповая проверка; без локальных путей/реквизитов |
-| POST | `/api/era5/apply` | `{id,scene,channels:[9,10],acknowledged:true}`; только прошедшие проверку каналы и только этот срок |
-| POST | `/api/cancel` | Существующая отмена; останавливает дочерний процесс получения ERA5 или RTTOV |
+| `GET /api/registry` | — | Реестр каналов МСУ-ГС, формул цветосинтеза (RGB), продуктов и областей |
+| `GET /api/guides` | — | Тематические справочные легенды и физические описания каналов и композиций |
+| `GET /api/map` | `preset`, `width`, `product?` | Геометрия карты: береговая линия, координатная сетка, подписи в пикселях |
+| `POST /api/coordinates` | `{x, y, preset, width}` | Пересчёт пиксельных координат карты в географические долготу и широту `[lon, lat]` |
+| `POST /api/project-points` | `{product, points: [[lon,lat], ...]}` | Проецирование географических точек и геодезической линии на сетку отображаемого продукта |
+| `POST /api/process` | `{scene, product, channel?, preset, width, display_min?, display_max?}` | Запуск фонового расчёта растрового продукта или композиции; результат через `state.result` |
+| `GET /api/products` | — | Список готовых неизменяемых продуктов в кэше сервера |
+| `GET /artifact/{id}/{name}` | ID продукта, имя файла (`map.png`, `display.tif`, `quality.tif`, `legend.json` и др.) | Получение готового растра или метаданных продукта |
+| `GET /artifact/{id}/export.zip` | — | Скачивание полного архива продукта с легендой, происхождением и исходными хешами |
+| `POST /api/calibration` | `{mode, reference?, channels?}` | Настройка режима калибровки (DN, исследовательское допущение DN=K, пользовательская шкала) |
+| `POST /api/scale/inventory` | `{scene}` | Выборка значений DN (перцентили) для каналов 4–10 выбранной сцены |
+| `POST /api/scale/preview` | `{method, scale?, offset?, dn1?, t1?, dn2?, t2?, text?, reference?}` | Расчёт предлагаемых коэффициентов $T = a \cdot \text{DN} + b$ по двум точкам или МНК |
+| `POST /api/scale/save` | `{scene, channels, method, scope: "scene" \| "platform", acknowledged: true, ...}` | Сохранение подтверждённого калибровочного профиля для сцены или космического аппарата |
+| `POST /api/scale/image` | `{scene, channel, scale, offset, preset, width}` | Генерация быстрого предпросмотра растра с новой шкалой |
 
-Коэффициенты сохраняются с `status=assumed` и `enforce_valid_dn=true`. За диапазоном опор растр становится прозрачным, точка/маршрут возвращают отсутствие значения. Это не нулевой сигнал и не ясное небо. Полная инструкция — `docs/ERA5.html`.
+---
 
+## 4. Метеорологический анализ, точка, профиль и маршрут
 
-## Подготовка ERA5 одним запуском
+| Метод и путь | Входные параметры | Описание / результат |
+|---|---|---|
+| `POST /api/pixel` | `{product, x, y}` | Анализ пикселя: яркостные температуры каналов, производные разности, углы Солнца, статус качества |
+| `POST /api/analyse` | `{product, x, y, profile_id?, altitude_m?, cloud_confirmed?, opaque_confirmed?, delta_k?}` | Полный комплексный анализ точки: спектральные признаки, фазовые гипотезы, профиль $T(z)$, расчёт ВГО, оценка условий обледенения |
+| `GET /analysis-export/{id}` | — | Экспорт воспроизводимого протокола анализа точки в формате JSON |
+| `GET /api/profiles` | — | Список импортированных вертикальных профилей атмосферы (радиозонды, NWP) |
+| `POST /api/profiles/import` | `{text, metadata: {source, time, lat, lon, ...}}` | Импорт вертикального профиля атмосферы из CSV или JSON |
+| `POST /api/profile` | `{profile, mode: "cloud_top" \| "integrate", tb_k?, ...}` | Расчёт высоты облачной вершины по температуре или интегральных влагозапасов в слое |
+| `POST /api/route` | `{product, points: [[lon,lat], ...], step_km?, speed_kmh?, departure?, profile_id?, altitude_m?}` | Расчёт метеоусловий вдоль полетного маршрута: профили каналов, время подлёта ETA, возраст данных, риски обледенения |
+| `GET /route-export/{id}/{csv \| geojson \| json}` | — | Выгрузка результатов расчёта по маршруту в форматах CSV, GeoJSON или полного JSON |
+| `POST /api/motion` | `{first, second, preset, channel}` | Фоновый расчёт взаимного смещения облачных полей между двумя последовательными сроками (NCC) |
+| `GET /api/motion-result` | — | Векторы перемещения и кандидаты вихревых структур по последнему расчёту динамики |
 
-Все POST требуют локальную сессию, разрешённый Origin и заголовок `X-Arktika-Request: 1`.
+---
 
-- `POST /api/era5/preflight`: `scene` либо `platform` + `time`, `product`, `channel` для отдельного канала; необязательные `provider`, `area`, `try_recent`. Не скачивает данные и не устанавливает ПО. Возвращает план, инвентарь каналов, runtime, next_action и оценочную архивную дату.
-- `POST /api/era5/start`: тот же контекст, `data_only` для отдельной загрузки, `acknowledged=true` для исследовательского расчёта; `zenith_deg` и `constant_angle_acknowledged=true` при заданной геометрии. Установка библиотек, докачка каналов и загрузка выполняются автоматически. При отсутствии RTTOV/угла подготовка достигает `data_ready`, но не выдумывает калибровку.
-- `POST /api/era5/setup`: отдельно установить/проверить библиотеки, без скачивания данных; все argv заданы на сервере.
-- `POST /api/era5/engine`: `path` доверенной установленной сборки RTTOV; проверка импорта Python-обёртки. Не принимает команду shell или URL пакета.
-- `POST /api/era5/cancel`: `id` текущей задачи; другая задача не отменяется.
-- `GET /api/era5/state`: публичные реквизиты без секрета, runtime и job с этапами. Статусы `setup_ready`, `needs_action`, `data_ready`, `ready`, `rejected`, `applied`, `cancelled`, `interrupted`, `error` различаются.
+## 5. Пространственные поля реанализа (ERA5, CARRA2, MERRA-2)
 
-`workflow.json` сохраняет только контекст, этапы и идентификатор отчёта. После перезапуска задача помечается `interrupted`; секрет не восстанавливается из файла. Реальная проверка доступа производится при запросе провайдера, не при успешном разборе токена.
+Модуль пространственных полей обеспечивает загрузку, кэширование, совмещение и сравнительный анализ метеорологических полей реанализа на сетке спутникового продукта.
+
+| Метод и путь | Входные параметры | Описание / результат |
+|---|---|---|
+| `GET /api/reanalysis/state` | — | Каталог доступных переменных, кэшированные поля на диске, активный стек слоёв, статус фоновой задачи |
+| `POST /api/reanalysis/add` | `{source: "era5" \| "carra2" \| "merra2", variable, time, level?, area: [N, W, S, E]}` | Постановка задачи скачивания и извлечения поля реанализа в фоновом воркере. Сохраняет `field.nc` и `metadata.json` |
+| `POST /api/reanalysis/import` | `{source, variable, time, level?, area, path}` | Импорт локального NetCDF/GRIB файла пользователя в качестве поля реанализа |
+| `POST /api/reanalysis/stack` | `{stack: [{id, opacity, style, visible}, ...]}` | Обновление конфигурации рабочего стека карты (до 8 слоёв; стили: `fill`, `arrows`, `fill_arrows`, `contours`, `fill_contours`) |
+| `POST /api/reanalysis/render` | `{id, preset?, width?, product?, min?, max?}` | Растеризация поля реанализа на геометрию карты или спутникового продукта. Возвращает параметры палитры, изолинии, векторные стрелки и URL растра |
+| `GET /field-render/{render_id}/map.png` | — | Получение отрендеренного PNG-слоя поля реанализа с прозрачным фоном |
+| `POST /api/reanalysis/probe` | `{ids: [id1, id2, ...], lon, lat}` | Синхронная точечная выборка значений метеовеличин (до 8 полей) в заданной географической точке |
+| `POST /api/reanalysis/difference` | `{first: id1, second: id2}` | Расчёт разностного поля $A - B$ двух полей реанализа при совпадении величины, срока и уровня; формирует производное NetCDF-поле с двойным происхождением |
+| `GET /field-export/{id}` | — | Скачивание ZIP-архива поля: исходный `field.nc` и полное описание происхождения `provenance.json` |
+| `POST /api/reanalysis/cancel` | `{id}` | Отмена текущей фоновой операции получения или обработки поля реанализа |
+
+---
+
+## 6. Орбитальная геометрия и модельно-опорная калибровка (RTTOV / ERA5)
+
+| Метод и путь | Входные параметры | Описание / результат |
+|---|---|---|
+| `POST /api/era5/orbit` | `{scene, area?}` | Расчёт орбитальной геометрии визирования по SGP4/TLE на момент съёмки: подспутниковая точка, высота КА, азимут, угол места, зенитный угол спутника $\theta_{sat}$ |
+| `GET /api/era5/state` | — | Готовность сред ERA5/RTTOV, наличие коэффициентов пропускания NWP SAF, статус пайплайна |
+| `POST /api/era5/credentials` | `{text, format: "auto" \| "token", clear?}` | Запись ключа CDS API в оперативную память процесса |
+| `POST /api/era5/plan` | `{scene, channels: [9, 10], area: [N, W, S, E], provider: "cds" \| "gdex"}` | Построение пошагового плана модельно-опорного расчёта калибровки |
+| `POST /api/era5/setup` | `{}` | Проверка и автоматическая установка необходимых Python-зависимостей (`cdsapi`, `xarray`, `scipy` и др.) |
+| `POST /api/era5/coefficients` | `{acknowledged: true}` | Загрузка спектральных коэффициентов пропускания МСУ-ГС из доверенного репозитория NWP SAF |
+| `POST /api/era5/engine` | `{path}` | Настройка пути к установленной локальной сборке радиационной модели RTTOV |
+| `POST /api/era5/start` | Параметры плана, `zenith_deg`, `constant_angle_acknowledged: true`, `acknowledged: true` | Запуск прямого моделирования радиационного переноса в атмосфере для получения опорных яркостных температур |
+| `GET /api/era5/report` | `id` отчёта | Получение итогового отчёта валидации: сопоставление DN с модельными яркостными температурами, оценка линейности шкалы |
+| `POST /api/era5/apply` | `{id, scene, channels: [9, 10], acknowledged: true}` | Применение проверенной исследовательской шкалы к каналам данной сцены |
+| `POST /api/era5/cancel` | `{id}` | Прерывание текущего вычислительного процесса модельной калибровки |
