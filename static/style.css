@@ -338,6 +338,11 @@ dialog.fixed-dialog>.dialog-head>button{flex:0 0 40px;width:40px;height:40px;min
 dialog.fixed-dialog>.dialog-body{flex:1 1 auto;min-height:0;overflow:auto;overscroll-behavior:contain;padding:18px 24px 24px;scroll-padding-top:12px}
 dialog.fixed-dialog>.dialog-footer{position:relative;flex:0 0 auto;margin:0;padding:14px 24px;bottom:auto;z-index:5}
 dialog.fixed-dialog .table-scroll{max-height:none;overflow:visible}
+.help-tabs {margin-bottom:14px;border-bottom:1px solid var(--line);position:static}
+.help-tab-panel {min-height:260px;max-height:60vh;overflow-y:auto;padding-right:4px}
+.help-tab-panel ol.hint {padding-left:18px;margin:8px 0}
+.help-tab-panel ol.hint li {margin:6px 0;line-height:1.6}
+
 #fileRows table{table-layout:fixed}#fileRows td{vertical-align:top;overflow-wrap:anywhere}
 #fileRows button{white-space:normal;max-width:100%;font-size:12px;padding:8px;line-height:1.35}
 #fileRows th:first-child{width:9%}#fileRows th:nth-child(2){width:34%}#fileRows th:nth-child(3){width:16%}#fileRows th:nth-child(4){width:15%}
