@@ -14,6 +14,7 @@ from ..download import atomic_json, digest
 from .catalog import VARIABLES, SOURCES, VERSION
 from .normalize import normalize, save_native
 from .transport import fetch_cds, fetch_merra, combine_parts, data_files, AccessError
+from .adapters import require_supported
 
 
 def metadata(native,identity,plan,provenance):
@@ -66,7 +67,9 @@ def prepare(payload,progress):
             provenance=[{'kind':'local_import','filename':path.name,'sha256':before,
                          'source_attribution':'user_selected_not_independently_verified'}]
         else:
-            fetch=fetch_merra if plan['source']=='merra2' else fetch_cds
+            adapter=require_supported(plan['source'],plan['variable'])
+            fetch={'cds':fetch_cds,'earthdata_cmr_opendap':fetch_merra}.get(adapter.transport_id)
+            if fetch is None: raise ValueError('Для источника пока не подключён транспорт данных.')
             parts,provenance=fetch(plan,payload['credential'],folder,progress)
             native=combine_parts(parts)
         progress('Сохраняю проверенное поле в локальный NetCDF-кэш')

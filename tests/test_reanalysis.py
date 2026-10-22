@@ -291,8 +291,53 @@ class ServiceIntegration(unittest.TestCase):
     def test_no_credential_no_remote_call(self):
         self.app.source_credentials({'provider':'cds','clear':True})
         result=self.app.fields_add(plan())
-        self.assertEqual(result,{'needs_action':{'code':'credentials_required','provider':'cds','source':'era5'}})
+        self.assertEqual(result['needs_action']['code'],'credentials_required')
+        self.assertEqual(result['needs_action']['provider'],'cds')
+        self.assertRegex(result['needs_action']['id'],r'^[0-9a-f]{32}$')
         self.assertFalse(self.app.busy)
+    def test_pending_remote_task_resumes_with_same_id_and_current_credentials(self):
+        self.app.source_credentials({'provider':'cds','clear':True})
+        first=self.app.fields_add(plan())
+        task_id=first['needs_action']['id']
+        self.app.source_credentials({'provider':'cds','text':'SYNTHETIC-PRIVATE-TOKEN','format':'token'})
+        seen=[]
+        def fake_process(payload,**kwargs):
+            seen.append(payload)
+            return {'field':{'id':'a'*24},'cached':False}
+        with patch.object(self.app,'_field_process',side_effect=fake_process):
+            result=self.app.fields_resume({'id':task_id})
+            self.app.task.join(10)
+        self.assertEqual(result,{'started':True,'id':task_id})
+        self.assertEqual(self.app.fields_state()['job']['id'],task_id)
+        self.assertEqual(self.app.fields_state()['job']['status'],'done')
+        self.assertEqual(seen[0]['credential']['token'],'SYNTHETIC-PRIVATE-TOKEN')
+    def test_pending_plan_never_persists_credential_path_or_uri(self):
+        self.app.source_credentials({'provider':'cds','clear':True})
+        result=self.app.fields_add(plan())
+        persisted=(self.app.fields_root/'job.json').read_text(encoding='utf-8')
+        self.assertNotIn('SYNTHETIC',persisted)
+        self.assertNotIn(str(self.root),persisted)
+        self.assertNotIn('https://',persisted)
+        self.assertEqual(json.loads(persisted)['pending']['spec']['source'],'era5')
+        with self.assertRaises(ValueError):self.app.fields_resume({'id':'0'*32})
+        self.assertEqual(result['needs_action']['id'],self.app.fields_state()['job']['id'])
+    def test_interrupted_remote_job_is_persisted_and_resumable_after_restart(self):
+        self.app._fields_init()
+        task_id='b'*32
+        self.app._field_job={'id':task_id,'status':'running','message':'Загрузка',
+                             'pending':{'kind':'remote','spec':self.app._safe_field_spec(plan())},
+                             'resume_available':False,'field_id':None}
+        from arktika.download import atomic_json
+        atomic_json(self.app.fields_root/'job.json',self.app._field_job)
+        self.app.close()
+        self.app=Workstation(self.root/'state')
+        state=self.app.fields_state()['job']
+        self.assertEqual(state['id'],task_id)
+        self.assertEqual(state['status'],'interrupted')
+        self.assertTrue(state['resume_available'])
+        self.assertEqual(state['needs_action'],{'code':'credentials_required','provider':'cds','source':'era5'})
+        saved=json.loads((self.app.fields_root/'job.json').read_text(encoding='utf-8'))
+        self.assertEqual(saved['status'],'interrupted')
     def test_cached_remote_field_needs_no_credentials(self):
         from shutil import copytree
         self.app.source_credentials({'provider':'cds','clear':True})

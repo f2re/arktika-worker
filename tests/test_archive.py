@@ -159,9 +159,14 @@ class ArchiveTests(unittest.TestCase):
             alpha=ds.read(4);self.assertTrue((alpha==0).any());self.assertTrue((alpha==255).any())
     def test_export_has_provenance_no_invented_values(self):
         self.local();p=self.build();self.assertTrue(p['display_only']);self.assertEqual(p['legend']['units'],'RGB')
+        self.assertEqual(p['passport']['quantity_kind'],'rgb')
+        self.assertEqual(p['passport']['calibration']['status'],'not_applicable')
+        self.assertEqual(p['passport']['uncertainty']['status'],'not_assessed')
+        self.assertEqual(p['passport']['sources'][0]['sha256'],p['inputs'][0]['sha256'])
         self.assertNotIn('values.tif',p['files']);self.assertNotIn(str(self.root),json.dumps(p))
         with zipfile.ZipFile(io.BytesIO(self.app.export(p['id']))) as z:
             meta=json.loads(z.read('product.json'));self.assertEqual(len(meta['inputs'][0]['sha256']),64)
+            self.assertEqual(meta['passport']['units'],'RGB')
     def test_analysis_and_route_rejected(self):
         self.local();p=self.build()
         for fn in (self.app.analyse,self.app.route):

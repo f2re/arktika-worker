@@ -42,12 +42,13 @@ function fieldBody(){
   return {source,variable,time:raw+(raw.length===16?':00Z':'Z'),level:$('#fieldLevelLabel').hidden?null:Number($('#fieldLevel').value),area};
 }
 function fieldsJob(){
-  const j=FIELDS.job,busy=j.status==='running';
-  $('#fieldJobMessage').textContent=busy?(j.message||''):'';
+  const j=FIELDS.job,busy=j.status==='running',pendingAction=j.status==='needs_action'||(j.status==='interrupted'&&j.resume_available);
+  $('#fieldJobMessage').textContent=busy?(j.message||''):j.status==='needs_action'?'Запрос сохранён. Настройте доступ к источнику; после сохранения запрос продолжится с теми же параметрами.':(j.status==='interrupted'&&j.resume_available?'Запрос прерван остановкой сервера. Его можно продолжить после настройки доступа.':'');
   if($('#fieldStatus'))$('#fieldStatus').textContent=j.message||'';
-  if($('#fieldCancel')){$('#fieldCancel').hidden=!busy;$('#fieldCancel').disabled=!busy;}
-  for(const id of ['#fieldDownload','#fieldImport','#fieldDifference','#fieldConfigure'])$(id).disabled=busy;
-  if(j.status==='error'||j.status==='interrupted')fieldError(j.message);
+  if($('#fieldCancel')){$('#fieldCancel').hidden=!(busy||j.status==='needs_action'||(j.status==='interrupted'&&j.resume_available));$('#fieldCancel').disabled=false;}
+  for(const id of ['#fieldDownload','#fieldImport','#fieldDifference'])$(id).disabled=busy||pendingAction;
+  $('#fieldConfigure').disabled=busy;
+  if(j.status==='error'||(j.status==='interrupted'&&!j.resume_available))fieldError(j.message);
 }
 async function refreshFields(){
   const data=await api('/api/reanalysis/state');FIELDS.catalogue=data.catalogue.sources;FIELDS.fields=data.fields;FIELDS.job=data.job;
@@ -86,7 +87,8 @@ async function startField(local=false,frozenBody=null){
     if(result.needs_action?.code==='credentials_required'){
       const action=result.needs_action;
       if(!['cds','earthdata'].includes(action.provider)||!['era5','carra2','merra2'].includes(action.source))throw Error('Источник вернул неизвестный запрос доступа.');
-      FIELDS.credentialRetry={source:action.source,provider:action.provider,body:{...body,area:[...body.area]}};
+      FIELDS.credentialRetry={id:action.id,source:action.source,provider:action.provider,body:{...body,area:[...body.area]}};
+      FIELDS.job={id:action.id,status:'needs_action',resume_available:true,needs_action:{source:action.source,provider:action.provider}};fieldsJob();
       fieldDialog.close();await openSourceAccess(action.source);return;
     }
     FIELDS.pending=result.id;FIELDS.job={id:result.id,status:'running',message:'Проверка и подготовка поля'};fieldsJob();
@@ -167,14 +169,14 @@ const baseFieldInvalidate=invalidatePoint;
 invalidatePoint=function(){FIELDS.probeEpoch++;$('#fieldProbe')?.replaceChildren();return baseFieldInvalidate();};
 function initFieldUI(){
   if(!$('#taskGrid button')){setTimeout(initFieldUI,100);return;}
-  const block=document.createElement('section');block.id='fieldLayerPanel';block.innerHTML='<div class="section-heading"><h3>Поля реанализа</h3><button id="fieldAddOpen" class="tonal" aria-label="Добавить поле реанализа">＋</button></div><div id="fieldLayerRows"></div><p id="fieldLegacyNotice" class="notice" hidden></p><p id="fieldStatus" class="micro" role="status"></p><button id="fieldCancel" class="text-button" hidden>Остановить получение поля</button><hr>';
+  const block=document.createElement('section');block.id='fieldLayerPanel';block.innerHTML='<div class="section-heading"><h3>Поля реанализа</h3><button id="fieldAddOpen" class="tonal" aria-label="Добавить поле реанализа">＋</button></div><div id="fieldLayerRows"></div><p id="fieldLegacyNotice" class="notice" hidden></p><p id="fieldStatus" class="micro" role="status"></p><button id="fieldCancel" class="text-button" hidden>Отменить сохранённый запрос</button><hr>';
   $('#productPanel').prepend(block);$('#productRail span').textContent='Слои';$('#productRail').setAttribute('aria-label','Слои и продукты');
   $('#fieldAddOpen').onclick=()=>openFieldDialog().catch(e=>toast(e.message));
-  $('#fieldCancel').onclick=()=>api('/api/reanalysis/cancel',{id:FIELDS.job.id}).catch(e=>toast(e.message));
+$('#fieldCancel').onclick=async()=>{try{await api('/api/reanalysis/cancel',{id:FIELDS.job.id});await refreshFields();}catch(e){toast(e.message);}};
   refreshFields().then(data=>{FIELDS.stack=data.stack.filter(s=>fieldMeta(s.id));drawFieldStack();renderFieldMaps();if(FIELDS.job.status==='running')pollFields();}).catch(e=>toast(e.message));
 }
 const baseFieldSaveAccess=saveSourceAccess;
-saveSourceAccess=async function(...args){FIELDS.accessSaving=true;try{await baseFieldSaveAccess(...args);}catch(e){FIELDS.accessSaving=false;throw e;}FIELDS.accessSaving=false;const retry=FIELDS.credentialRetry;const source=retry?.source||FIELDS.accessReturn;FIELDS.credentialRetry=null;FIELDS.accessReturn=null;if(source){await openFieldDialog(source);if(retry)await startField(false,retry.body);}};
+saveSourceAccess=async function(...args){FIELDS.accessSaving=true;try{await baseFieldSaveAccess(...args);}catch(e){FIELDS.accessSaving=false;throw e;}FIELDS.accessSaving=false;const retry=FIELDS.credentialRetry;const source=retry?.source||FIELDS.accessReturn;FIELDS.credentialRetry=null;FIELDS.accessReturn=null;if(source){await openFieldDialog(source);const job=FIELDS.job,action=job.needs_action,jobSource=action?.source||job.pending?.spec?.source;if(job.id&&job.resume_available&&jobSource===source){const result=await api('/api/reanalysis/resume',{id:job.id});if(result.started){FIELDS.pending=job.id;FIELDS.job={...job,status:'running',message:'Продолжается сохранённый запрос'};fieldDialog.close();fieldsJob();await pollFields();}else{FIELDS.job={...job,...result};fieldsJob();}}else if(retry)await startField(false,retry.body);}};
 for(const selector of ['#cdsAccessDialog','#earthdataAccessDialog'])$(selector).addEventListener('close',()=>{if(!FIELDS.accessSaving){const source=FIELDS.credentialRetry?.source||FIELDS.accessReturn;FIELDS.credentialRetry=null;FIELDS.accessReturn=null;if(source)openFieldDialog(source).catch(e=>toast(e.message));}});
 $('#fieldConfigure').onclick=()=>{FIELDS.accessReturn=$('#fieldSource').value;fieldDialog.close();openSourceAccess(FIELDS.accessReturn).catch(e=>toast(e.message));};
 $('#fieldClose').onclick=()=>fieldDialog.close();$('#fieldSource').onchange=fieldSelectors;$('#fieldVariable').onchange=fieldLevels;

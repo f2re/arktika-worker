@@ -124,6 +124,7 @@ class Handler(BaseHTTPRequestHandler):
             elif path=='/api/profiles':result={'profiles':app.profiles()}
             elif path=='/api/scenes':result={'scenes':app.scenes(q.get('date',''),q.get('platform',''))}
             elif path=='/api/products':result={'products':app.products()}
+            elif path=='/api/product/style':result=app.product_style({'id':q.get('id','')})
             elif path=='/api/map':result=app.context(q.get('preset','arctic'),int(q.get('width',1000)),q.get('product'))
             elif path=='/api/motion-result':
                 p=app.store.root/'motion.json'
@@ -187,6 +188,7 @@ class Handler(BaseHTTPRequestHandler):
             if path=='/api/era5/credentials':result=app.era5_credentials(data)
             elif path=='/api/sources/credentials':result=app.source_credentials(data)
             elif path=='/api/reanalysis/add':result=app.fields_add(data)
+            elif path=='/api/reanalysis/resume':result=app.fields_resume(data)
             elif path=='/api/reanalysis/import':result=app.fields_add(data,local=True)
             elif path=='/api/reanalysis/stack':result=app.fields_stack(data)
             elif path=='/api/reanalysis/render':result=app.fields_render(data)
@@ -203,6 +205,7 @@ class Handler(BaseHTTPRequestHandler):
             elif path=='/api/era5/coefficients':result=app.era5_coefficient_download(data)
             elif path=='/api/era5/apply':result=app.era5_apply(data)
             elif path=='/api/product-plan':result=app.product_plan(data)
+            elif path=='/api/product/style':result=app.product_style(data)
             elif path=='/api/scale/inventory':result=app.scale_inventory(data)
             elif path=='/api/scale/preview':result=app.scale_proposal(data)
             elif path=='/api/scale/save':result=app.save_scale(data)

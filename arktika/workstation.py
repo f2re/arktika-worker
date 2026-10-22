@@ -24,12 +24,14 @@ from .product_flow import ProductFlowMixin
 from .auto_calibration import AutoCalibrationMixin
 from .sources import SourceManagerMixin
 from .reanalysis_service import ReanalysisMixin
+from .product_styles import ProductStyleStore
 class Workstation(ReanalysisMixin, SourceManagerMixin, AutoCalibrationMixin, ProductFlowMixin, AnalysisMixin, App):
  def __init__(self,state_dir,download_dir=None,token='',config=None,client=None):
   self.config=config or {};super().__init__(state_dir,download_dir,token,client or AuthClient(token,self.config.get('oauth')))
   with self.store.lock,self.store.conn:
    self.store.conn.execute('CREATE TABLE IF NOT EXISTS scenes(id TEXT PRIMARY KEY,stamp TEXT,data TEXT)')
   self.product_root=self.store.root/'products';self.product_root.mkdir(exist_ok=True)
+  self.product_style_store=ProductStyleStore(self.store.root/'product-styles')
   self.route_root=self.store.root/'routes';self.route_root.mkdir(exist_ok=True)
   self.context_cache={};self.done_jobs={};self.registration_errors={}
   self.cal=self.store.setting('calibration',self.config.get('calibration',{'mode':'unknown'}));validate_calibration(self.cal)
@@ -176,6 +178,61 @@ class Workstation(ReanalysisMixin, SourceManagerMixin, AutoCalibrationMixin, Pro
   with zipfile.ZipFile(out,'w',zipfile.ZIP_DEFLATED) as z:
    for name in p['files']:z.write(self.artifact(identity,name),name)
   return out.getvalue()
+ def product_style(self,data):
+  """Return or apply a display profile without changing the scientific raster."""
+  import os
+  import shutil
+  import tempfile
+  from PIL import Image
+  from .processing import write_report
+  from .product_styles import default_profile, validate_profile
+  identity=data.get('id')
+  meta=self.product(identity)
+  if 'style' not in data:return {'style':self.product_style_store.get(meta)}
+  style=validate_profile(meta,data['style'])
+  source=self.artifact(identity,'values.tif')
+  with rasterio.open(source) as src:
+   values=src.read(1,masked=True).filled(np.nan).astype('float32')
+   raster_profile=src.profile.copy();tags=src.tags()
+  valid=np.isfinite(values)
+  scaled=np.where(valid,np.clip((values-style['minimum'])/(style['maximum']-style['minimum']),0,1),0)
+  stops=np.asarray(style['palette'],dtype='float32')
+  positions=np.linspace(0,1,len(stops))
+  rgb=np.stack([np.interp(scaled,positions,stops[:,channel]) for channel in range(3)],axis=-1).round().astype('uint8')
+  rgba=np.dstack((rgb,np.where(valid,255,0).astype('uint8')))
+  folder=self.product_root/identity
+  if 'display_style_default' not in meta:
+   original=default_profile(meta)
+   meta['display_style_default']={k:original[k] for k in ('palette_id','palette','minimum','maximum','scale_mode')}
+  legend=meta['legend'];legend.update(display_min=style['minimum'],display_max=style['maximum'],palette=style['palette'])
+  meta['display_style']={k:style[k] for k in ('schema_version','product_id','algorithm_version','palette_id','minimum','maximum','scale_mode')}
+  if 'style.json' not in meta['files']:meta['files'].append('style.json')
+  raster_profile.update(count=4,dtype='uint8',nodata=None)
+  with tempfile.TemporaryDirectory(prefix='.product-style-',dir=folder) as temporary:
+   stage=Path(temporary);backup=stage/'backup';backup.mkdir()
+   staged=stage/'display.tif'
+   with rasterio.open(staged,'w',**raster_profile) as dst:
+    dst.write(rgba.transpose(2,0,1));dst.colorinterp=(rasterio.enums.ColorInterp.red,rasterio.enums.ColorInterp.green,rasterio.enums.ColorInterp.blue,rasterio.enums.ColorInterp.alpha);dst.update_tags(**tags,style_schema=style['schema_version'])
+   Image.fromarray(rgba).save(stage/'map.png')
+   (stage/'style.json').write_text(json.dumps(style,ensure_ascii=False,allow_nan=False,indent=2),encoding='utf-8')
+   atomic_json(stage/'legend.json',legend);atomic_json(stage/'product.json',meta)
+   g=self.product_grid(meta);write_report(stage,meta,g)
+   names=('display.tif','map.png','style.json','legend.json','report.html','product.json')
+   replaced=[]
+   for name in names:
+    target=folder/name
+    if target.exists():shutil.copy2(target,backup/name)
+   try:
+    for name in names:
+     os.replace(stage/name,folder/name);replaced.append(name)
+    self.product_style_store.save(meta,style)
+   except Exception:
+    for name in reversed(replaced):
+     target=folder/name;saved=backup/name
+     if saved.exists():os.replace(saved,target)
+     elif target.exists():target.unlink()
+    raise
+  return {'style':style,'product':meta}
  def product_grid(self,p):
   return dict(p['grid'],transform=Affine(*p['transform']))
  def context(self,preset='arctic',width=1000,product=None):
