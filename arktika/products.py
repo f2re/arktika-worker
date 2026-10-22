@@ -30,10 +30,8 @@ PRESETS={'arctic':dict(name='Вся Арктика',crs='EPSG:3413',bounds=[-450
 'barents':dict(name='Баренцево и Норвежское моря',crs='EPSG:3995',geo_bounds=[-25,60,70,85]),
 'kara':dict(name='Карское море и море Лаптевых',crs='EPSG:3576',geo_bounds=[45,65,145,85]),
 'geographic':dict(name='Северное полушарие: широта / долгота',crs='EPSG:4326',bounds=[-180,40,180,90])}
-DEFAULT_CALIBRATION=dict(mode='declared',reference='Геопортал GPTL L2IR / МСУ-ГС/А космических аппаратов «Арктика-М» №1 и №2 (шкала яркостной температуры Кельвинов: 1 DN = 1 K)',channels={str(ch):dict(scale=1.0,offset=0.0,units='K') for ch in range(4,11)})
+DEFAULT_CALIBRATION=dict(mode='unknown',reference='',channels={})
 CALIBRATION_PRESETS=[
-dict(id='arktika_l2ir',title='Арктика-М L2IR GPTL (по умолчанию: 1 DN = 1 K)',mode='declared',scale=1.0,offset=0.0,units='K',reference='Геопортал GPTL L2IR / МСУ-ГС/А космических аппаратов «Арктика-М» №1 и №2 (шкала яркостной температуры Кельвинов: 1 DN = 1 K)'),
-dict(id='msugs_l1b_001',title='МСУ-ГС/А HDF5 L1B / Планета (scale=0.01 K/DN)',mode='declared',scale=0.01,offset=0.0,units='K',reference='Росгидромет / НИЦ «Планета» HDF5 L1B (scale=0.01 K/DN)'),
 dict(id='assumed',title='Исследовательское допущение (DN = K)',mode='assumed',scale=1.0,offset=0.0,units='K',reference='Исследовательская линейная шкала оператора; не калибровка поставщика'),
 ]
 def registry():

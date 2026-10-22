@@ -50,7 +50,14 @@ class ScienceTests(unittest.TestCase):
  def test_stretch_reject_reverse(self):
   with self.assertRaises(ValueError):stretch(np.array([1]),2,1)
  def test_channel_keeps_dn(self):
-  p=self.build();self.assertEqual(p['legend']['units'],'DN');self.assertEqual(p['legend']['stats']['min'],275)
+  p=self.build();self.assertEqual(p['legend']['units'],'DN');self.assertEqual(p['legend']['quantity_kind'],'stored_value');self.assertEqual(p['legend']['stats']['min'],275)
+ def test_legend_quantity_kinds_are_explicit(self):
+  fixture(self.root,True)
+  channel=self.build();difference=self.build('difference',{'mode':'assumed'});composite=self.build('micro24',{'mode':'assumed'})
+  self.assertEqual(channel['legend']['quantity_kind'],'absolute_temperature')
+  self.assertEqual(difference['legend']['quantity_kind'],'temperature_difference')
+  self.assertEqual(composite['legend']['quantity_kind'],'rgb')
+  self.assertEqual([c['quantity_kind'] for c in composite['legend']['components']],['temperature_difference','temperature_difference','absolute_temperature'])
  def test_source_not_modified(self):
   from arktika.download import digest
   p=self.scene['channels']['9']['path'];before=digest(p);self.build();self.assertEqual(before,digest(p))

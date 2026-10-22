@@ -65,6 +65,7 @@ class AnalysisMixin:
                 actual_lon = float(pt.longitude if pt.longitude <= 180 else pt.longitude - 360)
                 prof_data = {
                     'source': f"ERA5 Reanalysis (ECMWF, {time_iso[:16].replace('T', ' ')} UTC)",
+                    'data_kind': 'era5',
                     'valid_time': time_iso,
                     'lat': float(pt.latitude),
                     'lon': actual_lon,
@@ -100,7 +101,7 @@ class AnalysisMixin:
                  216.7, 218.0, 220.0, 223.5, 226.5, 231.0]
         time_iso = time_str if 'Z' in time_str else time_str + 'Z'
         prof_data = {
-            'source': 'Опорная атмосфера Субарктики (ICAO/COESA)',
+            'source': 'Демонстрационный синтетический профиль (ICAO/COESA)',
             'valid_time': time_iso,
             'lat': float(lat),
             'lon': float(lon),
@@ -113,11 +114,15 @@ class AnalysisMixin:
             'temperature_units': 'K',
             'pressure_units': 'Pa',
             'vertical_reference': 'AMSL',
-            'note': 'Опорный высотный профиль атмосферы высоких широт (ICAO/Субарктика).'
+            'note': 'Синтетическая иллюстрация для демонстрации интерфейса. Не является наблюдением или данными модели и не предназначена для метеорологической диагностики.',
+            'data_kind': 'synthetic_demo'
         }
-        return parse_profile(prof_data)
+        profile = parse_profile(prof_data)
+        profile['data_kind'] = 'synthetic_demo'
+        profile['note'] = prof_data['note']
+        return profile
 
-    def resolve_auto_profile(self, lat, lon, time_str):
+    def resolve_auto_profile(self, lat, lon, time_str, demonstration=False):
         for p_meta in self.profiles():
             try:
                 p = self.get_profile(p_meta['id'])
@@ -160,9 +165,11 @@ class AnalysisMixin:
                 best_prof['id'] = hashlib.sha256(json.dumps(best_prof, sort_keys=True).encode()).hexdigest()[:24]
                 return best_prof
 
-        prof = self._standard_arctic_profile(lat, lon, time_str)
-        prof['id'] = hashlib.sha256(json.dumps(prof, sort_keys=True).encode()).hexdigest()[:24]
-        return prof
+        if demonstration is True:
+            prof = self._standard_arctic_profile(lat, lon, time_str)
+            prof['id'] = hashlib.sha256(json.dumps(prof, sort_keys=True).encode()).hexdigest()[:24]
+            return prof
+        return None
 
     def analyse(self, data):
         product = self.product(data['product'])
@@ -180,7 +187,8 @@ class AnalysisMixin:
             profile = self.get_profile(data['profile_id'])
         else:
             try:
-                profile = self.resolve_auto_profile(pixel['lat'], pixel['lon'], pixel['time'])
+                profile = self.resolve_auto_profile(pixel['lat'], pixel['lon'], pixel['time'],
+                                                    demonstration=data.get('demo_profile') is True)
                 is_auto = True
             except Exception:
                 profile = None
@@ -192,6 +200,7 @@ class AnalysisMixin:
             result['profile_id'] = profile['id']
             result['profile_snapshot'] = profile
             result['profile_auto'] = is_auto
+            result['profile_kind'] = profile.get('data_kind') or 'provided_profile'
         # A complete reproducible record, not just a rendered colour.
         scene = self.frozen_scene(product)
         result['inputs'] = self.sample_provenance(scene)

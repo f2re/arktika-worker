@@ -137,5 +137,5 @@ jobs:
           cp dist/RELEASE_NOTES.md "$RUNNER_TEMP/release-notes.md"
           printf '\nПроверенный коммит: `%s`. [Журнал CI](https://github.com/%s/actions/runs/%s).\n' "$GITHUB_SHA" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" >> "$RUNNER_TEMP/release-notes.md"
           gh release create "$tag" dist/*.zip dist/SHA256SUMS.txt dist/build-info.json dist/RELEASE_NOTES.md \
-            --target "$GITHUB_SHA" --title "Арктика-М $tag — поля реанализа и карта" \
+            --target "$GITHUB_SHA" --title "Арктика-М $tag — исправления калибровки и продукции" \
             --notes-file "$RUNNER_TEMP/release-notes.md" --latest

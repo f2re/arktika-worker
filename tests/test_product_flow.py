@@ -13,6 +13,7 @@ from arktika.processing import calibration, build_product
 from arktika.profiles import cloud_top
 from arktika.radiometry import metadata_scale, two_points, fit_pairs
 from arktika.workstation import Workstation
+from arktika.products import CALIBRATION_PRESETS, DEFAULT_CALIBRATION
 from test_science import fixture
 from test_archive import archive_assets, rgb_fixture
 from test_catalog_integration import remote_fixture
@@ -31,6 +32,10 @@ class RadiometryTests(unittest.TestCase):
             if tags:ds.update_tags(1,**tags)
     def test_unknown_does_not_infer_kelvin(self):
         with self.ds() as ds:self.assertIsNone(metadata_scale(ds))
+    def test_calibration_registry_has_no_unsupported_declared_defaults(self):
+        self.assertEqual(DEFAULT_CALIBRATION,dict(mode='unknown',reference='',channels={}))
+        self.assertEqual([preset['id'] for preset in CALIBRATION_PRESETS],['assumed'])
+        self.assertEqual(CALIBRATION_PRESETS[0]['mode'],'assumed')
     def test_explicit_encoding(self):
         self.tags(scale=.01,offset=200)
         with self.ds() as ds:r=metadata_scale(ds)

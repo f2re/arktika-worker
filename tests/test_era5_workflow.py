@@ -82,6 +82,16 @@ class WorkflowTests(unittest.TestCase):
         r=self.app.era5_preflight(self.body)
         self.assertEqual(r['plan']['channels'],[7,9,10]);self.assertEqual(r['inventory']['ready'],[9]);self.assertEqual(r['inventory']['missing'],[7,10])
         self.assertEqual(r['next_action'],'start');self.assertFalse(self.app.store.jobs())
+
+    def test_existing_cdsapirc_is_loaded_into_memory(self):
+        home=self.root/'cds-home';home.mkdir()
+        (home/'.cdsapirc').write_text('url: https://cds.climate.copernicus.eu/api\nkey: SYNTHETIC-LOCAL-TOKEN\n',encoding='utf-8')
+        self.app.era5_credentials({'clear':True})
+        del self.app._era5_credential
+        with patch.dict(os.environ,{'HOME':str(home)}):
+            self.assertTrue(self.app.era5_state()['credentials']['present'])
+        self.assertEqual(self.app._source_cds_credential['token'],'SYNTHETIC-LOCAL-TOKEN')
+        self.assertNotIn('SYNTHETIC-LOCAL-TOKEN',json.dumps(self.app.era5_state()))
     def test_data_plan_without_any_local_scene(self):
         body={'platform':'ARCM2','time':'2024-01-01T23:30:00Z','product':'night'}
         r=self.app.era5_plan(body)

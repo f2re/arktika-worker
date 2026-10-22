@@ -1,6 +1,6 @@
 /* Пространственные поля: независимый от спутника стек, точные сроки, без CDN. */
 'use strict';
-const FIELDS={catalogue:[],fields:[],stack:[],epoch:0,probeEpoch:0,pending:null,timer:null,saveTail:Promise.resolve(),job:{status:'idle'}};
+const FIELDS={catalogue:[],fields:[],stack:[],epoch:0,probeEpoch:0,pending:null,timer:null,saveTail:Promise.resolve(),job:{status:'idle'},credentialRetry:null,accessReturn:null,accessSaving:false};
 const fieldDialog=document.createElement('dialog');fieldDialog.id='fieldDialog';fieldDialog.className='wide fixed-dialog';
 fieldDialog.innerHTML=`<div class="dialog-head"><div><h2>Добавить поле реанализа</h2><p>Один источник · один срок анализа · один уровень</p></div><button id="fieldClose" aria-label="Закрыть">✕</button></div>
 <div class="dialog-body"><div class="row"><label>Источник<select id="fieldSource"></select></label><label>Поле<select id="fieldVariable"></select></label></div>
@@ -79,10 +79,16 @@ function drawFieldCache(){
   for(const selector of ['#fieldFirst','#fieldSecond']){const old=$(selector).value;$(selector).innerHTML=originals.map(f=>`<option value="${f.id}">${escape(fieldLabel(f))}</option>`).join('');if(originals.some(f=>f.id===old))$(selector).value=old;}
   if($('#fieldFirst').value===$('#fieldSecond').value&&originals.length>1)$('#fieldSecond').selectedIndex=1;
 }
-async function startField(local=false){
+async function startField(local=false,frozenBody=null){
   fieldError();try{
-    const body=fieldBody();if(local)body.path=$('#fieldPath').value;
+    const body=frozenBody?{...frozenBody,area:[...frozenBody.area]}:fieldBody();if(local)body.path=$('#fieldPath').value;
     const result=await api('/api/reanalysis/'+(local?'import':'add'),body);
+    if(result.needs_action?.code==='credentials_required'){
+      const action=result.needs_action;
+      if(!['cds','earthdata'].includes(action.provider)||!['era5','carra2','merra2'].includes(action.source))throw Error('Источник вернул неизвестный запрос доступа.');
+      FIELDS.credentialRetry={source:action.source,provider:action.provider,body:{...body,area:[...body.area]}};
+      fieldDialog.close();await openSourceAccess(action.source);return;
+    }
     FIELDS.pending=result.id;FIELDS.job={id:result.id,status:'running',message:'Проверка и подготовка поля'};fieldsJob();
     clearTimeout(FIELDS.timer);await pollFields();
   }catch(e){fieldError(e.message);}
@@ -168,7 +174,8 @@ function initFieldUI(){
   refreshFields().then(data=>{FIELDS.stack=data.stack.filter(s=>fieldMeta(s.id));drawFieldStack();renderFieldMaps();if(FIELDS.job.status==='running')pollFields();}).catch(e=>toast(e.message));
 }
 const baseFieldSaveAccess=saveSourceAccess;
-saveSourceAccess=async function(...args){await baseFieldSaveAccess(...args);if(FIELDS.accessReturn){const source=FIELDS.accessReturn;FIELDS.accessReturn=null;await openFieldDialog(source);}};
+saveSourceAccess=async function(...args){FIELDS.accessSaving=true;try{await baseFieldSaveAccess(...args);}catch(e){FIELDS.accessSaving=false;throw e;}FIELDS.accessSaving=false;const retry=FIELDS.credentialRetry;const source=retry?.source||FIELDS.accessReturn;FIELDS.credentialRetry=null;FIELDS.accessReturn=null;if(source){await openFieldDialog(source);if(retry)await startField(false,retry.body);}};
+for(const selector of ['#cdsAccessDialog','#earthdataAccessDialog'])$(selector).addEventListener('close',()=>{if(!FIELDS.accessSaving){FIELDS.credentialRetry=null;FIELDS.accessReturn=null;}});
 $('#fieldConfigure').onclick=()=>{FIELDS.accessReturn=$('#fieldSource').value;fieldDialog.close();openSourceAccess(FIELDS.accessReturn).catch(e=>toast(e.message));};
 $('#fieldClose').onclick=()=>fieldDialog.close();$('#fieldSource').onchange=fieldSelectors;$('#fieldVariable').onchange=fieldLevels;
 $('#fieldDownload').onclick=()=>startField(false);$('#fieldImport').onclick=()=>startField(true);

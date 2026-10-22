@@ -489,9 +489,9 @@ drawLegend = function(l) {
     $('#miniLegend').innerHTML='<div class="mini-legend-header"><div class="mini-legend-title">'+icon('info')+'<span>Готовые цвета поставщика</span></div><span class="mini-legend-pill">RGB</span></div><div class="mini-legend-hint">RGB-растр · не температурная шкала</div>';$('#miniLegend').hidden=false;return;
   }
 
-  let guide=interpretedGuide(l.product);if(l.product==='channel'&&l.units!=='K')guide={title:'Значения канала · DN',purpose:'Числа из файла, не температура. Цвет помогает сравнивать сигнал и различать структуру.',swatches:[]};
-  if(l.product==='channel'&&l.units==='K'&&Number(S.product?.request.channel)!==9)guide={title:'Яркостная температура выбранного канала',purpose:channelMeta(S.product.request.channel)?.description||'Температура излучения; не температура воздуха.',swatches:[]};
-  const temperature=l.units==='K';
+  let guide=interpretedGuide(l.product);if(l.product==='channel'&&l.quantity_kind!=='absolute_temperature')guide={title:'Значения канала · DN',purpose:'Числа из файла, не температура. Цвет помогает сравнивать сигнал и различать структуру.',swatches:[]};
+  if(l.product==='channel'&&l.quantity_kind==='absolute_temperature'&&Number(S.product?.request.channel)!==9)guide={title:'Яркостная температура выбранного канала',purpose:channelMeta(S.product.request.channel)?.description||'Температура излучения; не температура воздуха.',swatches:[]};
+  const temperature=l.quantity_kind==='absolute_temperature'&&l.units==='K';
   const value=v=>temperature&&v!==null?v-273.15:v;
   const unit=temperature?'°C':l.units;
 
@@ -529,7 +529,7 @@ drawLegend = function(l) {
       <div class="components-grid">
         ${l.components.map(c=>{
           const role=(componentRoles[l.product]||{})[c.component]||'';
-          const isTemp = c.min > 120 && c.max < 400;
+          const isTemp = c.quantity_kind==='absolute_temperature'&&c.units==='K';
           const rangeStr = isTemp ? `${num(c.min - 273.15)} … ${num(c.max - 273.15)} °C` : `${c.min} … ${c.max} ${c.units || 'K'}`;
           const inFrame = isTemp && c.stats?.min != null
             ? `${num(c.stats.min - 273.15)} … ${num(c.stats.max - 273.15)} °C`
@@ -584,7 +584,7 @@ drawLegend = function(l) {
   if($('#legendAutoRange'))$('#legendAutoRange').onclick=()=>{clearRange();requestBuild();};
   if($('#legendFullRange')){
     $('#legendFullRange').disabled=!Number.isFinite(l.stats?.min)||!Number.isFinite(l.stats?.max);
-    $('#legendFullRange').onclick=()=>{$('#displayMin').value=value(l.stats.min);$('#displayMax').value=value(Math.max(l.stats.max,l.stats.min+1));requestBuild();};
+    $('#legendFullRange').onclick=()=>{$('#displayMin').value=l.stats.min;$('#displayMax').value=Math.max(l.stats.max,l.stats.min+1);requestBuild();};
   }
 
   let expandedBlock = '';
@@ -669,7 +669,9 @@ async function inspectAt(x,y,keep=false) {
 function drawPoint(r) {
   const p=r.pixel,a=r.analysis;
   const coordinates=`${num(Math.abs(p.lat),3)}° ${p.lat>=0?'с.':'ю.'} ш. · ${num(Math.abs(p.lon),3)}° ${p.lon>=0?'в.':'з.'} д.`;
-  let html=`<div class="point-heading"><h3>${coordinates}</h3><div class="heading-badges">${r.profile_auto?'<span class="pill pill-auto" title="Профиль реанализа получен в фоне">ERA5 реанализ</span>':''}<span class="pill" data-tip="${escape(sourceCal[a.calibration])}">${escape(displayCal[a.calibration]||'K')}</span></div></div>`;
+  const profileKind=r.profile_kind||r.profile_snapshot?.data_kind;
+  const profileBadge=profileKind==='synthetic_demo'?'<span class="pill pill-auto" title="Синтетический профиль для демонстрации интерфейса">Демонстрационный профиль</span>':profileKind==='era5'?'<span class="pill pill-auto" title="Профиль получен из ERA5">ERA5</span>':profileKind==='provided_profile'?'<span class="pill pill-auto" title="Использован предоставленный профиль">Профиль</span>':'';
+  let html=`<div class="point-heading"><h3>${coordinates}</h3><div class="heading-badges">${profileBadge}<span class="pill" data-tip="${escape(sourceCal[a.calibration])}">${escape(displayCal[a.calibration]||'K')}</span></div></div>`;
 
   const cth = r.profile_result?.candidate_cloud_top || (r.profile_result?.height?.candidate_heights_m?.length ? r.profile_result.height : null);
   if(cth && cth.candidate_heights_m && cth.candidate_heights_m.length) {
