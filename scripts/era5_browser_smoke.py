@@ -148,7 +148,7 @@ def main():
                     calls=transport.calls
                     runtime['pyrttov']=True
                     page.evaluate('()=>era5Refresh()')
-                    check('Угол не придуман автоматически','()=>!document.querySelector("#era5GeometryHelp").hidden&&document.querySelector("#era5Zenith").value===""')
+                    check('Угол не выдуман: он пустой либо явно рассчитан по SGP4','()=>!document.querySelector("#era5GeometryHelp").hidden&&(document.querySelector("#era5Zenith").value===""||Number(document.querySelector("#era5Zenith").value)>0&&document.querySelector("#era5OrbitInfo").textContent.includes("Орбита SGP4"))')
                     page.locator('#era5Zenith').fill('23');page.locator('#era5Zenith').dispatch_event('change')
                     wait('()=>document.querySelector("#era5Run").dataset.action==="start"')
                     page.locator('#era5Run').click()

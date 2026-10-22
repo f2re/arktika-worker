@@ -100,7 +100,7 @@
     "scripts/build_release.py": "f6971582262d26937a6ee5742b120c6c1eb845ac1a7a35059b546eb2e49abc9b",
     "scripts/catalog_browser_smoke.py": "c02420fa7ef95daa629cadbca1b50a7b40755e1bf68c498c46cce1b9b9206a4a",
     "scripts/check_coefficients.py": "cdfb4aff39e1b4877746b15284dd543e55cf28140c8ee6326640e819f9bbcbd8",
-    "scripts/era5_browser_smoke.py": "0aac194a14a0e4356703f63fd257bf70dfd821aa91befd362893cd187def34c8",
+    "scripts/era5_browser_smoke.py": "fe389a285ff9c52a5a075250d4b2f86c8005696dc243924a0c771dc17cb68c60",
     "scripts/era5_pipeline_worker.py": "dd9a118ce0daa58a9767b3f4a4921522bb6804b9cbe26b78e9c6d0f40619d255",
     "scripts/era5_worker.py": "412151c790ca39ae440ff01f028781383895273b5fae0238e86a523433fa1486",
     "scripts/manifest.py": "966f6ac187ee8966218380a80673e7a527bf891a37a847b04dd46d3f6bec2cf7",
