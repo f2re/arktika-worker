@@ -511,7 +511,7 @@ drawLegend = function(l) {
     html+='<div class="legend-section-title">Цветовая шкала</div>'+bar;miniature=bar;
     if(l.product==='channel')html+='<p class="hint">За пределами шкалы — крайние цвета. Исходные значения сохранены.</p><div class="row"><button id="legendAutoRange" class="text-button">Автоконтраст</button><button id="legendFullRange" class="text-button">Весь диапазон</button></div>';
   }
-  if(l.stats)html+=`<details class="legend-details"><summary>Статистика кадра: ${num(value(l.stats.min))}…${num(value(l.stats.max))} ${escape(unit)}</summary><p class="hint">Минимум и максимум валидных значений на расчётной сетке. Автоконтраст DN использует 2-й и 98-й процентили.</p></details>`;
+  if(l.stats)html+=`<details class="legend-details"><summary>Диапазон данных кадра: ${num(value(l.stats.min))}…${num(value(l.stats.max))} ${escape(unit)}</summary><p class="hint">Минимум и максимум валидных значений на расчётной сетке. Автоконтраст DN использует 2-й и 98-й процентили.</p></details>`;
 
   if(l.classes){
     html+=`<div class="legend-section-title">Классы спектральных признаков</div>`;
