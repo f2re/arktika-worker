@@ -16,7 +16,7 @@
     "SECURITY.md": "a64cd32afb48113ef1a9989d6d5f9c777c0b31204a163116651d69ae9de78644",
     "THIRD_PARTY_NOTICES.md": "353ffb2cec81f7e73201291c534425e3f758fbfe406f33b38defcbffd5b67b0c",
     "arktika/__init__.py": "e364931a8afff672985ee99f795e6d8b20ff33c55d71d757ec211ec6689b3c19",
-    "arktika/adapters.py": "edf71063021f66e54c2a351cc9cc3c93bf0a0fa9c401b28ed2f1b641e451ea91",
+    "arktika/adapters.py": "02735c57123d0abd6e527f4b76f0340539f06845c535dc42ce7f2e4c0df6bf90",
     "arktika/analysis_service.py": "48e98c8e6c347885b7ef1dc6e75b1f5b53d97f9286819080b1067954c569388e",
     "arktika/archive.py": "acf60508dd3d22ada443609b26c3f3d13405ff228a3bd44a1086386bc9fb6bb6",
     "arktika/auth.py": "9c7d579a5d2e39f0df2bc73d3c0a6a9dc40c24d2fa7401803b7e0db4259ba142",
