@@ -11,7 +11,7 @@ fieldDialog.innerHTML=`<div class="dialog-head"><div><h2>Добавить пол
 <p id="fieldError" class="error-text" role="alert" hidden></p><p id="fieldJobMessage" role="status"></p>
 <details id="fieldCacheDetails"><summary>Уже загруженные поля</summary><div id="fieldCache"></div></details>
 <details id="fieldDifferenceDetails"><summary>Разность двух источников: A − B</summary><div class="row"><label>A<select id="fieldFirst"></select></label><label>B<select id="fieldSecond"></select></label></div><p class="micro">Одинаковые поле, уровень и срок. Расчёт на более грубой исходной сетке; вне совместной маски данных результата нет.</p><button id="fieldDifference" class="tonal">Рассчитать разность</button></details>
-</div><div class="dialog-footer"><a href="/docs/REANALYSIS.html" target="_blank" rel="noopener">Поля и ограничения</a><button id="fieldDownload" class="primary">Загрузить и добавить на карту</button></div>`;
+</div><div class="dialog-footer"><a href="/docs/REANALYSIS.html" target="_blank" rel="noopener">Поля и ограничения</a><button id="fieldDialogCancel" class="text-button" hidden>Отменить сохранённый запрос</button><button id="fieldDownload" class="primary">Загрузить и добавить на карту</button></div>`;
 document.body.append(fieldDialog);
 function fieldError(message=''){const el=$('#fieldError');el.textContent=message;el.hidden=!message;}
 function fieldMeta(id){return FIELDS.fields.find(f=>f.id===id);}
@@ -46,6 +46,7 @@ function fieldsJob(){
   $('#fieldJobMessage').textContent=busy?(j.message||''):j.status==='needs_action'?'Запрос сохранён. Настройте доступ к источнику; после сохранения запрос продолжится с теми же параметрами.':(j.status==='interrupted'&&j.resume_available?'Запрос прерван остановкой сервера. Его можно продолжить после настройки доступа.':'');
   if($('#fieldStatus'))$('#fieldStatus').textContent=j.message||'';
   if($('#fieldCancel')){$('#fieldCancel').hidden=!(busy||j.status==='needs_action'||(j.status==='interrupted'&&j.resume_available));$('#fieldCancel').disabled=false;}
+  if($('#fieldDialogCancel'))$('#fieldDialogCancel').hidden=!(busy||j.status==='needs_action'||(j.status==='interrupted'&&j.resume_available));
   for(const id of ['#fieldDownload','#fieldImport','#fieldDifference'])$(id).disabled=busy||pendingAction;
   $('#fieldConfigure').disabled=busy;
   if(j.status==='error'||(j.status==='interrupted'&&!j.resume_available))fieldError(j.message);
@@ -172,7 +173,8 @@ function initFieldUI(){
   const block=document.createElement('section');block.id='fieldLayerPanel';block.innerHTML='<div class="section-heading"><h3>Поля реанализа</h3><button id="fieldAddOpen" class="tonal" aria-label="Добавить поле реанализа">＋</button></div><div id="fieldLayerRows"></div><p id="fieldLegacyNotice" class="notice" hidden></p><p id="fieldStatus" class="micro" role="status"></p><button id="fieldCancel" class="text-button" hidden>Отменить сохранённый запрос</button><hr>';
   $('#productPanel').prepend(block);$('#productRail span').textContent='Слои';$('#productRail').setAttribute('aria-label','Слои и продукты');
   $('#fieldAddOpen').onclick=()=>openFieldDialog().catch(e=>toast(e.message));
-$('#fieldCancel').onclick=async()=>{try{await api('/api/reanalysis/cancel',{id:FIELDS.job.id});await refreshFields();}catch(e){toast(e.message);}};
+const cancelFieldJob=async()=>{try{await api('/api/reanalysis/cancel',{id:FIELDS.job.id});await refreshFields();}catch(e){toast(e.message);}};
+$('#fieldCancel').onclick=cancelFieldJob;$('#fieldDialogCancel').onclick=cancelFieldJob;
   refreshFields().then(data=>{FIELDS.stack=data.stack.filter(s=>fieldMeta(s.id));drawFieldStack();renderFieldMaps();if(FIELDS.job.status==='running')pollFields();}).catch(e=>toast(e.message));
 }
 const baseFieldSaveAccess=saveSourceAccess;

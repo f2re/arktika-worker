@@ -25,12 +25,16 @@ from .auto_calibration import AutoCalibrationMixin
 from .sources import SourceManagerMixin
 from .reanalysis_service import ReanalysisMixin
 from .product_styles import ProductStyleStore
+from .adapters import AdapterRegistry,WindSpeedAdapter
 class Workstation(ReanalysisMixin, SourceManagerMixin, AutoCalibrationMixin, ProductFlowMixin, AnalysisMixin, App):
  def __init__(self,state_dir,download_dir=None,token='',config=None,client=None):
   self.config=config or {};super().__init__(state_dir,download_dir,token,client or AuthClient(token,self.config.get('oauth')))
   with self.store.lock,self.store.conn:
    self.store.conn.execute('CREATE TABLE IF NOT EXISTS scenes(id TEXT PRIMARY KEY,stamp TEXT,data TEXT)')
   self.product_root=self.store.root/'products';self.product_root.mkdir(exist_ok=True)
+  # Registry entries are trusted Python objects registered by application code;
+  # HTTP requests can inspect metadata but cannot load or register executable code.
+  self.derived_adapters=AdapterRegistry();self.derived_adapters.register(WindSpeedAdapter())
   self.product_style_store=ProductStyleStore(self.store.root/'product-styles')
   self.route_root=self.store.root/'routes';self.route_root.mkdir(exist_ok=True)
   self.context_cache={};self.done_jobs={};self.registration_errors={}
@@ -39,6 +43,8 @@ class Workstation(ReanalysisMixin, SourceManagerMixin, AutoCalibrationMixin, Pro
   self.sync_downloads()
   result=super().state();result.update(view_settings=self.store.setting('view_settings',{}),version=__version__,calibration=self.cal,oauth=dict(client_id=self.client.oauth.get('client_id',''),redirect_uri=self.client.oauth.get('redirect_uri',''),refresh_present=bool(self.client.refresh_token)))
   return result
+ def derived_adapter_catalogue(self):
+  return {'schema_version':'1.0','adapters':self.derived_adapters.catalogue()}
  def configure(self,data):
   if 'view_settings' in data:
    from .products import PRESETS,PRODUCTS

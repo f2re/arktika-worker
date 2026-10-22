@@ -39,6 +39,20 @@ class AnalysisHTTPTests(unittest.TestCase):
     def test_guides_and_profiles_contract(self):
         self.assertIn('micro24',json.loads(self.request('/api/guides')[2]))
         self.assertIn('profiles',json.loads(self.request('/api/profiles')[2]))
+    def test_derived_adapter_catalogue_is_authenticated_metadata_only(self):
+        status,_,body=self.request('/api/derived-adapters')
+        self.assertEqual(status,200)
+        result=json.loads(body)
+        self.assertEqual(result['schema_version'],'1.0')
+        adapters=result['adapters']
+        speed=next(item for item in adapters if item['id']=='wind_speed')
+        self.assertEqual(speed['version'],'1.0.0')
+        self.assertEqual(speed['inputs'],['u','v'])
+        self.assertNotIn('derive',speed)
+        self.assertNotIn('module',speed)
+        with self.assertRaises(urllib.error.HTTPError) as cm:
+            self.request('/api/derived-adapters',auth=False)
+        self.assertEqual(cm.exception.code,401)
     def test_profile_import_point_and_export(self):
         prof=json.loads(self.request('/api/profiles/import',profile())[2])
         x,y=project_points(self.app.product_grid(self.product),[(30,70)])[0]

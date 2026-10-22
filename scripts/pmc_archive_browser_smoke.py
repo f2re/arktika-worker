@@ -1,0 +1,160 @@
+#!/usr/bin/env python3
+"""Native-HTTP UI smoke for experimental PMC archive planning only."""
+import argparse
+import json
+from pathlib import Path
+import sys
+import tempfile
+import threading
+import time
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path[:0] = [str(ROOT), str(ROOT / "tests")]
+from playwright.sync_api import sync_playwright
+
+from arktika.workstation import Workstation
+from server import LocalServer
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--output", default="browser-results/pmc-archive")
+    parser.add_argument("--executable")
+    args = parser.parse_args()
+    output = Path(args.output)
+    output.mkdir(parents=True, exist_ok=True)
+    report = {
+        "mode": "native-http",
+        "fixture": "SYNTHETIC SOFTWARE TEST, NOT OBSERVATIONS",
+        "checks": [],
+        "browser_errors": [],
+        "network": "local test server only; no provider requests or weather data",
+    }
+    with tempfile.TemporaryDirectory() as temp:
+        root = Path(temp)
+        app = Workstation(root / "state", root / "downloads")
+        server = LocalServer(("127.0.0.1", 0), app)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        base = f"http://127.0.0.1:{server.server_port}"
+        try:
+            with sync_playwright() as pw:
+                launch = {"headless": True}
+                if args.executable:
+                    launch["executable_path"] = args.executable
+                browser = pw.chromium.launch(**launch)
+                page = browser.new_page(viewport={"width": 1440, "height": 960})
+                page.on("pageerror", lambda error: report["browser_errors"].append(str(error)))
+                requests = []
+                page.on("request", lambda request: requests.append((request.method, request.url)))
+
+                def wait(expression, timeout=30):
+                    deadline = time.monotonic() + timeout
+                    while time.monotonic() < deadline:
+                        try:
+                            if page.evaluate(expression):
+                                return
+                        except Exception:
+                            pass
+                        page.wait_for_timeout(100)
+                    raise AssertionError("Condition not reached: " + expression)
+
+                def check(name, expression):
+                    wait(expression)
+                    report["checks"].append({"name": name, "passed": True})
+
+                try:
+                    page.goto(base + "/#" + server.key)
+                    check("Интерфейс запущен", '()=>typeof S!=="undefined"&&S.registry?.products')
+                    page.locator("#productRail").click()
+                    page.locator('[data-task="pmc_archive"]').click()
+                    check(
+                        "Форма показывает зарегистрированные источники и ограничения",
+                        '()=>document.querySelector("#pmcArchiveDialog").open&&document.querySelectorAll("[name=pmcArchiveSource]").length===3&&document.querySelector("#pmcArchiveDialog").textContent.includes("не прогноз")',
+                    )
+                    check(
+                        "Требования спутниковой разметки объяснены",
+                        '()=>document.querySelector("#pmcArchiveDialog").textContent.includes("размеченная маска")',
+                    )
+
+                    page.locator("#pmcArchivePlan").click()
+                    check(
+                        "Пустой интервал остановлен до запроса",
+                        '()=>document.querySelector("#pmcArchiveFeedback").textContent.includes("Укажите начало и конец")',
+                    )
+
+                    for selector, value in (
+                        ("#pmcArchiveStart", "2024-01-01T00:00:00"),
+                        ("#pmcArchiveEnd", "2024-01-01T06:00:00"),
+                        ("#pmcNorth", "80"),
+                        ("#pmcWest", "-20"),
+                        ("#pmcSouth", "60"),
+                        ("#pmcEast", "70"),
+                    ):
+                        page.locator(selector).fill(value)
+                    page.locator("#pmcArchivePlan").click()
+                    check(
+                        "Время без явной зоны UTC отклонено",
+                        '()=>document.querySelector("#pmcArchiveFeedback").textContent.includes("формате YYYY-MM-DDTHH:MM:SSZ")',
+                    )
+                    assert not any(url.endswith("/api/pmc/archive/plan") for _, url in requests)
+                    report["checks"].append({"name": "Невалидный UTC не отправлен серверу", "passed": True})
+
+                    page.locator("#pmcArchiveStart").fill("1979-01-01T00:00:00Z")
+                    page.locator("#pmcArchiveEnd").fill("1979-01-01T03:00:00Z")
+                    for source in ("era5", "carra2", "merra2"):
+                        page.locator(f'[name="pmcArchiveSource"][value="{source}"]').uncheck()
+                    page.locator('[name="pmcArchiveSource"][value="merra2"]').check()
+                    page.locator("#pmcArchivePlan").click()
+                    check(
+                        "Серверная ошибка диапазона архива показана пользователю",
+                        '()=>document.querySelector("#pmcArchiveFeedback").textContent.includes("MERRA-2")',
+                    )
+
+                    page.locator("#pmcArchiveStart").fill("2024-01-01T00:00:00Z")
+                    page.locator("#pmcArchiveEnd").fill("2024-01-01T06:00:00Z")
+                    for source in ("era5", "carra2", "merra2"):
+                        page.locator(f'[name="pmcArchiveSource"][value="{source}"]').uncheck()
+                    page.locator('[name="pmcArchiveSource"][value="era5"]').check()
+                    page.locator("#pmcArchivePlan").click()
+                    check(
+                        "Успешный план остается экспериментальным и candidate-only",
+                        '()=>{const t=document.querySelector("#pmcArchiveFeedback").textContent;return t.includes("Экспериментальный план")&&t.includes("Статус продукции: только кандидаты")&&t.includes("Прогноз не рассчитывается")&&t.includes("Шагов плана: 7")}',
+                    )
+                    check(
+                        "План сообщает о недостающих этапах спутникового контроля",
+                        '()=>document.querySelector("#pmcArchiveFeedback").textContent.includes("Нужны атрибутированная наблюдательная маска")',
+                    )
+                    assert not any("/api/queue" in url or "/api/pmc/archive/run" in url for _, url in requests)
+                    report["checks"].append({"name": "План не запускает загрузки или детектор", "passed": True})
+
+                    for width in (1024, 390):
+                        page.set_viewport_size({"width": width, "height": 844})
+                        check(
+                            f"Форма помещается в окно шириной {width}px",
+                            '()=>document.documentElement.scrollWidth<=innerWidth+1&&document.querySelector("#pmcArchiveDialog").scrollWidth<=document.querySelector("#pmcArchiveDialog").clientWidth+1',
+                        )
+                        page.screenshot(path=str(output / f"pmc-{width}.png"))
+                    check("Мобильная форма остается открытой", '()=>document.querySelector("#pmcArchiveDialog").open')
+                    assert not report["browser_errors"], report["browser_errors"]
+                except Exception:
+                    page.screenshot(path=str(output / "failure.png"))
+                    raise
+                finally:
+                    browser.close()
+        except Exception as exc:
+            report["error"] = str(exc).replace(server.key, "[SESSION]")
+            raise
+        finally:
+            (output / "results.json").write_text(
+                json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            server.shutdown()
+            thread.join(5)
+            server.server_close()
+            app.close()
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+
+
+if __name__ == "__main__":
+    main()

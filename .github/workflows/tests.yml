@@ -83,6 +83,7 @@ jobs:
       - run: python scripts/product_browser_smoke.py --output browser-results/products
       - run: python scripts/era5_browser_smoke.py --output browser-results/era5
       - run: python scripts/reanalysis_browser_smoke.py --output browser-results/reanalysis
+      - run: python scripts/pmc_archive_browser_smoke.py --output browser-results/pmc-archive
       - uses: actions/upload-artifact@v4
         if: always()
         with:

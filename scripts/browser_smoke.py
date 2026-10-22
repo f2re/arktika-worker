@@ -117,6 +117,7 @@ def main():
                     with page.expect_popup() as popup_info:
                         page.locator('#legend .export-link').click()
                     popup = popup_info.value
+                    popup.wait_for_url('**/docs/QUICKSTART.html#signal')
                     popup.wait_for_load_state('domcontentloaded')
                     assert popup.url.endswith('/docs/QUICKSTART.html#signal')
                     assert popup.locator('h1').inner_text() == '🛰️ Рабочее место метеоролога «Арктика-М»'

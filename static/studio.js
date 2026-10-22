@@ -344,6 +344,7 @@ const TASKS=[
   {id:'difference',icon:'layers',name:'Разности',hint:'Оконный контраст'},
   {id:'phase',icon:'snow',name:'Признаки фазы',hint:'Исследовательские правила'},
   {id:'motion',icon:'satellite',name:'Динамика',hint:'Два срока'},
+  {id:'pmc_archive',icon:'satellite',name:'Архив ПМЦ',hint:'Исследование · не прогноз'},
   {id:'cth',icon:'height',name:'Высота облака',hint:'В точке · по профилю'},
 ];
 
@@ -351,6 +352,7 @@ function tasks() {
   $('#taskGrid').innerHTML=TASKS.map(t=>`<button class="task-card" data-task="${t.id}">${icon(t.icon)}<span>${t.name}<small>${t.hint}</small></span></button>`).join('');
   $$('#taskGrid button').forEach(b=>b.onclick=()=>{
     if(b.dataset.task==='motion') {$('#motionOpen').click();return;}
+    if(b.dataset.task==='pmc_archive') {openPmcArchive();return;}
     clearRange();$('#product').value=b.dataset.task;
     if(b.dataset.task==='channel')$('#channel').value='9';
     productHint();requestBuild();
@@ -367,6 +369,11 @@ productHint = function() {
   const have=new Set((S.scene?.channels||[]).map(c=>c.channel));
   for(const button of $$('#taskGrid button')){
     const id=button.dataset.task,product=S.registry.products.find(p=>p.id===id);
+    if(id==='pmc_archive'){
+      button.title='Архивное исследование · экспериментальный план; кандидат не подтверждён';
+      button.setAttribute('aria-pressed','false');
+      continue;
+    }
     const required=id==='channel'?[9]:(product?.channels||[]);
     const missing=required.filter(ch=>!have.has(ch));
     const active=id===$('#product').value&&(id!=='channel'||Number($('#channel').value)===9);

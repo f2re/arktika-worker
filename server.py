@@ -113,6 +113,7 @@ class Handler(BaseHTTPRequestHandler):
             elif path=='/api/era5/report':result=app.era5_report(q.get('id'))
             elif path=='/api/sources':result=app.source_state()
             elif path=='/api/reanalysis/state':result=app.fields_state()
+            elif path=='/api/derived-adapters':result=app.derived_adapter_catalogue()
             elif path.startswith('/field-render/'):
                 bits=path.split('/')
                 if len(bits)!=4 or bits[3]!='map.png': raise ValueError('Неверный путь изображения.')
@@ -188,6 +189,7 @@ class Handler(BaseHTTPRequestHandler):
             if path=='/api/era5/credentials':result=app.era5_credentials(data)
             elif path=='/api/sources/credentials':result=app.source_credentials(data)
             elif path=='/api/reanalysis/add':result=app.fields_add(data)
+            elif path=='/api/pmc/archive/plan':result=app.pmc_archive_plan(data)
             elif path=='/api/reanalysis/resume':result=app.fields_resume(data)
             elif path=='/api/reanalysis/import':result=app.fields_add(data,local=True)
             elif path=='/api/reanalysis/stack':result=app.fields_stack(data)

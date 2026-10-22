@@ -5,9 +5,9 @@ positive component is always labelled ``candidate``; satellite overlap is an
 optional comparison and never upgrades a candidate to a confirmed PMC.
 
 The initial vorticity thresholds are inspired by the low-threshold Nordic
-Seas IMPMCT settings (Stoll et al., 2025). This prototype applies a Gaussian
+Seas IMPMCT settings (Fang et al., 2025). This prototype applies a Gaussian
 sigma of 60 km and retains connected areas above 1.0e-4 s-1 whose peak reaches
-1.2e-4 s-1. It does not reproduce the paper's distinct smoothing operator. The
+1.2e-4 s-1. It does not reproduce the paper's uniform-radius smoothing operator. The
 published method includes additional tracking/steering and quality controls;
 this isolated core does not implement those steps. Consequently its output is
 not a reproduction or validation of IMPMCT.
@@ -22,8 +22,8 @@ import numpy as np
 from pyproj import CRS
 
 ALGORITHM_ID = "arktika.experimental_pmc_candidates"
-ALGORITHM_VERSION = "0.1.0"
-METHOD_REFERENCE = "Stoll et al. (2025), IMPMCT, doi:10.5194/essd-17-6049-2025"
+ALGORITHM_VERSION = "0.1.1"
+METHOD_REFERENCE = "Fang et al. (2025), IMPMCT, doi:10.5194/essd-17-6049-2025"
 PARAMETERS = {
     "gaussian_sigma_km": 60.0,
     "minimum_vorticity_s-1": 1.0e-4,
@@ -221,7 +221,7 @@ def detect_candidates(vorticity_850: np.ndarray, *, grid: dict[str, Any],
         if not _same_grid(grid, observed_grid):
             raise ValueError("satellite observation grid metadata must exactly match the reanalysis grid")
 
-    # Published 60 km Gaussian scale represented as sigma on each metric axis.
+    # Prototype-only Gaussian sigma; it is not the paper's uniform-radius filter.
     sigma_x = PARAMETERS["gaussian_sigma_km"] * 1000.0 / dx
     sigma_y = PARAMETERS["gaussian_sigma_km"] * 1000.0 / dy
     smoothed = _smooth_valid(array, sigma_y, sigma_x)

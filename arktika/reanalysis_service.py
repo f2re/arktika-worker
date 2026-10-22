@@ -16,6 +16,7 @@ from .era5_runtime import ensure_runtime, runtime_info, run_process, runtime_env
 from .geo import grid
 from .network import Cancelled
 from .reanalysis.catalog import catalogue, request_plan, VERSION
+from .pmc_archive import build_plan as build_pmc_archive_plan
 
 ROOT=Path(__file__).resolve().parents[1]
 ID=re.compile(r'^[0-9a-f]{24}$')
@@ -65,6 +66,14 @@ class ReanalysisMixin:
                 'catalogue':catalogue(),'busy':self.busy,
                 'legacy_cache_count':sum(1 for p in self.field_cache.glob('*/field.json')
                     if ID.fullmatch(p.parent.name) and not (p.parent/'metadata.json').exists())}
+
+    def pmc_archive_plan(self, data):
+        """Describe archival inputs without downloading or fabricating a result."""
+        state=self.fields_state()
+        sources=data.get('sources',[]) if isinstance(data,dict) else []
+        credentials={source:bool(self.source_credential(source)) for source in sources
+                     if source in ('era5','carra2','merra2')}
+        return build_pmc_archive_plan(data,credentials=credentials,cached_fields=state['fields'])
 
     @staticmethod
     def _safe_field_spec(plan):
