@@ -60,7 +60,7 @@ def main():
                 page.locator('#authOpen').click();page.locator('#sourcesDialog [data-field-source=era5]').click()
                 check('Источник ведёт непосредственно к полям', '()=>document.querySelector("#fieldDialog").open&&!document.querySelector("#calibrationDialog").open')
                 page.locator('#fieldDownload').click()
-                check('Без доступа нет скрытого сетевого запроса', '()=>document.querySelector("#fieldError").textContent.includes("Настройте доступ")')
+                check('Без доступа открывается форма CDS и сохраняется исходный запрос без запуска задания', '()=>document.querySelector("#cdsAccessDialog").open&&FIELDS.credentialRetry?.source==="era5"&&!FIELDS.pending')
                 screenshot('01-field-dialog.png')
                 import_field('era5',1)
                 page.locator('#productRail').click()
