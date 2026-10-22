@@ -51,6 +51,8 @@ def dataset(source='era5',variable='t',offset=0):
     if not surface: coords['pressure_level']=('pressure_level',[850.],{'units':'hPa'})
     data={name:(dims,values,{'units':unit})}
     if variable in ('wind','wind10'):
+        first_name={'era5':'eastward_wind','merra2':'eastward_wind','carra2':'wind_speed'}[source]
+        data[name]=(dims,values,{'units':unit,'standard_name':first_name})
         second={'era5':'v' if variable=='wind' else 'v10','merra2':'V' if variable=='wind' else 'V10M','carra2':'wind_direction' if variable=='wind' else '10m_wind_direction'}[source]
         data[second]=(dims,np.full_like(values,270 if source=='carra2' else 0),{'units':'degrees' if source=='carra2' else 'm s-1','standard_name':'wind_from_direction' if source=='carra2' else 'northward_wind'})
     return xr.Dataset(data,coords=coords,attrs={'title':'SYNTHETIC SOFTWARE TEST, NOT OBSERVATIONS'})
@@ -214,6 +216,9 @@ class NativeFields(unittest.TestCase):
         self.assertAlmostEqual(float(native.u[5,10]),10)
     def test_grid_wind_rejected(self):
         ds=dataset(variable='wind');ds.u.attrs['GRIB_uvRelativeToGrid']=1
+        with self.assertRaises(ValueError):self.normalize(ds,plan(variable='wind'))
+    def test_wind_without_geographic_frame_rejected(self):
+        ds=dataset(variable='wind');ds.u.attrs.pop('standard_name')
         with self.assertRaises(ValueError):self.normalize(ds,plan(variable='wind'))
     def test_carra_west_wind_to_east(self):
         native=self.normalize(dataset('carra2','wind'),plan('carra2','wind'))
@@ -399,6 +404,10 @@ class AdditionalContracts(unittest.TestCase):
     def test_carra_grid_relative_direction_rejected(self):
         from arktika.reanalysis.normalize import normalize
         d=dataset('carra2','wind');d.wind_direction.attrs['GRIB_uvRelativeToGrid']=1
+        with self.assertRaises(ValueError):normalize(d,plan('carra2','wind'))
+    def test_carra_direction_without_reference_rejected(self):
+        from arktika.reanalysis.normalize import normalize
+        d=dataset('carra2','wind');d.wind_direction.attrs.pop('standard_name')
         with self.assertRaises(ValueError):normalize(d,plan('carra2','wind'))
     def test_calm_has_no_arrow(self):
         from arktika.reanalysis.normalize import normalize

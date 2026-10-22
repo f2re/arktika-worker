@@ -64,6 +64,20 @@ def convert(v, kind):
     return a.astype('float32')
 
 
+def _geographic_wind_frame(variable, expected_standard_name):
+    """Require evidence that a wind input is referenced to true east/north."""
+    frame = variable.attrs.get('GRIB_uvRelativeToGrid')
+    if frame is not None:
+        try:
+            if int(frame) != 0:
+                raise ValueError('Ветер задан относительно сетки; требуется подтверждённый поворот в географическую систему.')
+        except (TypeError, ValueError) as exc:
+            raise ValueError('Не удалось подтвердить географическую ориентацию ветра.') from exc
+        return
+    if variable.attrs.get('standard_name') != expected_standard_name:
+        raise ValueError('У компоненты ветра нет признака географической ориентации; расчёт остановлен.')
+
+
 def exact_slice(ds, plan):
     """CF time is mandatory; equal nearest-hour substitutes are never accepted."""
     time = _coord(ds,('valid_time','time'),'time')
@@ -138,7 +152,15 @@ def normalize(ds, plan, area=None):
     if key.startswith('wind') and source=='carra2' and not native_export:
         speed=convert(take([spec.carra,*spec.aliases]),key)
         direction_var=take(['wind_direction' if key=='wind' else '10m_wind_direction','wdir','dd','wdir10','10wdir','wind_from_direction'])
-        if int(direction_var.attrs.get('GRIB_uvRelativeToGrid',0))!=0 or 'grid' in str(direction_var.attrs.get('standard_name','')).lower():
+        direction_frame = direction_var.attrs.get('GRIB_uvRelativeToGrid')
+        if direction_frame is not None:
+            try:
+                direction_is_grid = int(direction_frame) != 0
+            except (TypeError, ValueError):
+                raise ValueError('Не удалось подтвердить географическую ориентацию направления CARRA2.') from None
+        else:
+            direction_is_grid = direction_var.attrs.get('standard_name') != 'wind_from_direction'
+        if direction_is_grid or 'grid' in str(direction_var.attrs.get('standard_name','')).lower():
             raise ValueError('Направление CARRA2 объявлено относительно сетки, а не географического севера.')
         direction=convert(direction_var,'direction')
         if np.any(np.isfinite(speed)&(speed<0)): raise ValueError('Скорость ветра не может быть отрицательной.')
@@ -149,9 +171,8 @@ def normalize(ds, plan, area=None):
         uvar=take([spec.merra if source=='merra2' else spec.cds,*spec.aliases])
         vnames=['V','v','northward_wind','v_component_of_wind'] if key=='wind' else ['V10M','v10','10v','10m_v_component_of_wind']
         vvar=take(vnames)
-        for component in (uvar,vvar):
-            if int(component.attrs.get('GRIB_uvRelativeToGrid',0))!=0:
-                raise ValueError('Ветер задан относительно сетки; требуется подтверждённый поворот в географическую систему.')
+        _geographic_wind_frame(uvar, 'eastward_wind')
+        _geographic_wind_frame(vvar, 'northward_wind')
         u=convert(uvar,'u');v=convert(vvar,'v');values=np.hypot(u,v);vectors={'u':u,'v':v};attrs['wind_reference']='east_north'
     else:
         values=convert(take(['value'] if native_export else [spec.merra if source=='merra2' else spec.carra if source=='carra2' else spec.cds,*spec.aliases]),key)
