@@ -578,6 +578,8 @@ drawLegend = function(l) {
 
   if(guide.source){
     html+=`<a class="export-link" href="${escape(guide.source)}" target="_blank" rel="noopener">Руководство EUMETSAT / WMO по этой композиции</a>`;
+  }else{
+    html+='<a class="export-link" href="/docs/QUICKSTART.html#signal" target="_blank" rel="noopener">Как читать шкалу и перейти от снимка к результату</a>';
   }
 
   $('#legend').innerHTML=html;
