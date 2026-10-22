@@ -175,7 +175,7 @@ function initFieldUI(){
 }
 const baseFieldSaveAccess=saveSourceAccess;
 saveSourceAccess=async function(...args){FIELDS.accessSaving=true;try{await baseFieldSaveAccess(...args);}catch(e){FIELDS.accessSaving=false;throw e;}FIELDS.accessSaving=false;const retry=FIELDS.credentialRetry;const source=retry?.source||FIELDS.accessReturn;FIELDS.credentialRetry=null;FIELDS.accessReturn=null;if(source){await openFieldDialog(source);if(retry)await startField(false,retry.body);}};
-for(const selector of ['#cdsAccessDialog','#earthdataAccessDialog'])$(selector).addEventListener('close',()=>{if(!FIELDS.accessSaving){FIELDS.credentialRetry=null;FIELDS.accessReturn=null;}});
+for(const selector of ['#cdsAccessDialog','#earthdataAccessDialog'])$(selector).addEventListener('close',()=>{if(!FIELDS.accessSaving){const source=FIELDS.credentialRetry?.source||FIELDS.accessReturn;FIELDS.credentialRetry=null;FIELDS.accessReturn=null;if(source)openFieldDialog(source).catch(e=>toast(e.message));}});
 $('#fieldConfigure').onclick=()=>{FIELDS.accessReturn=$('#fieldSource').value;fieldDialog.close();openSourceAccess(FIELDS.accessReturn).catch(e=>toast(e.message));};
 $('#fieldClose').onclick=()=>fieldDialog.close();$('#fieldSource').onchange=fieldSelectors;$('#fieldVariable').onchange=fieldLevels;
 $('#fieldDownload').onclick=()=>startField(false);$('#fieldImport').onclick=()=>startField(true);

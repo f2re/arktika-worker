@@ -62,6 +62,8 @@ def main():
                 page.locator('#fieldDownload').click()
                 check('Без доступа открывается форма CDS и сохраняется исходный запрос без запуска задания', '()=>document.querySelector("#cdsAccessDialog").open&&FIELDS.credentialRetry?.source==="era5"&&!FIELDS.pending')
                 screenshot('01-field-dialog.png')
+                page.locator('#cdsAccessDialog [data-close]').click()
+                check('Отмена доступа возвращает диалог поля и сбрасывает повтор', '()=>document.querySelector("#fieldDialog").open&&!FIELDS.credentialRetry')
                 import_field('era5',1)
                 page.locator('#productRail').click()
                 check('Слой содержит срок и единицы','()=>document.querySelector("#fieldLayerRows").textContent.includes("2024-01-01")&&document.querySelector(".field-legend").textContent.includes("°C")')

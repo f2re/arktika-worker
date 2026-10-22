@@ -88,7 +88,7 @@ class WorkflowTests(unittest.TestCase):
         (home/'.cdsapirc').write_text('url: https://cds.climate.copernicus.eu/api\nkey: SYNTHETIC-LOCAL-TOKEN\n',encoding='utf-8')
         self.app.era5_credentials({'clear':True})
         del self.app._era5_credential
-        with patch.dict(os.environ,{'HOME':str(home)}):
+        with patch.dict(os.environ,{'HOME':str(home),'USERPROFILE':str(home)}):
             self.assertTrue(self.app.era5_state()['credentials']['present'])
         self.assertEqual(self.app._source_cds_credential['token'],'SYNTHETIC-LOCAL-TOKEN')
         self.assertNotIn('SYNTHETIC-LOCAL-TOKEN',json.dumps(self.app.era5_state()))
