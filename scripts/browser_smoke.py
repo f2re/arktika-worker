@@ -119,7 +119,7 @@ def main():
                     popup = popup_info.value
                     popup.wait_for_load_state('domcontentloaded')
                     assert popup.url.endswith('/docs/QUICKSTART.html#signal')
-                    assert popup.locator('h1').inner_text() == 'От снимка к результату'
+                    assert popup.locator('h1').inner_text() == '🛰️ Рабочее место метеоролога «Арктика-М»'
                     report['checks'].append({'name':'Ссылка легенды открывает HTML и нужный раздел','passed':True})
                     popup.close()
                 check('UI не содержит ссылок на исходный Markdown', r'()=>![...document.querySelectorAll("a[href]")].some(a=>/\.md(?:#.*)?$/.test(a.getAttribute("href")))')
