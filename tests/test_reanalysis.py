@@ -289,7 +289,20 @@ class ServiceIntegration(unittest.TestCase):
         identity=self.load();p=self.app.field_cache/identity/'field.nc';p.write_bytes(b'broken')
         with self.assertRaises(ValueError):self.app.field(identity)
     def test_no_credential_no_remote_call(self):
-        with self.assertRaises(ValueError):self.app.fields_add(plan())
+        self.app.source_credentials({'provider':'cds','clear':True})
+        result=self.app.fields_add(plan())
+        self.assertEqual(result,{'needs_action':{'code':'credentials_required','provider':'cds','source':'era5'}})
+        self.assertFalse(self.app.busy)
+    def test_cached_remote_field_needs_no_credentials(self):
+        from shutil import copytree
+        self.app.source_credentials({'provider':'cds','clear':True})
+        local_id=self.load();identity=plan()['key'];target=self.app.field_cache/identity
+        copytree(self.app.field_cache/local_id,target)
+        meta=json.loads((target/'metadata.json').read_text());meta['id']=identity
+        (target/'metadata.json').write_text(json.dumps(meta))
+        result=self.app.fields_add(plan());self.app.task.join(20)
+        self.assertEqual(result.get('started'),True)
+        self.assertEqual(self.app.fields_state()['job']['status'],'done')
     def test_id_traversal(self):
         with self.assertRaises(ValueError):self.app.field('../../secret')
     def test_cds_does_not_accept_gdex(self):

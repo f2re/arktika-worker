@@ -110,7 +110,7 @@ def build_product(scene,root,request,cal,cancel=None,progress=lambda x:None):
  invalid=common&np.logical_or.reduce([(a<120)|(a>400) for a in arrays.values()]) if kelvin else np.zeros(common.shape,bool);qc[invalid]|=2
  mismatch=common&(abs(arrays[10]-arrays[9])>15) if kelvin and 9 in arrays and 10 in arrays else np.zeros(common.shape,bool);qc[mismatch]|=4
  valid=common&~invalid;lon,lat=lonlat_grid(g);sun=solar_elevation(lon,lat,scene['time'])
- legend=dict(units=metas[0]['units'],calibration=metas,data_stats_scope='Конечная сетка выбранной области, не экстремумы всего исходного растра',nodata='Прозрачность = нет данных; не ясное небо',quality_flags={'1':'нет данных','2':'вне диагностического диапазона 120–400 K','4':'|T10−T9| > 15 K','8':'Солнце выше −6°; вне ночного режима'},threshold_status='Исследовательские диагностические пороги, не критерии подтверждённых ОЯ')
+ legend=dict(units=metas[0]['units'],quantity_kind='absolute_temperature' if kelvin else 'stored_value',calibration=metas,data_stats_scope='Конечная сетка выбранной области, не экстремумы всего исходного растра',nodata='Прозрачность = нет данных; не ясное небо',quality_flags={'1':'нет данных','2':'вне диагностического диапазона 120–400 K','4':'|T10−T9| > 15 K','8':'Солнце выше −6°; вне ночного режима'},threshold_status='Исследовательские диагностические пороги, не критерии подтверждённых ОЯ')
  from .interpretation import GUIDES, PHASE_CLASSES, THRESHOLDS, VERSION, phase_field
  legend['interpretation']=GUIDES.get(product,{})
  field=None
@@ -128,24 +128,24 @@ def build_product(scene,root,request,cal,cancel=None,progress=lambda x:None):
   parts=[];components=[]
   for name,(a,b,lo,hi,gamma) in zip('RGB',r['components']):
    value=arrays[a]-(arrays[b] if b else 0);parts.append(np.nan_to_num(stretch(value,lo,hi,gamma),nan=0))
-   components.append(dict(component=name,formula='T'+str(a)+(' − T'+str(b) if b else ''),min=lo,max=hi,gamma=gamma,units='K',stats=stats(np.where(valid,value,np.nan))))
-  rgb=(np.stack(parts,axis=-1)*255+.5).astype('uint8');title=r['title'];legend.update(units='RGB',components=components,meaning=r['meaning'],reference=r['reference'],formula='255 × clip((x−min)/(max−min),0,1)^(1/gamma)')
+   components.append(dict(component=name,formula='T'+str(a)+(' − T'+str(b) if b else ''),quantity_kind='temperature_difference' if b else 'absolute_temperature',min=lo,max=hi,gamma=gamma,units='K',stats=stats(np.where(valid,value,np.nan))))
+  rgb=(np.stack(parts,axis=-1)*255+.5).astype('uint8');title=r['title'];legend.update(units='RGB',quantity_kind='rgb',components=components,meaning=r['meaning'],reference=r['reference'],formula='255 × clip((x−min)/(max−min),0,1)^(1/gamma)')
  elif product=='difference':
-  field=np.where(valid,arrays[10]-arrays[9],np.nan);rgb=ramp(field,-4,2);title='Разность оконных каналов T10 − T9';legend.update(units='K',display_min=-4,display_max=2,palette=PALETTE,stats=stats(field),meaning='Положительное значение: канал 10 теплее канала 9. Это не влагозапас и не количество осадков.')
+  field=np.where(valid,arrays[10]-arrays[9],np.nan);rgb=ramp(field,-4,2);title='Разность оконных каналов T10 − T9';legend.update(units='K',quantity_kind='temperature_difference',display_min=-4,display_max=2,palette=PALETTE,stats=stats(field),meaning='Положительное значение: канал 10 теплее канала 9. Это не влагозапас и не количество осадков.')
  elif product=='phase':
   field=phase_field(arrays,common).astype('float32');valid=common
   colours=np.array([[int(c['color'][k:k+2],16) for k in (1,3,5)] for c in PHASE_CLASSES],dtype='uint8')
   rgb=colours[field.astype(int)];title='Спектральные кандидаты фазы'
-  legend.update(cloud_mask_available=False,validation_status='unvalidated_rules',units='class',classes=PHASE_CLASSES,thresholds=THRESHOLDS,meaning='Не карта ОЯ и не маска облачности. Приоритет: контроль качества, фазовый кандидат, холодный сигнал, неопределённость. Правила проверяются независимо от экранного RGB.')
+  legend.update(cloud_mask_available=False,validation_status='unvalidated_rules',units='class',quantity_kind='categorical',classes=PHASE_CLASSES,thresholds=THRESHOLDS,meaning='Не карта ОЯ и не маска облачности. Приоритет: контроль качества, фазовый кандидат, холодный сигнал, неопределённость. Правила проверяются независимо от экранного RGB.')
  else:
   field=np.zeros(common.shape,dtype='float32');field[valid]=4;field[valid&(arrays[9]<233.15)]=1
   d=arrays[9]-arrays[4];field[valid&(sun<=-6)&(d>2)&(d<10)&(arrays[9]>243)]=2
   field[common&(mismatch|invalid)]=3;valid=common
   rgb=np.array([[0,0,0],[137,106,216],[242,186,75],[229,83,101],[113,132,151]],dtype='uint8')[field.astype(int)]
-  title='Спектральные признаки';legend.update(units='class',classes=FLAGS,meaning='Не карта ОЯ и не маска облачности. Холодная поверхность тоже может иметь холодный сигнал. Приоритет: качество → ночной признак → холодный сигнал → прочее.')
+  title='Спектральные признаки';legend.update(units='class',quantity_kind='categorical',classes=FLAGS,meaning='Не карта ОЯ и не маска облачности. Холодная поверхность тоже может иметь холодный сигнал. Приоритет: качество → ночной признак → холодный сигнал → прочее.')
  if field is not None:field=np.where(valid,field,np.nan).astype('float32')
  rgb[~valid]=0;rgba=np.dstack([rgb,np.where(valid,255,0).astype('uint8')])
- identity=hashlib.sha256(json.dumps(dict(inputs=inputs,request=request,cal=cal,grid={k:v for k,v in g.items() if k!='transform'},recipe=RECIPES.get(product),rules=THRESHOLDS,rules_version=VERSION,version='0.2.2'),sort_keys=True).encode()).hexdigest()[:24]
+ identity=hashlib.sha256(json.dumps(dict(inputs=inputs,request=request,cal=cal,grid={k:v for k,v in g.items() if k!='transform'},recipe=RECIPES.get(product),rules=THRESHOLDS,rules_version=VERSION,version='0.2.3'),sort_keys=True).encode()).hexdigest()[:24]
  final=Path(root)/identity
  if (final/'product.json').exists():return json.loads((final/'product.json').read_text(encoding='utf-8'))
  target=Path(root)/(identity+'.building')
@@ -161,7 +161,7 @@ def build_product(scene,root,request,cal,cancel=None,progress=lambda x:None):
  with rasterio.open(target/'quality.tif','w',count=1,dtype='uint8',**profile) as ds:ds.write(qc,1);ds.update_tags(**tags)
  Image.fromarray(rgba).save(target/'map.png')
  night=np.zeros((*sun.shape,4),dtype='uint8');night[:,:,:3]=[13,26,50];night[:,:,3]=np.where(sun<0,90,0);Image.fromarray(night).save(target/'night.png')
- legend.update(title=title,scene_time=scene['time'],scene_id=scene['id'],product=product,status=status,valid_pixels=int(valid.sum()),total_pixels=int(valid.size),version='0.2.2')
+ legend.update(title=title,scene_time=scene['time'],scene_id=scene['id'],product=product,status=status,valid_pixels=int(valid.sum()),total_pixels=int(valid.size),version='0.2.3')
  meta=dict(id=identity,scene_id=scene['id'],platform=scene['platform'],time=scene['time'],product=product,title=title,calibration_status=status,time_assumed=scene.get('time_assumed',True),grid={k:v for k,v in g.items() if k!='transform'},transform=list(g['transform'])[:6],inputs=inputs,request=request,calibration_config=cal,legend=legend,files=['map.png','night.png','display.tif','quality.tif','legend.json','product.json','report.html'])
  if field is not None:meta['files'].append('values.tif')
  atomic_json(target/'legend.json',legend)

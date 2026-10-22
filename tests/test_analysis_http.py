@@ -52,10 +52,20 @@ class AnalysisHTTPTests(unittest.TestCase):
     def test_bad_profile_is_400(self):
         with self.assertRaises(urllib.error.HTTPError) as cm:self.request('/api/profiles/import',{'source':'TEST','height':[]})
         self.assertEqual(cm.exception.code,400)
-    def test_auto_profile_and_candidate_cloud_top(self):
+    def test_missing_auto_profile_is_not_replaced_with_synthetic_data(self):
         x,y=project_points(self.app.product_grid(self.product),[(30,70)])[0]
         a=json.loads(self.request('/api/analyse',dict(product=self.product['id'],x=x,y=y))[2])
+        self.assertNotIn('profile_auto',a)
+        self.assertNotIn('profile_result',a)
+        self.assertNotIn('profile_snapshot',a)
+
+    def test_demo_profile_is_explicit_and_marked_synthetic(self):
+        x,y=project_points(self.app.product_grid(self.product),[(30,70)])[0]
+        a=json.loads(self.request('/api/analyse',dict(product=self.product['id'],x=x,y=y,demo_profile=True))[2])
         self.assertTrue(a.get('profile_auto'))
+        self.assertEqual(a.get('profile_kind'),'synthetic_demo')
+        self.assertEqual(a['profile_snapshot']['data_kind'],'synthetic_demo')
+        self.assertIn('Не является наблюдением или данными модели',a['profile_snapshot']['note'])
         self.assertIn('profile_result',a)
         self.assertIn('candidate_cloud_top',a['profile_result'])
         ct=a['profile_result']['candidate_cloud_top']

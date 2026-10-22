@@ -136,7 +136,9 @@ class ReanalysisMixin:
             credential=self.source_credential(plan['source'])
             # Cached fields remain usable without credentials after a server restart.
             if not credential and not (self.field_cache/identity/'metadata.json').is_file():
-                raise ValueError('Настройте доступ к '+plan['source']+' в «Источниках данных».')
+                provider='cds' if plan['source'] in ('era5','carra2') else 'earthdata'
+                return {'needs_action':{'code':'credentials_required','provider':provider,
+                                        'source':plan['source']}}
         if sum(p.stat().st_size for p in self.field_cache.rglob('*') if p.is_file())>20*1024**3:
             raise ValueError('Кэш реанализа превысил 20 ГиБ. Удалите ненужные данные после резервирования.')
         return self._field_start({'action':'prepare','plan':plan,'credential':credential,

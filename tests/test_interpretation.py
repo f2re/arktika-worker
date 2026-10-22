@@ -151,6 +151,18 @@ class AnalysisIntegrationTests(unittest.TestCase):
     def test_point_all_source_inputs_and_export(self):
         r=self.app.analyse(self.query);self.assertEqual(len(r['inputs']),7)
         self.assertEqual(json.loads(self.app.analysis_export(r['id']))['analysis']['phase'],r['analysis']['phase'])
+    def test_missing_auto_profile_stays_unavailable(self):
+        r=self.app.analyse(self.query)
+        self.assertNotIn('profile_result',r)
+        self.assertNotIn('profile_snapshot',r)
+        self.assertNotIn('profile_auto',r)
+    def test_synthetic_profile_requires_explicit_demo_and_is_marked(self):
+        pixel=self.app.pixel(self.query)
+        self.assertIsNone(self.app.resolve_auto_profile(pixel['lat'],pixel['lon'],pixel['time']))
+        r=self.app.analyse(dict(self.query,demo_profile=True))
+        self.assertEqual(r['profile_kind'],'synthetic_demo')
+        self.assertEqual(r['profile_snapshot']['data_kind'],'synthetic_demo')
+        self.assertIn('Не является наблюдением или данными модели',r['profile_snapshot']['note'])
     def test_profile_persisted_selected_by_id(self):
         p=self.app.import_profile(profile());r=self.app.analyse(dict(self.query,profile_id=p['id'],altitude_m=2000))
         self.assertEqual(len(self.app.profiles()),1);self.assertEqual(r['profile_id'],p['id'])

@@ -4,6 +4,7 @@ import copy
 import json
 import re
 import uuid
+from pathlib import Path
 from .network import Cancelled
 from .download import digest
 from .era5_access import credentials_from_text, public_credentials, channels_list
