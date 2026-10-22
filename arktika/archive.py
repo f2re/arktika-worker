@@ -17,6 +17,7 @@ from rasterio.vrt import WarpedVRT
 
 from .download import atomic_json, digest
 from .geo import grid, lonlat_grid, solar_elevation
+from .product_schema import SCHEMA_VERSION
 from .model import UTC, iso, parse_time
 from .network import Cancelled
 
@@ -154,7 +155,7 @@ def build_composite(scene, root, request, cancel=None, progress=lambda message: 
     inputs = [dict(composite=source['id'], filename=path.name, sha256=sha, size=before.st_size,
                    source_crs=source['crs'])]
     identity = hashlib.sha256(json.dumps(dict(inputs=inputs, scene=scene['id'], time=scene['time'],
-                              request=request, version=VERSION), sort_keys=True).encode()).hexdigest()[:24]
+                              request=request, version=VERSION, passport_schema=SCHEMA_VERSION), sort_keys=True).encode()).hexdigest()[:24]
     final = Path(root)/identity
     if (final/'product.json').exists():
         return json.loads((final/'product.json').read_text(encoding='utf-8'))
@@ -198,6 +199,29 @@ def build_composite(scene, root, request, cancel=None, progress=lambda message: 
                     time_assumed=scene.get('time_assumed', True), grid={k:v for k,v in g.items() if k!='transform'},
                     transform=list(g['transform'])[:6], request=request, inputs=inputs, legend=legend,
                     files=['map.png','night.png','display.tif','quality.tif','legend.json','product.json','report.html'])
+        from .product_schema import product_passport
+        with rasterio.open(path) as original:
+            source_grid={'crs':original.crs.to_string() if original.crs else source['crs'],
+                         'width':original.width,'height':original.height,'bounds':list(original.bounds),
+                         'transform':list(original.transform)[:6],
+                         'resolution':[float(original.res[0]),float(original.res[1])],
+                         'resolution_units':'degrees' if original.crs and original.crs.is_geographic else 'm',
+                         'nodata':original.nodata if original.nodata is None or np.isfinite(float(original.nodata)) else None}
+        meta['passport'] = product_passport(
+            product_id='archive_rgb', algorithm_id='arktika.archive_rgb', algorithm_version=VERSION,
+            maturity='implemented', quantity_kind='rgb', quantity='Цветовые компоненты готового продукта поставщика',
+            units='RGB', valid_time=scene['time'], data_kind=scene.get('data_kind','observation'),
+            grid={'crs':g['crs'],'width':g['width'],'height':g['height'],'bounds':g['bounds'],
+                  'transform':list(g['transform'])[:6],
+                  'resolution':[float(g['transform'].a),float(g['transform'].e)],
+                  'resolution_units':'degrees' if g['crs']=='EPSG:4326' else 'm'},
+            source_grids=[source_grid],
+            nodata=legend['nodata'],quality_control={'flags':legend['quality_flags'],
+                  'valid_pixels':int(valid.sum()),'total_pixels':int(valid.size)},
+            sources=[{'kind':'provider_composite','id':source['id'],'filename':path.name,'sha256':sha}],
+            calibration_version='not_applicable',calibration_status='not_applicable',
+            limitations=[NOTE,'Цвета сохранены; физические величины и спектральные признаки не рассчитываются.'],
+        )
         from .processing import write_report
         atomic_json(target/'legend.json', legend);write_report(target,meta,g)
         if cancel and cancel.is_set():

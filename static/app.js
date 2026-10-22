@@ -95,6 +95,60 @@ function helpTab(name){$$('#helpTabs button').forEach(b=>b.classList.toggle('act
 async function help(){const r=S.registry;$('#channelReference').innerHTML=r.channels.map(c=>`<article class="reference-card"><h3>${c.id} · ${c.wavelength_um} мкм · ${escape(c.name)}</h3><p>${escape(c.description)}</p></article>`).join('');$('#productReference').innerHTML=r.products.map(p=>`<article class="reference-card"><h3>${escape(p.title)} <span class="pill">${escape({implemented:'реализовано',experimental:'эксперимент',planned:'план',profile_tool:'профильный расчёт'}[p.status])}</span></h3><p>${escape(p.meaning)}</p>${p.channels?'<p>Каналы: '+p.channels.join(', ')+'</p>':''}</article>`).join('');helpTab('quickstart');open('#helpDialog');}
 async function poll(){try{const r=await api('/api/state');S.serverState=r;$('#status').textContent=r.status;$('#statusdot').classList.toggle('busy',r.busy);$('#cancel').hidden=!r.busy;$('#process').disabled=r.busy;$('#calibrationState').textContent=calibrationNames[r.calibration?.mode]||'не задана';$('#downloadPath').textContent=r.download_dir;const q=r.queue_counts||{};$('#queueCount').textContent=(q.queued||0)+(q.running||0);$('#tokenStatus').innerHTML=`<p class="micro">Bearer: ${r.token.present?(r.token.remaining==null?'срок неизвестен':r.token.remaining>0?num(r.token.remaining/60,0)+' мин':'истёк'):'не задан'}<br>STS: ${r.token.sts_expires?new Date(r.token.sts_expires*1000).toISOString():'сессии нет'}<br>Refresh token: ${r.oauth?.refresh_present?'в памяти':'не задан'}</p>`;if(r.revision!==S.revision){S.revision=r.revision;await loadDay();await loadCalendar();}if(S.busy&&!r.busy&&r.result){if(r.result.ok&&r.result.result?.id&&r.result.result?.legend){await showProduct(r.result.result);}else if(r.result.ok&&r.result.result?.vectors){const motion=r.result.result;drawMotion(motion);$('#motionResult').innerHTML=`<p>Векторов: ${motion.vectors.length}; кандидатов вращения: ${motion.candidates.length}.</p><p class="notice">${escape(motion.note)}</p>`;}else if(!r.result.ok)toast(r.result.error);S.pending=false;}S.busy=r.busy;if($('#queueDialog').open)await refreshQueue();}catch(e){$('#status').textContent=e.message;}finally{setTimeout(poll,1800);}}
 function drawMotion(r){if(!S.map||S.map.grid.preset!==r.grid.preset||S.map.grid.crs!==r.grid.crs)return;const sx=S.map.grid.width/r.grid.width,sy=S.map.grid.height/r.grid.height;const els=r.vectors.map(v=>svgEl('line',{x1:v.x*sx,y1:v.y*sy,x2:(v.x+v.dx)*sx,y2:(v.y+v.dy)*sy,stroke:'#fbe17a','stroke-width':1.5}));for(const c of r.candidates)els.push(svgEl('circle',{cx:c.x*sx,cy:c.y*sy,r:30*sx,fill:'none',stroke:'#e58fd8','stroke-width':2}));$('#motionLayer').replaceChildren(...els);toast('Слежение показано: отрезки смещений и кандидаты вращения, не ПМЦ.');}
+const PMC_SOURCE_LABELS={era5:'ERA5',carra2:'CARRA2',merra2:'MERRA-2'};
+function pmcFeedback(message,kind='notice'){$('#pmcArchiveFeedback').replaceChildren();if(!message)return;const p=document.createElement('p');p.className=kind;p.textContent=message;$('#pmcArchiveFeedback').append(p);}
+function pmcRenderSources(sources){
+  const root=$('#pmcArchiveSources');root.replaceChildren();
+  const rows=Array.isArray(sources)?sources.filter(s=>s&&PMC_SOURCE_LABELS[s.id]):[];
+  if(!rows.length){root.textContent='Каталог адаптеров недоступен; отправка плана отключена до ответа сервера.';$('#pmcArchivePlan').disabled=true;return;}
+  for(const source of rows){const label=document.createElement('label');label.className='check';const input=document.createElement('input');input.type='checkbox';input.name='pmcArchiveSource';input.value=source.id;input.checked=true;const text=document.createElement('span');text.textContent=`${PMC_SOURCE_LABELS[source.id]} — адаптер зарегистрирован; доступ к аккаунту и наличие поля 850 гПа проверяются отдельно`;label.append(input,text);root.append(label);}
+  $('#pmcArchivePlan').disabled=false;
+}
+async function openPmcArchive(){
+  pmcFeedback('');$('#pmcArchivePlan').disabled=true;$('#pmcArchiveSources').textContent='Проверяю зарегистрированные адаптеры…';open('#pmcArchiveDialog');
+  try{const state=await api('/api/reanalysis/state');pmcRenderSources(state.catalogue?.sources||[]);}
+  catch(e){$('#pmcArchiveSources').textContent='Не удалось прочитать каталог адаптеров.';pmcFeedback('Проверка архива недоступна: '+e.message,'error-text');}
+}
+function pmcArchiveBody(){
+  const sources=$$('[name="pmcArchiveSource"]:checked').map(e=>e.value);
+  const start=$('#pmcArchiveStart').value.trim(),end=$('#pmcArchiveEnd').value.trim();
+  const utc=/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
+  if(!sources.length)throw Error('Выберите хотя бы один источник.');
+  if(!utc.test(start)||!utc.test(end)||!Number.isFinite(Date.parse(start))||!Number.isFinite(Date.parse(end)))throw Error('Укажите начало и конец в UTC формате YYYY-MM-DDTHH:MM:SSZ.');
+  if(Date.parse(start)>=Date.parse(end))throw Error('Начало интервала должно быть раньше конца.');
+  const area=['#pmcNorth','#pmcWest','#pmcSouth','#pmcEast'].map(id=>Number($(id).value));
+  if(area.some((v,i)=>!$(['#pmcNorth','#pmcWest','#pmcSouth','#pmcEast'][i]).value.trim()||!Number.isFinite(v)))throw Error('Задайте все четыре границы региона.');
+  const [north,west,south,east]=area;
+  if(north>90||north< -90||south>90||south< -90||west>180||west< -180||east>180||east< -180||north<=south)throw Error('Проверьте границы: широты от −90 до 90, долготы от −180 до 180, север выше юга.');
+  if(west>=east)throw Error('Область через антимеридиан пока не поддерживается: западная граница должна быть меньше восточной.');
+  return {sources,start,end,area};
+}
+async function planPmcArchive(){
+  let body;try{body=pmcArchiveBody();pmcFeedback('Запрашиваю только план и проверку входных данных; загрузка не запускается…');$('#pmcArchivePlan').disabled=true;
+    const result=await api('/api/pmc/archive/plan',body);$('#pmcArchiveFeedback').replaceChildren();
+    const box=document.createElement('div');box.className='notice';const title=document.createElement('strong');title.textContent='Экспериментальный план · кандидатный анализ';box.append(title);
+    const lines=[];
+    if(result.maturity==='experimental')lines.push('Зрелость: экспериментальная.');
+    if(result.output_status==='candidate_only')lines.push('Статус продукции: только кандидаты.');
+    if(result.forecast===false)lines.push('Прогноз не рассчитывается.');
+    if(typeof result.message==='string')lines.push(result.message);
+    if(result.plan&&Number.isInteger(result.plan.step_count))lines.push(`Шагов плана: ${result.plan.step_count}; загрузка не запускалась.`);
+    if(result.plan&&typeof result.plan.start==='string'&&typeof result.plan.end==='string')lines.push(`Интервал: ${result.plan.start} — ${result.plan.end}.`);
+    if(Array.isArray(result.sources))for(const item of result.sources){
+      const name=PMC_SOURCE_LABELS[item.id]||item.name||item.id;if(!name)continue;
+      const credentials=item.credential_status==='ready'?'реквизиты доступны':item.credential_status==='required'?'нужны реквизиты':'статус реквизитов не проверен';
+      const support=item.support_status==='wind_850_available'?'вход ветра на 850 гПа заявлен':item.support_status==='unsupported'?'источник не поддерживает нужное поле':'поддержка поля не подтверждена';
+      lines.push(`${name}: ${credentials}; ${support}${Number.isFinite(item.interval_hours)?`; шаг ${item.interval_hours} ч`:''}${Number.isInteger(item.first_year)?`; с ${item.first_year} г.`:''}`);
+    }
+    if(Array.isArray(result.missing_inputs)&&result.missing_inputs.length)lines.push('Недостающие входы: '+result.missing_inputs.join(', '));
+    if(result.satellite&&typeof result.satellite.note==='string')lines.push('Спутник: '+result.satellite.note);
+    if(Array.isArray(result.limitations))for(const item of result.limitations)if(typeof item==='string')lines.push('Ограничение: '+item);
+    if(!lines.length)lines.push('Ответ сервера не содержит полного плана. Расчёт и загрузка не запускаются.');
+    const list=document.createElement('ul');for(const line of lines){const li=document.createElement('li');li.textContent=line;list.append(li);}box.append(list);
+    const note=document.createElement('p');note.textContent='Это план архивной обработки, не прогноз. Все обнаружения остаются кандидатами до независимого сравнения со спутниковой разметкой.';box.append(note);$('#pmcArchiveFeedback').append(box);
+  }catch(e){const message=e.message||'Не удалось составить план.';pmcFeedback(message.includes('404')||message.includes('Not Found')?'Серверный API планирования архива ещё недоступен. Никакие данные не загружены.':message,'error-text');}
+  finally{$('#pmcArchivePlan').disabled=false;}
+}
 function registerEvents(){
  $$('[data-close]').forEach(b=>b.onclick=()=>b.closest('dialog').close());$$('.tabs button[data-tab]').forEach(b=>b.onclick=()=>tab(b.dataset.tab));$$('#helpTabs button').forEach(b=>b.onclick=()=>helpTab(b.dataset.helpTab));
  bind('#monthPrev',()=>shiftMonth(-1));bind('#monthNext',()=>shiftMonth(1));$('#month').onchange=()=>setDate($('#year').value+'-'+String(Number($('#month').value)+1).padStart(2,'0')+'-01');$('#year').onchange=$('#month').onchange;$('#date').onchange=()=>setDate($('#date').value);bind('#today',()=>setDate(new Date().toISOString().slice(0,10)));$('#platform').onchange=()=>setDate(S.day);
@@ -110,5 +164,6 @@ function registerEvents(){
  bind('#drawRoute',()=>{if(!S.product)throw Error('Сначала постройте продукт.');S.drawing=!S.drawing;$('#drawRoute').classList.toggle('draw-active',S.drawing);$('#drawRoute').textContent=S.drawing?'Режим точек включён — нажмите для выхода':'Добавлять точки на карте';});bind('#undoRoute',()=>{const rows=$('#routePoints').value.trim().split('\n');rows.pop();$('#routePoints').value=rows.join('\n');$('#routeLayer').lastElementChild?.remove();});bind('#clearRoute',()=>{$('#routePoints').value='';$('#routeLayer').replaceChildren();$('#routeResult').innerHTML='';S.route=null;});bind('#calculateRoute',calculateRoute);
  bind('#productsOpen',async()=>{const r=await api('/api/products');$('#savedProducts').innerHTML=r.products.map(p=>`<article class="reference-card"><h3>${escape(p.title)}</h3><p>${escape(p.platform+' · '+p.time+' · '+p.grid.name)} · ${escape(calibrationNames[p.calibration_status])}</p><button data-id="${p.id}">Открыть</button> <a href="/artifact/${p.id}/export.zip">Экспорт с легендой</a></article>`).join('')||'<p class="empty">Продуктов пока нет.</p>';$$('#savedProducts button').forEach(b=>b.onclick=()=>{showProduct(r.products.find(p=>p.id===b.dataset.id)).then(()=>$('#productsDialog').close()).catch(e=>toast(e.message));});open('#productsDialog');});
  bind('#labOpen',()=>open('#labDialog'));bind('#profileCalculate',async()=>{$('#profileResult').textContent=JSON.stringify(await api('/api/profile',JSON.parse($('#profileJson').value)),null,2);});bind('#motionOpen',async()=>{const r=await api('/api/scenes');const opts=r.scenes.map(s=>`<option value="${s.id}">${escape(s.platform+' · '+s.time)}</option>`).join('');$('#motionFirst').innerHTML=opts;$('#motionSecond').innerHTML=opts;if(r.scenes.length>1)$('#motionSecond').selectedIndex=1;open('#motionDialog');});bind('#motionCalculate',async()=>{await api('/api/motion',{first:$('#motionFirst').value,second:$('#motionSecond').value,preset:$('#preset').value,channel:9});S.busy=true;});
+ bind('#pmcArchivePlan',planPmcArchive);
 }
 async function boot(){const key=location.hash.slice(1);if(key){await api('/api/bootstrap',{key});history.replaceState(null,'',location.pathname);}S.registry=await api('/api/registry');$('#month').innerHTML=months.map((m,i)=>`<option value="${i}">${m}</option>`).join('');$('#channel').innerHTML=S.registry.channels.map(c=>`<option value="${c.id}">${c.id} · ${c.wavelength_um} мкм · ${escape(c.name)}</option>`).join('');$('#channel').value=9;$('#product').innerHTML=S.registry.products.filter(p=>!['planned','profile_tool'].includes(p.status)&&p.id!=='motion').map(p=>`<option value="${p.id}">${escape(p.title)}</option>`).join('');$('#preset').innerHTML=Object.entries(S.registry.presets).map(([id,p])=>`<option value="${id}">${escape(p.name)}</option>`).join('');registerEvents();await setMap('arctic');const state=await api('/api/state');S.serverState=state;const saved=state.view_settings||{};if(saved.product)$('#product').value=saved.product;if(saved.channel)$('#channel').value=saved.channel;if(saved.preset){$('#preset').value=saved.preset;await setMap(saved.preset);}setDate(state.last_date||S.day);productHint();poll();}

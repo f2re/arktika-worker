@@ -16,9 +16,11 @@ from .era5_runtime import ensure_runtime, runtime_info, run_process, runtime_env
 from .geo import grid
 from .network import Cancelled
 from .reanalysis.catalog import catalogue, request_plan, VERSION
+from .pmc_archive import build_plan as build_pmc_archive_plan
 
 ROOT=Path(__file__).resolve().parents[1]
 ID=re.compile(r'^[0-9a-f]{24}$')
+TASK_ID=re.compile(r'^[0-9a-f]{32}$')
 
 
 class ReanalysisMixin:
@@ -33,7 +35,12 @@ class ReanalysisMixin:
             try: self._field_job=json.loads((self.fields_root/'job.json').read_text(encoding='utf-8'))
             except (ValueError,OSError): self._field_job={'status':'idle'}
             if self._field_job.get('status')=='running':
-                self._field_job.update(status='interrupted',message='Операция прервана остановкой сервера. Готовые поля сохранены; повторите запрос.')
+                self._field_job.update(status='interrupted',message='Операция прервана остановкой сервера. Готовые поля сохранены; задачу можно возобновить.')
+                self._field_job['resume_available']=bool(self._field_job.get('pending',{}).get('kind')=='remote')
+            # Older job records may have contained request payloads. Keep only the
+            # allowlisted public task summary before exposing or rewriting them.
+            self._field_job=self._sanitize_field_job(self._field_job)
+            atomic_json(self.fields_root/'job.json',self._field_job)
 
     def field(self,identity):
         self._fields_init()
@@ -59,6 +66,45 @@ class ReanalysisMixin:
                 'catalogue':catalogue(),'busy':self.busy,
                 'legacy_cache_count':sum(1 for p in self.field_cache.glob('*/field.json')
                     if ID.fullmatch(p.parent.name) and not (p.parent/'metadata.json').exists())}
+
+    def pmc_archive_plan(self, data):
+        """Describe archival inputs without downloading or fabricating a result."""
+        state=self.fields_state()
+        sources=data.get('sources',[]) if isinstance(data,dict) else []
+        credentials={source:bool(self.source_credential(source)) for source in sources
+                     if source in ('era5','carra2','merra2')}
+        return build_pmc_archive_plan(data,credentials=credentials,cached_fields=state['fields'])
+
+    @staticmethod
+    def _safe_field_spec(plan):
+        """Return the immutable, credential/path/URI-free inputs needed to rebuild a plan."""
+        if not isinstance(plan,dict): return None
+        keys=('source','variable','time','level','area')
+        if any(k not in plan for k in keys): return None
+        return {k:copy.deepcopy(plan[k]) for k in keys}
+
+    @classmethod
+    def _sanitize_field_job(cls,job):
+        if not isinstance(job,dict): return {'status':'idle'}
+        result={k:copy.deepcopy(job[k]) for k in ('id','status','message','field_id','created_at','updated_at') if k in job}
+        identity=job.get('id')
+        if isinstance(identity,str) and TASK_ID.fullmatch(identity): result['id']=identity
+        pending=job.get('pending')
+        if isinstance(pending,dict) and pending.get('kind')=='remote':
+            spec=cls._safe_field_spec(pending.get('spec'))
+            if spec:
+                result['pending']={'kind':'remote','spec':spec}
+                result['resume_available']=bool(job.get('resume_available',job.get('status') in ('needs_action','interrupted')))
+        action=job.get('needs_action')
+        if (not isinstance(action,dict) and result.get('status')=='interrupted'
+                and result.get('pending',{}).get('kind')=='remote'):
+            source=result['pending']['spec']['source']
+            action={'code':'credentials_required','provider':'cds' if source in ('era5','carra2') else 'earthdata','source':source}
+        if result.get('status') in ('needs_action','interrupted') and isinstance(action,dict):
+            if action.get('code')=='credentials_required' and action.get('provider') in ('cds','earthdata') and action.get('source') in ('era5','carra2','merra2'):
+                result['needs_action']={k:action[k] for k in ('code','provider','source')}
+        if 'status' not in result: result['status']='idle'
+        return result
 
     def _field_runtime(self,download=False):
         info=runtime_info(self.store.root)
@@ -88,13 +134,13 @@ class ReanalysisMixin:
             if not result.get('ok'): raise ValueError(result.get('error','Поле не обработано.'))
             return result['result']
 
-    def _field_start(self,payload):
+    def _field_start(self,payload,task_id=None,pending=None):
         self._fields_init()
         with self.lock:
             if self.busy: raise ValueError('Сначала завершите или отмените текущую операцию.')
-            identity=uuid.uuid4().hex
+            identity=task_id or uuid.uuid4().hex
             self._field_job={'id':identity,'status':'running','message':'Подготовка поля',
-                             'request':payload.get('plan',{}),'field_id':None}
+                             'pending':pending or {},'resume_available':False,'field_id':None}
             def update(message):
                 with self.lock:
                     self._field_job['message']=message;atomic_json(self.fields_root/'job.json',self._field_job)
@@ -108,16 +154,18 @@ class ReanalysisMixin:
                     result=self._field_process(payload,download=network,cancel=self.cancel,progress=update)
                     with self.lock:
                         self._field_job.update(status='done',field_id=result['field']['id'],message='Поле проверено и сохранено'+(' · использован кэш' if result.get('cached') else ''))
+                        self._field_job['resume_available']=False
                     return {'reanalysis':result['field']}
                 except Cancelled:
-                    with self.lock: self._field_job.update(status='cancelled',message='Получение поля остановлено. Ранее готовые поля сохранены.')
+                    with self.lock: self._field_job.update(status='cancelled',message='Получение поля остановлено. Ранее готовые поля сохранены.',resume_available=False)
                     raise
                 except Exception as exc:
-                    with self.lock: self._field_job.update(status='error',message=str(exc) if isinstance(exc,ValueError) else 'Не удалось подготовить поле.')
+                    with self.lock: self._field_job.update(status='error',message=str(exc) if isinstance(exc,ValueError) else 'Не удалось подготовить поле.',resume_available=False)
                     raise ValueError(self._field_job['message']) from None
                 finally:
                     with self.lock: atomic_json(self.fields_root/'job.json',self._field_job)
             self.start('Поле реанализа',work)
+            self._field_job=self._sanitize_field_job(self._field_job)
             atomic_json(self.fields_root/'job.json',self._field_job)
             return {'started':True,'id':identity}
 
@@ -137,12 +185,49 @@ class ReanalysisMixin:
             # Cached fields remain usable without credentials after a server restart.
             if not credential and not (self.field_cache/identity/'metadata.json').is_file():
                 provider='cds' if plan['source'] in ('era5','carra2') else 'earthdata'
-                return {'needs_action':{'code':'credentials_required','provider':provider,
-                                        'source':plan['source']}}
+                with self.lock:
+                    if self.busy: raise ValueError('Сначала завершите или отмените текущую операцию.')
+                    task_id=uuid.uuid4().hex
+                    action={'code':'credentials_required','provider':provider,'source':plan['source']}
+                    pending={'kind':'remote','spec':self._safe_field_spec(plan)}
+                    self._field_job={'id':task_id,'status':'needs_action','message':'Требуются данные доступа к источнику.',
+                                     'needs_action':action,'pending':pending,'resume_available':True,'field_id':None}
+                    atomic_json(self.fields_root/'job.json',self._sanitize_field_job(self._field_job))
+                return {'needs_action':dict(action,id=task_id)}
         if sum(p.stat().st_size for p in self.field_cache.rglob('*') if p.is_file())>20*1024**3:
             raise ValueError('Кэш реанализа превысил 20 ГиБ. Удалите ненужные данные после резервирования.')
+        pending={'kind':'remote','spec':self._safe_field_spec(plan)} if not local else {}
         return self._field_start({'action':'prepare','plan':plan,'credential':credential,
-                                   'path':str(path) if path else None,'identity':identity,'cache':str(self.field_cache)})
+                                   'path':str(path) if path else None,'identity':identity,'cache':str(self.field_cache)},pending=pending)
+
+    def fields_resume(self,data):
+        """Resume the exact persisted remote request using credentials currently configured."""
+        self._fields_init()
+        identity=data.get('id') if isinstance(data,dict) else None
+        with self.lock:
+            job=self._field_job
+            if not isinstance(identity,str) or not TASK_ID.fullmatch(identity) or identity!=job.get('id'):
+                raise ValueError('Задача реанализа не найдена или уже заменена.')
+            if job.get('status') not in ('needs_action','interrupted') or not job.get('resume_available'):
+                raise ValueError('Эту задачу нельзя возобновить.')
+            pending=job.get('pending',{})
+            if pending.get('kind')!='remote': raise ValueError('Нет безопасно сохранённого плана удалённого запроса.')
+            spec=self._safe_field_spec(pending.get('spec'))
+            if not spec: raise ValueError('Сохранённый план задачи повреждён.')
+        plan=request_plan(spec)
+        credential=self.source_credential(plan['source'])
+        cache_id=plan['key']
+        if not credential and not (self.field_cache/cache_id/'metadata.json').is_file():
+            provider='cds' if plan['source'] in ('era5','carra2') else 'earthdata'
+            action={'code':'credentials_required','provider':provider,'source':plan['source']}
+            with self.lock:
+                # Recheck scope before updating in case a different job replaced it.
+                if self._field_job.get('id')!=identity: raise ValueError('Задача уже заменена.')
+                self._field_job.update(status='needs_action',message='Требуются данные доступа к источнику.',needs_action=action,resume_available=True)
+                atomic_json(self.fields_root/'job.json',self._sanitize_field_job(self._field_job))
+            return {'needs_action':dict(action,id=identity)}
+        payload={'action':'prepare','plan':plan,'credential':credential,'path':None,'identity':cache_id,'cache':str(self.field_cache)}
+        return self._field_start(payload,task_id=identity,pending={'kind':'remote','spec':spec})
 
     def fields_difference(self,data):
         a=self.field(data.get('first'));b=self.field(data.get('second'))
@@ -207,8 +292,13 @@ class ReanalysisMixin:
     def fields_cancel(self,data):
         self._fields_init()
         with self.lock:
-            if data.get('id')!=self._field_job.get('id') or self._field_job.get('status')!='running': raise ValueError('Эта задача уже не выполняется.')
-            self.cancel.set()
+            job=self._field_job
+            if data.get('id')!=job.get('id') or job.get('status') not in ('running','needs_action','interrupted','retrying'):
+                raise ValueError('Эта задача уже не выполняется.')
+            if job.get('status')=='running': self.cancel.set()
+            else:
+                job.update(status='cancelled',message='Задача отменена.');job['resume_available']=False
+                atomic_json(self.fields_root/'job.json',self._sanitize_field_job(job))
         return {'cancelled':True}
 
     def fields_export(self,identity):

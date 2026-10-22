@@ -25,7 +25,7 @@ def fixture(folder,units=False):
    ds.write(a,1);ds.update_tags(source='SYNTHETIC UNIT TEST ONLY, NOT OBSERVATIONS')
    if units:ds.set_band_unit(1,'K')
   channels[str(ch)]={'path':str(p),'filename':p.name,'channel':ch}
- return dict(id='ARCM2_20260101000000',platform='ARCM2',time='2026-01-01T00:00:00Z',channels=channels,time_assumed=True)
+ return dict(id='ARCM2_20260101000000',platform='ARCM2',time='2026-01-01T00:00:00Z',channels=channels,time_assumed=True,data_kind='synthetic')
 class ScienceTests(unittest.TestCase):
  def setUp(self):self.tmp=tempfile.TemporaryDirectory();self.root=Path(self.tmp.name);self.scene=fixture(self.root)
  def tearDown(self):self.tmp.cleanup()
@@ -51,6 +51,30 @@ class ScienceTests(unittest.TestCase):
   with self.assertRaises(ValueError):stretch(np.array([1]),2,1)
  def test_channel_keeps_dn(self):
   p=self.build();self.assertEqual(p['legend']['units'],'DN');self.assertEqual(p['legend']['quantity_kind'],'stored_value');self.assertEqual(p['legend']['stats']['min'],275)
+ def test_product_passport_has_explicit_provenance_and_unknowns(self):
+  p=self.build();passport=p['passport']
+  self.assertEqual(passport['schema_version'],'1.0');self.assertEqual(passport['data_kind'],'synthetic')
+  self.assertEqual(passport['quantity_kind'],'stored_value');self.assertEqual(passport['units'],'DN')
+  self.assertEqual(passport['grid']['crs'],'EPSG:3995');self.assertEqual(passport['grid']['width'],256)
+  self.assertEqual(passport['uncertainty']['status'],'not_assessed')
+  self.assertEqual(passport['source_grids'][0]['crs'],'EPSG:4326')
+  self.assertEqual(len(passport['sources'][0]['sha256']),64)
+  self.assertNotIn(str(self.root),json.dumps(passport))
+ def test_saved_product_style_rerenders_without_changing_values_or_passport(self):
+  app=Workstation(self.root/'state')
+  try:
+   product=build_product(self.scene,app.product_root,dict(product='channel',preset='barents',width=256,channel=9),{'mode':'unknown'})
+   values=app.artifact(product['id'],'values.tif').read_bytes();passport=json.loads(json.dumps(product['passport']))
+   profile=app.product_style({'id':product['id']})['style'];profile.update(minimum=270,maximum=280,palette_id='ice',palette=[[0,0,0],[255,255,255]])
+   result=app.product_style({'id':product['id'],'style':profile})
+   self.assertEqual(app.artifact(product['id'],'values.tif').read_bytes(),values)
+   self.assertEqual(result['product']['passport'],passport)
+   self.assertEqual(result['product']['legend']['display_min'],270)
+   self.assertIn('style.json',app.product(product['id'])['files'])
+   archive=app.export(product['id'])
+   import zipfile,io
+   with zipfile.ZipFile(io.BytesIO(archive)) as bundle:self.assertIn('style.json',bundle.namelist())
+  finally:app.close()
  def test_legend_quantity_kinds_are_explicit(self):
   fixture(self.root,True)
   channel=self.build();difference=self.build('difference',{'mode':'assumed'});composite=self.build('micro24',{'mode':'assumed'})

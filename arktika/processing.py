@@ -7,6 +7,8 @@ from rasterio.warp import reproject,Resampling
 from rasterio.enums import ColorInterp
 from PIL import Image
 from .products import RECIPES
+from .products import PRODUCTS
+from .product_schema import SCHEMA_VERSION, product_passport
 from .geo import grid,lonlat_grid,solar_elevation,map_context
 from .download import digest,atomic_json
 PALETTE=[[25,46,88],[40,92,164],[47,170,194],[216,236,222],[251,211,89],[235,110,63],[158,30,65]]
@@ -76,7 +78,12 @@ def read_grid(path,ch,g,cal,kelvin_required=False):
   out=np.full((g['height'],g['width']),np.nan,dtype='float32')
   reproject(rasterio.band(ds,1),out,src_transform=ds.transform,src_crs=ds.crs,src_nodata=ds.nodata,dst_transform=g['transform'],dst_crs=g['crs'],dst_nodata=np.nan,resampling=Resampling.nearest,num_threads=1,warp_mem_limit=128)
   out=apply_scale(out,ch,cal,scale,offset).astype('float32')
-  return out,dict(channel=ch,units=unit,status=status,reference=reference,scale=scale,offset=offset,source_crs=ds.crs.to_string(),source_shape=[ds.height,ds.width],valid_dn=cal.get('channels',{}).get(str(ch),{}).get('valid_dn') if cal.get('channels',{}).get(str(ch),{}).get('enforce_valid_dn') else None)
+  source_grid=dict(channel=ch,crs=ds.crs.to_string(),width=ds.width,height=ds.height,
+                   bounds=list(ds.bounds),transform=list(ds.transform)[:6],
+                   resolution=[float(ds.res[0]),float(ds.res[1])],
+                   resolution_units='degrees' if ds.crs.is_geographic else 'm',
+                   nodata=ds.nodata if ds.nodata is None or math.isfinite(float(ds.nodata)) else None)
+  return out,dict(channel=ch,units=unit,status=status,reference=reference,scale=scale,offset=offset,source_crs=ds.crs.to_string(),source_shape=[ds.height,ds.width],source_grid=source_grid,valid_dn=cal.get('channels',{}).get(str(ch),{}).get('valid_dn') if cal.get('channels',{}).get(str(ch),{}).get('enforce_valid_dn') else None)
 def stretch(a,lo,hi,gamma=1):
  if not hi>lo or gamma<=0:raise ValueError('Неверная цветовая шкала.')
  return np.power(np.clip((a-lo)/(hi-lo),0,1),1/gamma)
@@ -145,7 +152,7 @@ def build_product(scene,root,request,cal,cancel=None,progress=lambda x:None):
   title='Спектральные признаки';legend.update(units='class',quantity_kind='categorical',classes=FLAGS,meaning='Не карта ОЯ и не маска облачности. Холодная поверхность тоже может иметь холодный сигнал. Приоритет: качество → ночной признак → холодный сигнал → прочее.')
  if field is not None:field=np.where(valid,field,np.nan).astype('float32')
  rgb[~valid]=0;rgba=np.dstack([rgb,np.where(valid,255,0).astype('uint8')])
- identity=hashlib.sha256(json.dumps(dict(inputs=inputs,request=request,cal=cal,grid={k:v for k,v in g.items() if k!='transform'},recipe=RECIPES.get(product),rules=THRESHOLDS,rules_version=VERSION,version='0.2.3'),sort_keys=True).encode()).hexdigest()[:24]
+ identity=hashlib.sha256(json.dumps(dict(inputs=inputs,request=request,cal=cal,grid={k:v for k,v in g.items() if k!='transform'},recipe=RECIPES.get(product),rules=THRESHOLDS,rules_version=VERSION,version='0.2.3',passport_schema=SCHEMA_VERSION),sort_keys=True).encode()).hexdigest()[:24]
  final=Path(root)/identity
  if (final/'product.json').exists():return json.loads((final/'product.json').read_text(encoding='utf-8'))
  target=Path(root)/(identity+'.building')
@@ -161,8 +168,31 @@ def build_product(scene,root,request,cal,cancel=None,progress=lambda x:None):
  with rasterio.open(target/'quality.tif','w',count=1,dtype='uint8',**profile) as ds:ds.write(qc,1);ds.update_tags(**tags)
  Image.fromarray(rgba).save(target/'map.png')
  night=np.zeros((*sun.shape,4),dtype='uint8');night[:,:,:3]=[13,26,50];night[:,:,3]=np.where(sun<0,90,0);Image.fromarray(night).save(target/'night.png')
- legend.update(title=title,scene_time=scene['time'],scene_id=scene['id'],product=product,status=status,valid_pixels=int(valid.sum()),total_pixels=int(valid.size),version='0.2.3')
+ algorithm_version='0.2.3'
+ legend.update(title=title,scene_time=scene['time'],scene_id=scene['id'],product=product,status=status,valid_pixels=int(valid.sum()),total_pixels=int(valid.size),version=algorithm_version)
  meta=dict(id=identity,scene_id=scene['id'],platform=scene['platform'],time=scene['time'],product=product,title=title,calibration_status=status,time_assumed=scene.get('time_assumed',True),grid={k:v for k,v in g.items() if k!='transform'},transform=list(g['transform'])[:6],inputs=inputs,request=request,calibration_config=cal,legend=legend,files=['map.png','night.png','display.tif','quality.tif','legend.json','product.json','report.html'])
+ spec=next((item for item in PRODUCTS if item['id']==product),{})
+ quantity={
+  'channel':'Яркостная температура канала' if kelvin else 'Хранимые значения канала',
+  'difference':'Спектральная разность яркостных температур T10 − T9',
+  'phase':'Кандидат спектрального класса облачной фазы',
+  'indicators':'Класс спектрального признака',
+ }.get(product, spec.get('title',title))
+ passport_grid={k:v for k,v in meta['grid'].items() if k in ('crs','width','height','bounds','preset')}
+ passport_grid['transform']=meta['transform']
+ passport_grid['resolution']= [float(g['transform'].a), float(g['transform'].e)]
+ passport_grid['resolution_units']='degrees' if g['crs']=='EPSG:4326' else 'm'
+ meta['passport']=product_passport(
+  product_id=product,algorithm_id='arktika.'+product,algorithm_version=algorithm_version,
+  maturity=spec.get('status','experimental'),quantity_kind=legend['quantity_kind'],quantity=quantity,
+  units=legend['units'],valid_time=scene['time'],data_kind=scene.get('data_kind','observation'),
+  grid=passport_grid,source_grids=[m['source_grid'] for m in metas],
+  nodata=legend.get('nodata','NaN; прозрачно = нет данных'),
+  quality_control={'flags':legend.get('quality_flags',{}),'valid_pixels':int(valid.sum()),'total_pixels':int(valid.size)},
+  sources=[{'kind':'satellite_channel','channel':item['channel'],'filename':item['filename'],'sha256':item['sha256']} for item in inputs],
+  calibration_version='calibration-config-v1',calibration_status=status,
+  limitations=[legend.get('meaning',''),legend.get('threshold_status','')],
+ )
  if field is not None:meta['files'].append('values.tif')
  atomic_json(target/'legend.json',legend)
  write_report(target,meta,g)

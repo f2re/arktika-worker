@@ -30,6 +30,9 @@ def main():
         record,assets=archive_assets();app.store.upsert([record],assets)
         known=next(a for a in assets if a['epsg']==3857);stored=root/known['filename'];rgb_fixture(stored,3857,tags=False)
         app.store.enqueue(known,stored);app.store.update_job(known['id'],state='done',done=stored.stat().st_size)
+        # Reconcile the completed queue item into the local scene catalog before
+        # starting the UI. A done queue row alone is not yet an openable scene.
+        app.sync_downloads()
         normal=root/'normal';normal.mkdir();fixture(normal);app.scan_local(normal)
         app.store.set_setting('last_date','2024-09-20');app.store.set_setting('view_settings',dict(preset='barents',product='channel',channel=9))
         server=LocalServer(('127.0.0.1',0),app);thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
@@ -55,6 +58,9 @@ def main():
                     wait('()=>{const e=document.querySelector("#queueDialog .dialog-body");return e.clientHeight>0&&e.scrollHeight>e.clientHeight;}')
                 try:
                     mount(page,ROOT,server,args.bridge)
+                    # Opening a downloaded RGB is an explicit user action; booting
+                    # the workstation must not silently select or build a product.
+                    page.locator('#sessions button.session').filter(has_text='Открыть RGB').click()
                     check('Старый скачанный RGB открывается без повторной загрузки','()=>typeof S!=="undefined"&&S.product?.display_only&&!S.busy&&!UI.activeBuild')
                     assert transport.calls==0
                     check('На карте нужный архивный срок и проекция','()=>S.product.time==="2024-09-20T19:00:00Z"&&S.product.legend.source_crs==="EPSG:3857"')

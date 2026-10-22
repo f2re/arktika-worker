@@ -82,6 +82,7 @@ function syncProductChoices(){
   for(const option of $$('#channel option'))option.disabled=false;
   for(const button of $$('#taskGrid button')){
     button.disabled=false;const id=button.dataset.task,spec=S.registry.products.find(p=>p.id===id);
+    if(id==='pmc_archive'){button.title='Экспериментальный архивный план, не прогноз и не подтверждённый ПМЦ';let tag=button.querySelector('.availability-tag');if(!tag){tag=document.createElement('small');tag.className='availability-tag';button.append(tag);}tag.textContent='План · эксперимент';continue;}
     const need=id==='channel'?[9]:id==='cth'?[7,9,10]:spec?.channels||[];
     const missing=need.filter(c=>!have.has(c));
     const state=!S.scene?'Выбрать срок':id==='motion'?'Слежение по двум срокам':missing.length?'Нужные каналы будут найдены и скачаны':'Каналы на диске';

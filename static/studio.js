@@ -344,6 +344,7 @@ const TASKS=[
   {id:'difference',icon:'layers',name:'Разности',hint:'Оконный контраст'},
   {id:'phase',icon:'snow',name:'Признаки фазы',hint:'Исследовательские правила'},
   {id:'motion',icon:'satellite',name:'Динамика',hint:'Два срока'},
+  {id:'pmc_archive',icon:'satellite',name:'Архив ПМЦ',hint:'Исследование · не прогноз'},
   {id:'cth',icon:'height',name:'Высота облака',hint:'В точке · по профилю'},
 ];
 
@@ -351,6 +352,7 @@ function tasks() {
   $('#taskGrid').innerHTML=TASKS.map(t=>`<button class="task-card" data-task="${t.id}">${icon(t.icon)}<span>${t.name}<small>${t.hint}</small></span></button>`).join('');
   $$('#taskGrid button').forEach(b=>b.onclick=()=>{
     if(b.dataset.task==='motion') {$('#motionOpen').click();return;}
+    if(b.dataset.task==='pmc_archive') {openPmcArchive();return;}
     clearRange();$('#product').value=b.dataset.task;
     if(b.dataset.task==='channel')$('#channel').value='9';
     productHint();requestBuild();
@@ -367,6 +369,11 @@ productHint = function() {
   const have=new Set((S.scene?.channels||[]).map(c=>c.channel));
   for(const button of $$('#taskGrid button')){
     const id=button.dataset.task,product=S.registry.products.find(p=>p.id===id);
+    if(id==='pmc_archive'){
+      button.title='Архивное исследование · экспериментальный план; кандидат не подтверждён';
+      button.setAttribute('aria-pressed','false');
+      continue;
+    }
     const required=id==='channel'?[9]:(product?.channels||[]);
     const missing=required.filter(ch=>!have.has(ch));
     const active=id===$('#product').value&&(id!=='channel'||Number($('#channel').value)===9);
@@ -511,6 +518,8 @@ drawLegend = function(l) {
     html+='<div class="legend-section-title">Цветовая шкала</div>'+bar;miniature=bar;
     if(l.product==='channel')html+='<p class="hint">За пределами шкалы — крайние цвета. Исходные значения сохранены.</p><div class="row"><button id="legendAutoRange" class="text-button">Автоконтраст</button><button id="legendFullRange" class="text-button">Весь диапазон</button></div>';
   }
+  const styleable=['absolute_temperature','temperature_difference','continuous','stored_value'].includes(l.quantity_kind)&&S.product?.files?.includes('values.tif');
+  if(styleable)html+=`<details class="legend-details"><summary>Оформление этого продукта</summary><p class="micro">Шкала сохраняется отдельно для данного продукта. Меняется только экранное отображение; values.tif и научные расчёты остаются прежними.</p><div class="row"><label>Минимум, ${escape(l.units)}<input id="productStyleMin" type="number" step="any" value="${l.display_min}"></label><label>Максимум, ${escape(l.units)}<input id="productStyleMax" type="number" step="any" value="${l.display_max}"></label></div><label>Палитра отображения<select id="productStylePalette"><option value="product-default">Исходная палитра</option><option value="ice">Холодная</option><option value="warm">Тёплая</option></select></label><button id="productStyleSave" class="tonal">Сохранить шкалу продукта</button><p id="productStyleStatus" class="micro" role="status"></p></details>`;
   if(l.stats)html+=`<details class="legend-details"><summary>Диапазон данных кадра: ${num(value(l.stats.min))}…${num(value(l.stats.max))} ${escape(unit)}</summary><p class="hint">Минимум и максимум валидных значений на расчётной сетке. Автоконтраст DN использует 2-й и 98-й процентили.</p></details>`;
 
   if(l.classes){
@@ -588,6 +597,19 @@ drawLegend = function(l) {
     $('#legendFullRange').disabled=!Number.isFinite(l.stats?.min)||!Number.isFinite(l.stats?.max);
     $('#legendFullRange').onclick=()=>{$('#displayMin').value=l.stats.min;$('#displayMax').value=Math.max(l.stats.max,l.stats.min+1);requestBuild();};
   }
+  if($('#productStylePalette'))$('#productStylePalette').value=S.product.display_style?.palette_id||'product-default';
+  if($('#productStyleSave'))$('#productStyleSave').onclick=async()=>{
+    const button=$('#productStyleSave'),status=$('#productStyleStatus');button.disabled=true;status.textContent='';
+    try{
+      const current=(await api('/api/product/style?id='+encodeURIComponent(S.product.id))).style;
+      const paletteId=$('#productStylePalette').value;
+      const palettes={ice:[[28,52,102],[56,128,174],[164,211,211],[248,250,238]],warm:[[35,41,79],[88,82,136],[198,104,91],[247,206,120]]};
+      const original=S.product.display_style_default?.palette||S.product.legend.palette;
+      const style={...current,minimum:Number($('#productStyleMin').value),maximum:Number($('#productStyleMax').value),palette_id:paletteId,palette:palettes[paletteId]||(paletteId==='product-default'?original:current.palette)};
+      const result=await api('/api/product/style', {id:S.product.id,style});await showProduct(result.product);const nextStatus=$('#productStyleStatus');if(nextStatus)nextStatus.textContent='Шкала сохранена для этого продукта.';
+    }catch(e){status.textContent=e.message;}
+    finally{button.disabled=false;}
+  };
 
   let expandedBlock = '';
   if(UI.miniLegendExpanded) {
