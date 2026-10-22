@@ -124,7 +124,7 @@
     "static/product_flow.js": "dcfaea5289e55cc2f6c94b2b620b9437a8a6b11198afe724c8619eb1f467ed9e",
     "static/reanalysis.css": "38a4dd7e30fefc5a230c036a1ead17f43df4b82d93434a018491d21123e21fe2",
     "static/reanalysis.js": "3de281c245ff45f095f1f8c968bd6a722ea5e60eae4749ac9eb8da798e046253",
-    "static/studio.js": "7c077944b6301faf173a624ab2468e62810803eb2ef7282a05ff0d0dea76b45a",
+    "static/studio.js": "0bc160ba76b7acccc46c1df87583a111fd89a5ac858a54e6a055167edc44eb90",
     "static/style.css": "9046cc44f6bc3318808e2701ef38f4d0498c605545cf7ed0e0b65e310847d3f6",
     "tests/test_analysis_http.py": "aa5e38abc1da766220ed129d518e57d033dd006adbd6e8873be38478da99d928",
     "tests/test_archive.py": "6a80cbe0d003a85dbb21f871d874b0549abd0549c05a66df843cfef494f0fd2f",

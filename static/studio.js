@@ -1113,6 +1113,7 @@ registerEvents = function() {
   bind('#productRail',()=>left('product',false));bind('#productQuick',()=>left('product'));
   bind('#closeLeft',()=>{left(UI.leftMode,false);});
   bind('#routeRail',()=>{tab('route');});
+  bind('#profilesOpen',()=>showProfiles());
   bind('#legendOpen',()=>tab('legend'));
   bind('#miniLegend', (e) => {
     if (e.target.closest('#miniLegendToggle')) {
