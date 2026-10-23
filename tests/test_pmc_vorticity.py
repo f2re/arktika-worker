@@ -37,6 +37,10 @@ class RelativeVorticityTests(unittest.TestCase):
         self.assertEqual(result["passport"]["grid"]["grid_id"], "synthetic-grid")
         self.assertEqual(result["passport"]["valid_time"], "2024-01-01T00:00:00Z")
         self.assertEqual(result["passport"]["maturity"], "experimental")
+        self.assertEqual("1.0", result["passport"]["schema_version"])
+        self.assertEqual("atmospheric_dynamics", result["passport"]["quantity_kind"])
+        self.assertEqual("not_applicable", result["passport"]["calibration"]["status"])
+        self.assertEqual("era5", result["passport"]["sources"][0]["source_id"])
         self.assertEqual(result["passport"]["claimed_source_file_sha256"], "b" * 64)
         self.assertEqual(len(result["passport"]["input_arrays_sha256"]), 64)
 

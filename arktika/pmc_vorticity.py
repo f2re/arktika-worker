@@ -13,6 +13,7 @@ import re
 from typing import Any
 
 import numpy as np
+from .product_schema import product_passport
 
 ALGORITHM_ID = "arktika.experimental_spherical_relative_vorticity"
 ALGORITHM_VERSION = "0.2.0"
@@ -159,14 +160,51 @@ def derive_relative_vorticity_850(u: Any, v: Any, latitude: Any, longitude: Any,
     input_digest = hashlib.sha256(
         np.ascontiguousarray(np.stack((eastward, northward), axis=0)).astype("<f8").tobytes()
     ).hexdigest()
-    passport = {
+    grid = {"crs": "EPSG:4326", "grid_type": grid_type,
+            "height": int(eastward.shape[0]), "width": int(eastward.shape[1]),
+            "latitude_min_deg": float(np.rad2deg(phi).min()),
+            "latitude_max_deg": float(np.rad2deg(phi).max()),
+            "longitude_unwrapped_min_deg": float(np.rad2deg(lam).min()),
+            "longitude_unwrapped_max_deg": float(np.rad2deg(lam).max()),
+            "coordinate_sha256": coordinate_digest,
+            "geolocation": "latitude_longitude_arrays", "grid_id": grid_id}
+    source_record = {"source_id": field_metadata["source"],
+                     "dataset_version": field_metadata["source_version"],
+                     "field_id": field_metadata["field_id"],
+                     "claimed_source_file_sha256": field_metadata["input_sha256"],
+                     "source_file_digest_attestation": "caller_supplied"}
+    passport = product_passport(
+        product_id="arktika.relative_vorticity.850hpa",
+        algorithm_id=ALGORITHM_ID,
+        algorithm_version=ALGORITHM_VERSION,
+        maturity="experimental",
+        quantity_kind="atmospheric_dynamics",
+        quantity="relative_vorticity",
+        units="s-1",
+        valid_time=timestamp,
+        data_kind="analysis",
+        grid=grid,
+        source_grids=[dict(grid)],
+        nodata="NaN; derivative stencils touching missing input remain missing",
+        quality_control={"status": "computed", "nonfinite_output_pixels": int(np.size(zeta) - np.isfinite(zeta).sum())},
+        sources=[source_record],
+        calibration_version="not_applicable",
+        calibration_status="not_applicable",
+        limitations=[
+            "Экспериментальная диагностика, не прогноз и не подтверждение ПМЦ.",
+            "Хэш исходного файла передан вызывающим кодом; этот чистый численный модуль не подтверждает привязку файла к массивам.",
+            "Криволинейная сетка поддерживается только как структурированная 2-D географическая mesh с невырожденным согласованным Jacobian; реальная геометрия CARRA2 здесь не проверялась.",
+            "Полярные широты |latitude| >= 87° отклоняются из-за вырожденности регулярной lat/lon метрики.",
+            "Эта функция только выводит поле вихревости; перепроецирование и детектор выполняются отдельно и не означают метеорологическую проверку.",
+        ],
+    )
+    passport.update({
         "algorithm_id": ALGORITHM_ID,
         "algorithm_version": ALGORITHM_VERSION,
         "maturity": "experimental",
-        "quantity": "relative_vorticity",
-        "level_hPa": 850,
         "units": "s-1",
         "valid_time": timestamp,
+        "level_hPa": 850,
         "source": field_metadata["source"],
         "source_version": field_metadata["source_version"],
         "source_field_id": field_metadata["field_id"],
@@ -175,28 +213,11 @@ def derive_relative_vorticity_850(u: Any, v: Any, latitude: Any, longitude: Any,
         "input_arrays_sha256": input_digest,
         "input": {"variable": "wind", "components": ["eastward_wind", "northward_wind"],
                   "units": "m s-1", "wind_reference": field_metadata["wind_reference"]},
-        "grid": {"crs": "EPSG:4326", "grid_type": grid_type,
-                 "height": int(eastward.shape[0]), "width": int(eastward.shape[1]),
-                 "latitude_min_deg": float(np.rad2deg(phi).min()),
-                 "latitude_max_deg": float(np.rad2deg(phi).max()),
-                 "longitude_unwrapped_min_deg": float(np.rad2deg(lam).min()),
-                 "longitude_unwrapped_max_deg": float(np.rad2deg(lam).max()),
-                 "coordinate_sha256": coordinate_digest,
-                 "grid_id": grid_id},
-        "nodata": "NaN; derivative stencils touching missing input remain missing",
         "method": {"equation": "(dv/dlambda - cos(phi)*du/dphi + u*sin(phi))/(a*cos(phi))",
                    "earth_radius_m": EARTH_RADIUS_M,
                    "derivative": ("second-order numpy.gradient on geographic coordinate radians"
                                   if grid_type == "regular_latitude_longitude"
                                   else "second-order row/column gradients transformed through the local spherical-coordinate Jacobian"),
-                   "boundary": "second-order one-sided derivative",
-                   "spatial_interpolation": "none"},
-        "limitations": [
-            "Экспериментальная диагностика, не прогноз и не подтверждение ПМЦ.",
-            "Хэш исходного файла передан вызывающим кодом; этот чистый численный модуль не подтверждает привязку файла к массивам.",
-            "Криволинейная сетка поддерживается только как структурированная 2-D географическая mesh с невырожденным согласованным Jacobian; реальная геометрия CARRA2 здесь не проверялась.",
-            "Полярные широты |latitude| >= 87° отклоняются из-за вырожденности регулярной lat/lon метрики.",
-            "Эта функция только выводит поле вихревости; перепроецирование и детектор выполняются отдельно и не означают метеорологическую проверку.",
-        ],
-    }
+                   "boundary": "second-order one-sided derivative", "spatial_interpolation": "none"},
+    })
     return {"values": zeta.astype(np.float32), "passport": passport}

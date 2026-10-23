@@ -45,6 +45,10 @@ class PmcTrackingTests(unittest.TestCase):
         self.assertEqual("candidate_only", track["classification"])
         self.assertEqual("not_confirmed", track["confirmation_status"])
         self.assertNotIn("genesis_location", track)
+        self.assertEqual("1.0", outputs["passport"]["schema_version"])
+        self.assertEqual({"start": "2025-01-02T00:00:00Z", "end": "2025-01-02T02:00:00Z"},
+                         outputs["passport"]["valid_period"])
+        self.assertEqual("not_assessed", outputs["passport"]["uncertainty"]["status"])
 
     def test_gap_over_one_configured_step_rejected(self):
         with self.assertRaisesRegex(ValueError, "gap"):
@@ -94,6 +98,12 @@ class PmcTrackingTests(unittest.TestCase):
         outputs = link_candidates([frame(0, []), frame(1, [])])
         self.assertEqual(0, outputs["track_count"])
         self.assertEqual([], outputs["tracks"])
+        self.assertEqual("candidate_track_catalog", outputs["passport"]["quantity_kind"])
+
+    def test_empty_input_is_not_promoted_to_a_product_without_time_or_provenance(self):
+        outputs = link_candidates([])
+        self.assertEqual(0, outputs["track_count"])
+        self.assertNotIn("passport", outputs)
 
     def test_unmatched_after_empty_frame_starts_new_left_censored_track(self):
         outputs = link_candidates([frame(0, [candidate("a", 1, 1)]),

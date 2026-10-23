@@ -11,6 +11,7 @@ from numbers import Real
 from typing import Any
 
 from pyproj import CRS
+from .product_schema import product_passport
 
 
 ALGORITHM_ID = "arktika.experimental_pmc_candidate_linker"
@@ -187,7 +188,11 @@ def link_candidates(frames: list[dict[str, Any]], *, max_step_seconds: float = 3
             tracks.append(track)
             new_active[curr_index] = {"track": track, "_candidate": candidate}
         active = new_active
-    return _result(tracks, associations, source=source, grid=grid)
+    valid_period = {
+        "start": parsed_times[0].isoformat().replace("+00:00", "Z"),
+        "end": parsed_times[-1].isoformat().replace("+00:00", "Z"),
+    }
+    return _result(tracks, associations, source=source, grid=grid, valid_period=valid_period)
 
 
 def _new_track(number: int, left_censored: bool) -> dict[str, Any]:
@@ -213,8 +218,9 @@ def _append_point(track: dict[str, Any], frame: dict[str, Any], candidate: dict[
 
 
 def _result(tracks: list[dict[str, Any]], associations: list[dict[str, Any]],
-            source: str | None = None, grid: dict[str, Any] | None = None) -> dict[str, Any]:
-    return {
+            source: str | None = None, grid: dict[str, Any] | None = None,
+            valid_period: dict[str, str] | None = None) -> dict[str, Any]:
+    result = {
         "algorithm_id": ALGORITHM_ID,
         "algorithm_version": ALGORITHM_VERSION,
         "maturity": "experimental",
@@ -227,3 +233,27 @@ def _result(tracks: list[dict[str, Any]], associations: list[dict[str, Any]],
         "unresolved_associations": associations,
         "limitations": list(LIMITATIONS),
     }
+    if source and grid and valid_period:
+        result["passport"] = product_passport(
+            product_id="arktika.pmc.candidate_tracks",
+            algorithm_id=ALGORITHM_ID,
+            algorithm_version=ALGORITHM_VERSION,
+            maturity="experimental",
+            quantity_kind="candidate_track_catalog",
+            quantity="Каталог наблюдавшихся сегментов треков кандидатов ПМЦ",
+            units="tracks",
+            valid_period=valid_period,
+            data_kind="analysis",
+            grid=dict(grid),
+            source_grids=[dict(grid)],
+            nodata="Нет кадров или связей — это не наблюдавшееся отсутствие ПМЦ.",
+            quality_control={"status": "experimental_linking",
+                             "track_count": len(tracks),
+                             "unresolved_association_count": len(associations)},
+            sources=[{"source_id": source}],
+            calibration_version="not_applicable",
+            calibration_status="not_applicable",
+            limitations=list(LIMITATIONS),
+            uncertainty={"status": "not_assessed", "method": None},
+        )
+    return result

@@ -8,8 +8,10 @@ class ProductSchemaTests(unittest.TestCase):
         return dict(product_id='channel', algorithm_id='arktika.channel', algorithm_version='1',
                     maturity='implemented', quantity_kind='stored_value', quantity='DN', units='DN',
                     valid_time='2026-01-01T00:00:00Z', data_kind='observation',
-                    grid={'crs':'EPSG:4326','width':256,'height':128},
-                    source_grids=[{'crs':'EPSG:4326','width':1024,'height':512}], nodata='NaN',
+                    grid={'crs':'EPSG:4326','width':256,'height':128,
+                          'transform':[0.1,0,-180,0,-0.1,90]},
+                    source_grids=[{'crs':'EPSG:4326','width':1024,'height':512,
+                                   'transform':[0.025,0,-180,0,-0.025,90]}], nodata='NaN',
                     quality_control={}, sources=[{'id':'source','sha256':'a'*64}],
                     calibration_version='1', calibration_status='unknown', limitations=[])
 
@@ -33,6 +35,28 @@ class ProductSchemaTests(unittest.TestCase):
         values=self.base()
         values['grid']['width']=0
         with self.assertRaisesRegex(ValueError,'сетке'):
+            product_passport(**values)
+
+    def test_rejects_grid_without_georeferencing(self):
+        values=self.base()
+        values['grid'].pop('transform')
+        with self.assertRaisesRegex(ValueError,'affine-привязку'):
+            product_passport(**values)
+
+    def test_accepts_curvilinear_grid_only_with_coordinate_digest(self):
+        values=self.base()
+        geolocation={'grid_type':'curvilinear_latitude_longitude','coordinate_sha256':'a'*64,
+                     'geolocation':'latitude_longitude_arrays'}
+        values['grid'].pop('transform')
+        values['grid'].update(geolocation)
+        values['source_grids']=[dict(values['grid'])]
+        passport=product_passport(**values)
+        self.assertEqual(passport['grid']['coordinate_sha256'],'a'*64)
+
+    def test_rejects_invalid_source_grid_geometry(self):
+        values=self.base()
+        values['source_grids']=[{'crs':'EPSG:4326','width':1024,'height':512}]
+        with self.assertRaisesRegex(ValueError,'исходной сетке'):
             product_passport(**values)
 
     def test_archive_product_can_preserve_a_valid_period_without_inventing_one_time(self):
