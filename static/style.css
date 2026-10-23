@@ -368,6 +368,14 @@ dialog.fixed-dialog .table-scroll{max-height:none;overflow:visible}
 .pmc-run-table{max-height:38vh;overflow:auto;margin:10px 0}
 .pmc-run-table table{min-width:580px}
 .pmc-run-result details{margin-top:12px}
+.pmc-archive-runner{margin:16px 0;padding:14px;border:1px solid var(--line);border-radius:14px;background:var(--surface,#fff)}
+.pmc-archive-runner h3{margin:0 0 6px;font-size:15px}
+#pmcArchiveFields{max-height:220px;overflow:auto;margin:10px 0}
+#pmcArchiveFields .check{display:flex;align-items:flex-start;gap:9px;padding:7px 3px}
+#pmcArchiveFields .check span{font-size:12px;line-height:1.45}
+#pmcArchiveTask{margin-top:10px;overflow-wrap:anywhere}
+#pmcArchiveTask p{font-size:12px;line-height:1.5}
+@media(max-width:600px){.pmc-archive-runner{padding:11px}.pmc-archive-runner .row{flex-wrap:wrap}.pmc-archive-runner .row button{flex:1 1 140px}}
 @media(max-width:600px){.pmc-run-panel{padding:12px;margin:12px 0}.pmc-run-table{margin-left:-8px;margin-right:-8px}.pmc-run-table table{font-size:10px}.pmc-run-table th,.pmc-run-table td{padding:7px 5px}}
 
 #queueDialog .dialog-body>.row{flex-wrap:wrap;align-items:stretch}

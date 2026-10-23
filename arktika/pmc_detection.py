@@ -149,7 +149,8 @@ def detect_candidates(vorticity_850: np.ndarray, *, grid: dict[str, Any],
                       valid_time: str, source: str,
                       source_field_metadata: dict[str, Any],
                       satellite_observation_mask: np.ndarray | None = None,
-                      satellite_observation_metadata: dict[str, Any] | None = None) -> dict[str, Any]:
+                      satellite_observation_metadata: dict[str, Any] | None = None,
+                      domain_mask: np.ndarray | None = None) -> dict[str, Any]:
     """Detect experimental circulation candidates from 850-hPa relative vorticity.
 
     Required grid keys include projected metric ``crs``, dimensions, cell sizes,
@@ -212,11 +213,16 @@ def detect_candidates(vorticity_850: np.ndarray, *, grid: dict[str, Any],
     smoothed = _smooth_uniform_radius(
         array, radius_km=PARAMETERS["uniform_radius_km"],
         resolution_x_m=dx, resolution_y_m=dy)
+    domain = np.ones(array.shape, dtype=bool)
+    if domain_mask is not None:
+        domain = np.asarray(domain_mask, dtype=bool)
+        if domain.shape != array.shape or not domain.any():
+            raise ValueError("domain mask must match the vorticity grid and include at least one cell")
     threshold = PARAMETERS["minimum_vorticity_s-1"]
     peak_threshold = PARAMETERS["peak_vorticity_s-1"]
     candidate_mask = np.zeros(array.shape, dtype=bool)
     candidates: list[dict[str, Any]] = []
-    for cells in _components(np.isfinite(smoothed) & (smoothed >= threshold)):
+    for cells in _components(np.isfinite(smoothed) & (smoothed >= threshold) & domain):
         ys = np.fromiter((cell[0] for cell in cells), dtype=int)
         xs = np.fromiter((cell[1] for cell in cells), dtype=int)
         peak_index = int(np.nanargmax(smoothed[ys, xs]))
@@ -248,7 +254,7 @@ def detect_candidates(vorticity_850: np.ndarray, *, grid: dict[str, Any],
         "candidate_count": len(candidates),
         "candidates": candidates,
         "satellite_comparison": compare_satellite(candidate_mask, satellite_observation_mask,
-                                                    np.isfinite(smoothed),
+                                                    np.isfinite(smoothed) & domain,
                                                     satellite_observation_metadata,grid),
         "limitations": [
             "Кандидаты не являются подтверждёнными ПМЦ или прогнозом зарождения.",
