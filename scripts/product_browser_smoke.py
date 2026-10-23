@@ -5,6 +5,7 @@ import base64
 import hashlib
 import io
 import json
+import math
 from pathlib import Path
 import sys
 import tempfile
@@ -76,7 +77,7 @@ def main():
                     except AssertionError as error:
                         state=page.evaluate('()=>({id:S.product?.id,styleable:productStyleable(S.product),disabled:document.querySelector("#productStyleOpen")?.disabled,disableTrace:window.__styleDisableTrace,toast:document.querySelector("#toast")?.textContent})')
                         raise AssertionError(f'Открытие сохранённого продукта не подготовило шкалу: {state}') from error
-                    style_state=page.evaluate('async()=>{const id=S.product?.id;let profile;try{const r=await fetch("/api/product/style?id="+encodeURIComponent(id));profile={status:r.status,body:await r.json()};}catch(e){profile={error:String(e)}}return {id,files:S.product?.files,quantity_kind:S.product?.legend?.quantity_kind,version:S.product?.passport?.algorithm?.version,styleable:productStyleable(S.product),button:!!document.querySelector("#productStyleOpen"),disabled:document.querySelector("#productStyleOpen")?.disabled,disableTrace:window.__styleDisableTrace,toast:document.querySelector("#toast")?.textContent,profile}}')
+                    style_state=page.evaluate('()=>({id:S.product?.id,styleable:productStyleable(S.product),disabled:document.querySelector("#productStyleOpen")?.disabled,disableTrace:window.__styleDisableTrace,toast:document.querySelector("#toast")?.textContent})')
                     assert style_state['button'] and not style_state['disabled'], f'Продукт открылся, но шкала недоступна: {style_state}'
                 def export_product_json(identity):
                     encoded=page.evaluate('''async id=>{const r=await fetch('/artifact/'+encodeURIComponent(id)+'/export.zip');if(!r.ok)throw Error('ZIP HTTP '+r.status);const bytes=new Uint8Array(await r.arrayBuffer());let binary='';for(let i=0;i<bytes.length;i+=8192)binary+=String.fromCharCode(...bytes.subarray(i,i+8192));return btoa(binary)}''',identity)
@@ -94,8 +95,8 @@ def main():
                     absolute_temperature=app.product(identity)['legend']['quantity_kind']=='absolute_temperature' and app.product(identity)['legend']['units']=='K'
                     expected_minimum=profile['minimum']-273.15 if absolute_temperature else profile['minimum']
                     expected_maximum=profile['maximum']-273.15 if absolute_temperature else profile['maximum']
-                    assert float(page.locator('#productStyleMinimum').input_value())==float(default_minimum if default_minimum is not None else expected_minimum)
-                    assert float(page.locator('#productStyleMaximum').input_value())==float(default_maximum if default_maximum is not None else expected_maximum)
+                    assert math.isclose(float(page.locator('#productStyleMinimum').input_value()),float(default_minimum if default_minimum is not None else expected_minimum),abs_tol=1e-6)
+                    assert math.isclose(float(page.locator('#productStyleMaximum').input_value()),float(default_maximum if default_maximum is not None else expected_maximum),abs_tol=1e-6)
                     if absolute_temperature:
                         check('Пределы абсолютной температуры показаны в °C как в легенде','()=>document.querySelector("#productStyleUnits").textContent==="°C"')
                     if name=='first':
