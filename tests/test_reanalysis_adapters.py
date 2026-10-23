@@ -153,7 +153,7 @@ class ReanalysisAdapterRegistryTests(unittest.TestCase):
                     "identity": "synthetic-field-0000000001", "credential": {"token": "test-only-secret"},
                 }, lambda _message: None)
                 metadata = result["field"]
-                metadata_text = (root / "fields" / "synthetic-field-0000000001" / "metadata.json").read_text()
+                metadata_text = (root / "fields" / "synthetic-field-0000000001" / "metadata.json").read_text(encoding="utf-8")
                 self.assertEqual(calls, ["fetch", "normalize"])
                 self.assertTrue((root / "fields" / "synthetic-field-0000000001" / "field.nc").is_file())
                 self.assertEqual(metadata["source"], "synthetic")

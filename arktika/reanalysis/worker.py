@@ -65,6 +65,7 @@ def _safe_provenance(provenance):
 def metadata(native,identity,plan,provenance,adapter):
     import numpy as np
     source=native.attrs['source'];variable=native.attrs['variable'];grid=_grid_passport(native)
+    difference_of=json.loads(native.attrs.get('difference_of','null'))
     values=np.asarray(native['value'].values)
     dataset_ids=[]
     for item in plan.get('requests',[]) if isinstance(plan,dict) else []:
@@ -73,12 +74,26 @@ def metadata(native,identity,plan,provenance,adapter):
     variable_spec=adapter.variable_spec(variable)
     if variable_spec is None:
         raise ValueError('Каталог адаптера не описывает сохранённое поле.')
+    derived=bool(difference_of)
+    product_unit=native['value'].attrs.get('units',variable_spec['unit']) if derived else variable_spec['unit']
+    algorithm_id='arktika.reanalysis.difference' if derived else native.attrs['adapter_id']
+    algorithm_version=VERSION if derived else native.attrs['adapter_version']
+    maturity='implemented' if derived else native.attrs['adapter_maturity']
+    product_id=f"reanalysis.difference.{variable}" if derived else f"reanalysis.{source}.{variable}"
+    product_sources=[]
+    if derived:
+        for item in provenance[0].get('inputs',[]) if provenance and isinstance(provenance[0],dict) else []:
+            if isinstance(item,dict) and isinstance(item.get('source'),str):
+                product_sources.append({'source_id':item['source'],'field_id':item.get('id','')})
+    if not product_sources:
+        product_sources=[{"source_id":source,"dataset_ids":dataset_ids,"adapter_id":native.attrs['adapter_id']}]
     passport=product_passport(
-        product_id=f"reanalysis.{source}.{variable}",
-        algorithm_id=native.attrs['adapter_id'],
-        algorithm_version=native.attrs['adapter_version'],
-        maturity=native.attrs['adapter_maturity'],
-        quantity_kind="physical_quantity",quantity=variable,units=variable_spec['unit'],
+        product_id=product_id,
+        algorithm_id=algorithm_id,
+        algorithm_version=algorithm_version,
+        maturity=maturity,
+        quantity_kind="physical_quantity_difference" if derived else "physical_quantity",
+        quantity=f"difference of {variable}" if derived else variable,units=product_unit,
         valid_time=native.attrs['time'],
         data_kind={"instantaneous_analysis":"analysis","analysis":"analysis","observation":"observation"}[native.attrs['time_kind']],
         grid=grid,source_grids=[dict(grid)],
@@ -86,18 +101,19 @@ def metadata(native,identity,plan,provenance,adapter):
         quality_control={"status":"passed_normalization","time_kind":native.attrs['time_kind'],
                          "valid_cells":int(np.count_nonzero(np.isfinite(values))),
                          "missing_cells":int(np.count_nonzero(~np.isfinite(values)))},
-        sources=[{"source_id":source,"dataset_ids":dataset_ids,"adapter_id":native.attrs['adapter_id']}],
+        sources=product_sources,
         calibration_version="not_applicable",calibration_status="not_applicable",
         limitations=["Паспорт подтверждает техническую нормализацию, но сам по себе не подтверждает независимую метеорологическую точность источника."])
     return {'id':identity,'source':source,'variable':variable,'passport':passport,
-            'adapter_id':native.attrs['adapter_id'],'adapter_version':native.attrs['adapter_version'],
-            'title':variable_spec['title'],'unit':native.attrs['unit'],
+            'adapter_id':algorithm_id,'adapter_version':algorithm_version,
+            'title':('Разность A−B: ' if derived else '')+variable_spec['title'],
+            'unit':product_unit if derived else native.attrs['unit'],
             'time':native.attrs['time'],'level':json.loads(native.attrs['level']),
             'time_kind':native.attrs['time_kind'],'resolution_km':native.attrs['resolution_km'],
             'area':json.loads(native.attrs['area']),'version':VERSION,
             'shape':list(native.value.shape),'wind':bool('u' in native),
             'provenance':_safe_provenance(provenance),'request':plan,
-            'difference_of':json.loads(native.attrs.get('difference_of','null')),
+            'difference_of':difference_of,
             'source_label':native.attrs.get('source_label',SOURCES.get(native.attrs['source'],{}).get('name',native.attrs['source'])),
             'created_at':dt.datetime.now(dt.timezone.utc).isoformat()}
 
@@ -197,10 +213,13 @@ def run(payload,*,registry: AdapterRegistry = DEFAULT_REGISTRY):
         if old: return {'field':old,'cached':True}
         with xr.open_dataset(payload['first']['path']) as a,xr.open_dataset(payload['second']['path']) as b:
             native=difference(a,b,payload['first']['id'],payload['second']['id'])
+        input_metadata=payload.get('input_metadata',[])
+        first_source=input_metadata[0].get('source') if input_metadata and isinstance(input_metadata[0],dict) else None
+        adapter=get_runtime_adapter(first_source,registry=registry)
         target.parent.mkdir(parents=True,exist_ok=True)
         with tempfile.TemporaryDirectory(prefix='.difference-',dir=target.parent) as temporary:
             tmp=Path(temporary);save_native(native,tmp/'field.nc')
-            meta=metadata(native,payload['identity'],{},[{'operation':'A-B','inputs':payload['input_metadata']}])
+            meta=metadata(native,payload['identity'],{},[{'operation':'A-B','inputs':input_metadata}],adapter)
             meta['sha256']=digest(tmp/'field.nc');atomic_json(tmp/'metadata.json',meta)
             if target.exists(): target.rename(target.with_name('.previous-'+target.name+'-'+uuid.uuid4().hex[:8]))
             shutil.move(str(tmp),str(target))

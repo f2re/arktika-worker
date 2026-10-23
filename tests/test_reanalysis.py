@@ -348,8 +348,8 @@ class ServiceIntegration(unittest.TestCase):
         self.app.source_credentials({'provider':'cds','clear':True})
         local_id=self.load();identity=plan()['key'];target=self.app.field_cache/identity
         copytree(self.app.field_cache/local_id,target)
-        meta=json.loads((target/'metadata.json').read_text());meta['id']=identity
-        (target/'metadata.json').write_text(json.dumps(meta))
+        meta=json.loads((target/'metadata.json').read_text(encoding='utf-8'));meta['id']=identity
+        (target/'metadata.json').write_text(json.dumps(meta),encoding='utf-8')
         result=self.app.fields_add(plan());self.app.task.join(20)
         self.assertEqual(result.get('started'),True)
         self.assertEqual(self.app.fields_state()['job']['status'],'done')
@@ -363,6 +363,24 @@ class ServiceIntegration(unittest.TestCase):
 
 @unittest.skipUnless(HAS_FIELDS,'Optional field dependencies unavailable')
 class AdditionalContracts(unittest.TestCase):
+    def test_difference_metadata_records_derived_algorithm_and_both_sources(self):
+        from arktika.reanalysis.adapters import get_runtime_adapter
+        from arktika.reanalysis.normalize import normalize
+        from arktika.reanalysis.render import difference
+        from arktika.reanalysis.worker import metadata
+        first=normalize(dataset(),plan());second=normalize(dataset(offset=1),plan())
+        for native in (first,second):
+            native.attrs.update(adapter_id='era5',adapter_version='1.0.0',adapter_maturity='implemented')
+        derived=difference(first,second,'field-a','field-b')
+        inputs=[{'id':'field-a','source':'era5'},{'id':'field-b','source':'carra2'}]
+        result=metadata(derived,'difference-id',{},[{'operation':'A-B','inputs':inputs}],get_runtime_adapter('era5'))
+        self.assertEqual(result['passport']['algorithm']['id'],'arktika.reanalysis.difference')
+        self.assertEqual(result['passport']['quantity_kind'],'physical_quantity_difference')
+        self.assertEqual(result['passport']['units'],'K')
+        self.assertEqual(result['unit'],'K')
+        self.assertEqual([item['source_id'] for item in result['passport']['sources']],['era5','carra2'])
+        self.assertTrue(result['title'].startswith('Разность A−B:'))
+
     def test_mean_time_not_analysis(self):
         from arktika.reanalysis.normalize import normalize
         ds=dataset();ds.t.attrs['cell_methods']='time: mean'
