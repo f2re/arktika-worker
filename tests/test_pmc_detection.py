@@ -1,4 +1,5 @@
 import unittest
+import json
 from unittest.mock import patch
 
 import numpy as np
@@ -6,6 +7,7 @@ import numpy as np
 from arktika.pmc_detection import (
     ALGORITHM_VERSION,
     _peak_saddle_diagnostics,
+    _local_peak_diagnostics,
     _smooth_uniform_radius,
     detect_candidates,
 )
@@ -69,18 +71,27 @@ class PmcDetectionTests(unittest.TestCase):
         self.assertEqual(self.grid, result["passport"]["grid"])
         self.assertEqual("not_assessed", result["passport"]["uncertainty"]["status"])
 
-    def test_multiple_local_maxima_are_reported_without_partitioning_candidate_area(self):
+    def test_multiple_isolated_local_maxima_partition_candidate_area(self):
         values = np.zeros((15, 15), dtype=float)
         values[7, 3:12] = 1.05e-4
         values[6:8, 4:6] = 1.8e-4
         values[6:8, 9:11] = 1.6e-4
         with patch("arktika.pmc_detection._smooth_uniform_radius", return_value=values):
-            result = self.run_detector()
+            result = self.run_detector(
+                satellite_observation_mask=np.zeros((15, 15), dtype=bool),
+                satellite_coverage_mask=np.ones((15, 15), dtype=bool),
+                satellite_observation_metadata={
+                    "source": "fixture satellite archive",
+                    "product_id": "test-visible-mask",
+                    "valid_time": "2025-01-02T06:00:00Z",
+                    "observation_id": "partition-fixture",
+                    "grid": dict(self.grid),
+                })
 
-        self.assertEqual(1, result["candidate_count"])
+        self.assertEqual(2, result["candidate_count"])
         candidate = result["candidates"][0]
         structure = candidate["peak_structure"]
-        self.assertEqual("experimental_saddle_diagnostic_only_not_partitioned", structure["status"])
+        self.assertEqual("partitioned_experimental", structure["status"])
         self.assertEqual(2, structure["local_maximum_count"])
         self.assertEqual([1.8e-4, 1.6e-4], [
             peak["peak_vorticity_s-1"] for peak in structure["local_maxima"]])
@@ -90,8 +101,11 @@ class PmcDetectionTests(unittest.TestCase):
                                structure["local_maxima"][1]["relative_isolation_contrast"])
         self.assertTrue(all(peak["isolated_by_experimental_gamma"]
                             for peak in structure["local_maxima"]))
-        self.assertEqual(13, candidate["pixel_count"])
-        self.assertEqual("0.4.0", result["algorithm_version"])
+        self.assertEqual(13, sum(item["pixel_count"] for item in result["candidates"]))
+        self.assertTrue(structure["coverage_conserved"])
+        self.assertEqual(13, result["satellite_comparison"]["metrics"]["false_positive_pixels"])
+        json.dumps(result, allow_nan=False)
+        self.assertEqual("0.5.0", result["algorithm_version"])
 
     def test_saddle_diagnostic_does_not_change_candidate_area_for_a_single_peak(self):
         result = self.run_detector()
@@ -124,6 +138,16 @@ class PmcDetectionTests(unittest.TestCase):
         peaks = [{"peak_vorticity_s-1": 1.0, "peak_pixel_rc": [0.0, 0.0],
                   "_seed_rc": [0, 0], "plateau_pixel_count": 1}]
         self.assertIsNone(_peak_saddle_diagnostics(field, component, peaks, threshold=0.5))
+
+    def test_local_peak_preview_is_bounded_when_component_has_many_maxima(self):
+        field = np.zeros((60, 60), dtype=float)
+        field[1::3, 1::3] = 2.0
+        component = np.ones_like(field, dtype=bool)
+        preview, total = _local_peak_diagnostics(field, component)
+        self.assertGreater(total, 128)
+        self.assertEqual(128, len(preview))
+        self.assertEqual(sorted(preview, key=lambda item: (
+            -item["peak_vorticity_s-1"], item["peak_pixel_rc"][0], item["peak_pixel_rc"][1])), preview)
 
     def test_archive_domain_mask_excludes_candidate_pixels_outside_region(self):
         domain = np.zeros((15, 15), dtype=bool)
