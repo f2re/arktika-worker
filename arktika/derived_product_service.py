@@ -16,6 +16,7 @@ from .download import atomic_json, digest
 
 _FIELD_ID = re.compile(r"^[0-9a-f]{24}$")
 _COMPONENTS = {"u": "eastward_wind", "v": "northward_wind"}
+_UNSET = object()
 
 
 class DerivedProductServiceMixin:
@@ -37,6 +38,7 @@ class DerivedProductServiceMixin:
         geolocation = None
         grid_signature = None
         time_signature = None
+        level_signature = _UNSET
         for input_id in spec.input_ids:
             field_id = input_ids[input_id]
             metadata = self.field(field_id)
@@ -67,8 +69,16 @@ class DerivedProductServiceMixin:
                         level = dataset["pressure_level"]
                         if (level.ndim != 0 or level.attrs.get("units") != "hPa"
                                 or metadata.get("level") is None
+                                or isinstance(metadata.get("level"), bool)
                                 or float(level.values) != float(metadata["level"])):
                             raise ValueError("Уровень давления не совпадает с кэш-карточкой.")
+                        selected_level = float(level.values)
+                        if not np.isfinite(selected_level):
+                            raise ValueError("Уровень давления должен быть конечным числом.")
+                    else:
+                        if metadata.get("level") is not None:
+                            raise ValueError("В NetCDF отсутствует заявленный уровень давления.")
+                        selected_level = None
                     variable_name = input_id if input_id in _COMPONENTS else "value"
                     variable = dataset.data_vars.get(variable_name)
                     if variable is None or variable.ndim != 2:
@@ -112,9 +122,15 @@ class DerivedProductServiceMixin:
                         "geolocation": "latitude_longitude_arrays",
                     }
                     values = np.asarray(variable.load().values)
-                    data_kind = "analysis" if metadata.get("time_kind") in (
-                        "analysis", "instantaneous_analysis"
-                    ) else "observation"
+                    data_kind_by_time_kind = {
+                        "analysis": "analysis",
+                        "instantaneous_analysis": "analysis",
+                        "observation": "observation",
+                    }
+                    try:
+                        data_kind = data_kind_by_time_kind[metadata.get("time_kind")]
+                    except KeyError:
+                        raise ValueError("Тип срока в кэше не поддерживается адаптером.") from None
                     if data_kind != spec.data_kind:
                         raise ValueError("Тип входных данных не совпадает с контрактом адаптера.")
             except (OSError, KeyError, TypeError) as exc:
@@ -128,7 +144,9 @@ class DerivedProductServiceMixin:
                 raise ValueError("Входы адаптера должны иметь одну и ту же геолокационную сетку.")
             if time_signature is not None and valid_time != time_signature:
                 raise ValueError("Входы адаптера должны иметь один точный срок UTC.")
-            grid_signature, time_signature = current_signature, valid_time
+            if level_signature is not _UNSET and selected_level != level_signature:
+                raise ValueError("Входы адаптера должны относиться к одному уровню давления.")
+            grid_signature, time_signature, level_signature = current_signature, valid_time, selected_level
             if geolocation is None:
                 geolocation = (lat, lon)
             inputs[input_id] = SourceData(
@@ -139,7 +157,7 @@ class DerivedProductServiceMixin:
                 valid_time=valid_time,
                 grid=grid,
                 source={"id": metadata["source"], "dataset": metadata["variable"],
-                        "field_id": field_id, "sha256": before},
+                        "field_id": field_id, "sha256": before, "level_hpa": selected_level},
                 data_kind=data_kind,
             )
 
@@ -151,6 +169,7 @@ class DerivedProductServiceMixin:
             with (stage / "values.npz").open("wb") as output:
                 np.savez_compressed(output, values=result.values,
                                     latitude=geolocation[0], longitude=geolocation[1])
+            values_path = stage / "values.npz"
             record = {
                 "id": identity,
                 "product_id": result.spec.product_id,
@@ -166,6 +185,8 @@ class DerivedProductServiceMixin:
                 "passport": dict(result.passport),
                 "output_status": "ready" if result.spec.maturity == "implemented" else "experimental",
                 "storage_format": "numpy_npz_with_latitude_longitude_arrays",
+                "artifacts": {"values.npz": {"sha256": digest(values_path),
+                                               "size_bytes": values_path.stat().st_size}},
             }
             atomic_json(stage / "product.json", record)
             os.replace(stage, folder)
@@ -182,6 +203,7 @@ class DerivedProductServiceMixin:
             try:
                 record = json.loads(path.read_text(encoding="utf-8"))
                 validate_product_passport(record.get("passport"))
+                self._validate_derived_artifacts(record)
                 rows.append(record)
             except (OSError, ValueError, TypeError):
                 continue
@@ -197,9 +219,19 @@ class DerivedProductServiceMixin:
             record = json.loads(path.read_text(encoding="utf-8"))
             from .product_schema import validate_product_passport
             validate_product_passport(record.get("passport"))
+            self._validate_derived_artifacts(record)
         except (OSError, ValueError, TypeError):
             raise ValueError("Производный продукт не найден или его паспорт повреждён.") from None
         artifact = self.derived_product_root / identity / name
         if not artifact.is_file():
             raise ValueError("Файл производного продукта отсутствует.")
         return artifact
+
+    def _validate_derived_artifacts(self, record):
+        artifacts = record.get("artifacts")
+        declared = artifacts.get("values.npz") if isinstance(artifacts, dict) else None
+        path = self.derived_product_root / record["id"] / "values.npz"
+        if (not isinstance(declared, dict) or not path.is_file()
+                or declared.get("sha256") != digest(path)
+                or declared.get("size_bytes") != path.stat().st_size):
+            raise ValueError("Файл производного продукта повреждён или изменён.")

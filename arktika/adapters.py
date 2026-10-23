@@ -133,7 +133,7 @@ def _source_record(source: Mapping[str, Any]) -> dict[str, Any]:
         raise ValueError("Для входного поля нужна запись источника.")
     # Accept only provenance identifiers and a content digest. Never persist auth,
     # local paths or request URLs in a derived-product passport.
-    allowed = {"id", "dataset", "field_id", "sha256", "label"}
+    allowed = {"id", "dataset", "field_id", "sha256", "label", "level_hpa"}
     forbidden = {"credential", "token", "password", "login", "path", "uri", "url"}
     if any(key.lower() in forbidden for key in source):
         raise ValueError("Реквизиты, пути и URI не являются provenance продукта.")

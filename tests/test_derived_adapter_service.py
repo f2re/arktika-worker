@@ -83,6 +83,27 @@ class DerivedAdapterServiceTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.app.run_derived_adapter({"adapter_id": "wind_speed", "inputs": self.ids})
 
+    def test_rejects_mismatched_pressure_levels(self):
+        folder = self.app.field_cache / self.ids["u"]
+        path = folder / "field.nc"
+        with xr.open_dataset(path) as opened:
+            dataset = opened.load().assign_coords(
+                pressure_level=xr.DataArray(850., attrs={"units": "hPa"}))
+        dataset.to_netcdf(path, engine="scipy")
+        metadata_path = folder / "metadata.json"
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        metadata.update(level=850, sha256=digest(path))
+        metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "одному уровню давления"):
+            self.app.run_derived_adapter({"adapter_id": "wind_speed", "inputs": self.ids})
+
+    def test_rejects_changed_saved_output(self):
+        result = self.app.run_derived_adapter({"adapter_id": "wind_speed", "inputs": self.ids})
+        artifact = self.app.derived_product_artifact(result["product"]["id"], "values.npz")
+        artifact.write_bytes(artifact.read_bytes() + b"changed")
+        with self.assertRaisesRegex(ValueError, "повреждён"):
+            self.app.derived_product_artifact(result["product"]["id"], "values.npz")
+
 
 if __name__ == "__main__":
     unittest.main()
