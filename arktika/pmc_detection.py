@@ -291,14 +291,35 @@ def compare_satellite(candidate_mask: np.ndarray,
         raise ValueError("satellite observation grid must exactly match candidate grid georeferencing")
     observed = observed.astype(bool)
     coverage = coverage.astype(bool)
+    observation = {key: (dict(observation_metadata[key]) if key == "grid"
+                         else observation_metadata[key].strip())
+                   for key in required_metadata}
+    regridding = observation_metadata.get("regridding")
+    if isinstance(regridding, dict):
+        method = regridding.get("method")
+        source_grid = regridding.get("source_grid")
+        target_grid = regridding.get("target_grid")
+        if method in {"identity", "nearest_neighbor"}:
+            try:
+                from .pmc_archive_run import validate_grid
+                from .pmc_projection import _validate_observation_source_grid
+                source_grid = _validate_observation_source_grid(source_grid, 16_000_000)
+                target_grid = validate_grid(target_grid)
+            except (TypeError, ValueError):
+                pass
+            else:
+                if _same_grid(candidate_grid, target_grid):
+                    observation["regridding"] = {
+                        "method": method,
+                        "source_grid": source_grid,
+                        "target_grid": target_grid,
+                    }
     comparison_domain = valid & coverage
     observed_pixels = int(np.count_nonzero(comparison_domain))
     if not observed_pixels:
         return {
             "status": "matched_no_coverage",
-            "observation": {key: (dict(observation_metadata[key]) if key == "grid"
-                                  else observation_metadata[key].strip())
-                            for key in required_metadata},
+            "observation": observation,
             "metrics": None,
             "coverage": {
                 "valid_model_pixels": int(np.count_nonzero(valid)),
@@ -314,9 +335,7 @@ def compare_satellite(candidate_mask: np.ndarray,
     union = tp + fp + fn
     return {
         "status": "comparison_only",
-        "observation": {key: (dict(observation_metadata[key]) if key == "grid"
-                              else observation_metadata[key].strip())
-                        for key in required_metadata},
+        "observation": observation,
         "metrics": {
             "true_positive_pixels": tp,
             "false_positive_pixels": fp,
