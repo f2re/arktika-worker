@@ -1,0 +1,41 @@
+name: Electro-L reference data
+on:
+  workflow_dispatch:
+  pull_request:
+    paths: ['.github/workflows/electrol-reference.yml']
+permissions:
+  contents: read
+jobs:
+  reference:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Retrieve official public coefficients and responses
+        run: |
+          python - <<'PY'
+          import hashlib, json, pathlib, tarfile, urllib.request
+          root=pathlib.Path('electrol-reference');root.mkdir()
+          name='rtcoef_electro-l_2_msugs_o3co2.dat'
+          archive='https://nwp-saf.eumetsat.int/downloads/rtcoef_rttov14/rttov13pred54L/rtcoef_visir_rttov13pred54L_o3co2.tar.bz2'
+          urllib.request.urlretrieve(archive,'reference.tar.bz2')
+          with tarfile.open('reference.tar.bz2','r:bz2') as t:
+              member=next(m for m in t if pathlib.PurePosixPath(m.name).name==name and m.isfile())
+              (root/name).write_bytes(t.extractfile(member).read())
+          urls={name:archive}
+          base='https://nwp-saf.eumetsat.int/downloads/rtcoef_info/visir_srf/rtcoef_electro-l_2_msugs_srf/'
+          for ch in range(4,11):
+              filename=f'rtcoef_electro-l_2_msugs_srf_ch{ch:02d}.txt'
+              urllib.request.urlretrieve(base+filename,root/filename);urls[filename]=base+filename
+          result={p.name:{'sha256':hashlib.sha256(p.read_bytes()).hexdigest(),'source':urls[p.name],'bytes':p.stat().st_size} for p in root.iterdir()}
+          (root/'sources.json').write_text(json.dumps(result,indent=2)+'\n')
+          print(json.dumps(result,indent=2))
+          print((root/name).read_text()[:4000])
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: electrol-reference
+          path: electrol-reference
+          retention-days: 7
