@@ -1,12 +1,15 @@
 """Разрешённые HTTPS-источники. Секреты не передаются CMR или хранилищу CDS."""
 from __future__ import annotations
+
 import base64
 import json
-from pathlib import Path
-from urllib.parse import urlsplit, urlencode
 import zipfile
+from pathlib import Path
+from urllib.parse import urlencode, urlsplit
+
 import numpy as np
-from .normalize import exact_slice, spatial_slice, normalize, save_native
+
+from .normalize import exact_slice, normalize, save_native, spatial_slice
 
 CDS_HOST='cds.climate.copernicus.eu'
 CDS_URL='https://'+CDS_HOST+'/api'
@@ -118,7 +121,7 @@ def data_files(path,folder):
     return [path]
 
 
-def fetch_cds(plan,credential,folder,progress):
+def fetch_cds(plan,credential,folder,progress,*,normalizer=normalize):
     import cdsapi
     import xarray as xr
     if credential.get('provider')!='cds' or not credential.get('token'):
@@ -145,7 +148,7 @@ def fetch_cds(plan,credential,folder,progress):
                 for p in files: opened.append(xr.open_dataset(p))
                 # Multiple NetCDF files can contain separate wind components.
                 ds=xr.merge(opened,compat='no_conflicts',join='exact') if len(opened)>1 else opened[0]
-                results.append(normalize(ds,plan,item['request']['area']).load())
+                results.append(normalizer(ds,plan,item['request']['area']).load())
             finally:
                 for ds in opened: ds.close()
             provenance.append({'dataset':item['dataset'],'request':item['request'],'schema_id':schema.get('id')})
@@ -170,7 +173,7 @@ def cmr_candidates(result,dataset,date):
     return [unique[k] for k in sorted(unique)]
 
 
-def fetch_merra(plan,credential,folder,progress):
+def fetch_merra(plan,credential,folder,progress,*,normalizer=normalize):
     import xarray as xr
     if credential.get('provider')!='earthdata': raise AccessError('Настройте NASA Earthdata в «Источниках данных».')
     date=plan['time'][:10];results=[];provenance=[]
@@ -198,7 +201,7 @@ def fetch_merra(plan,credential,folder,progress):
                 missing=set(item['variables'])-set(ds.data_vars)
                 if missing: raise AccessError('В коллекции MERRA-2 отсутствуют переменные '+', '.join(sorted(missing)))
                 selected=ds[item['variables']]
-                results.append(normalize(selected,plan,item['area']).load())
+                results.append(normalizer(selected,plan,item['area']).load())
             provenance.append(dict(candidate,dataset=item['dataset'],version=item['version'],variables=item['variables'],area=item['area'],transport='OPeNDAP subset'))
     return results,provenance
 

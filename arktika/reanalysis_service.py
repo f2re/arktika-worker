@@ -1,26 +1,31 @@
 """API полей: задачи, проверяемый кэш, отображение и сохранённый стек слоёв."""
 from __future__ import annotations
+
 import copy
 import hashlib
 import io
 import json
 import math
-from pathlib import Path
 import re
 import tempfile
 import threading
 import uuid
 import zipfile
+from pathlib import Path
+
 from .download import atomic_json, digest
-from .era5_runtime import ensure_runtime, runtime_info, run_process, runtime_env
+from .era5_runtime import ensure_runtime, run_process, runtime_env, runtime_info
 from .geo import grid
-from .network import Cancelled, redact
-from .reanalysis.catalog import SOURCES, catalogue, request_plan, VERSION
-from .pmc_archive import (_times as pmc_archive_times, _utc_hour as pmc_utc_hour,
-                          build_plan as build_pmc_archive_plan)
-from .pmc_archive_run import (MAX_FIELDS as MAX_PMC_ARCHIVE_FIELDS,
-                              build_archive_report, validate_grid as validate_pmc_archive_grid)
 from .model import iso, now
+from .network import Cancelled, redact
+from .pmc_archive import _times as pmc_archive_times
+from .pmc_archive import _utc_hour as pmc_utc_hour
+from .pmc_archive import build_plan as build_pmc_archive_plan
+from .pmc_archive_run import MAX_FIELDS as MAX_PMC_ARCHIVE_FIELDS
+from .pmc_archive_run import build_archive_report
+from .pmc_archive_run import validate_grid as validate_pmc_archive_grid
+from .reanalysis.adapters import get_runtime_adapter
+from .reanalysis.catalog import SOURCES, VERSION, catalogue, request_plan
 
 ROOT=Path(__file__).resolve().parents[1]
 ID=re.compile(r'^[0-9a-f]{24}$')
@@ -28,6 +33,14 @@ TASK_ID=re.compile(r'^[0-9a-f]{32}$')
 
 
 class ReanalysisMixin:
+    def _adapter_credential(self, source):
+        """Use a registered adapter's shared provider without storing secrets in its state."""
+        provider=get_runtime_adapter(source).auth_provider
+        if provider=='cds': return self.source_credential('era5')
+        if provider=='earthdata': return self.source_credential('merra2')
+        if provider=='none': return {}
+        raise ValueError('Для этого адаптера не подключён провайдер реквизитов.')
+
     def _fields_init(self):
         self._sources_init()
         with self.lock:
@@ -341,10 +354,16 @@ class ReanalysisMixin:
         if (not isinstance(action,dict) and result.get('status')=='interrupted'
                 and result.get('pending',{}).get('kind')=='remote'):
             source=result['pending']['spec']['source']
-            action={'code':'credentials_required','provider':'cds' if source in ('era5','carra2') else 'earthdata','source':source}
+            try: provider=get_runtime_adapter(source).auth_provider
+            except ValueError: provider=None
+            if provider in ('cds','earthdata'):
+                action={'code':'credentials_required','provider':provider,'source':source}
         if result.get('status') in ('needs_action','interrupted') and isinstance(action,dict):
-            if action.get('code')=='credentials_required' and action.get('provider') in ('cds','earthdata') and action.get('source') in ('era5','carra2','merra2'):
-                result['needs_action']={k:action[k] for k in ('code','provider','source')}
+            source=action.get('source')
+            try: provider=get_runtime_adapter(source).auth_provider
+            except ValueError: provider=None
+            if action.get('code')=='credentials_required' and provider in ('cds','earthdata') and action.get('provider')==provider:
+                result['needs_action']={'code':'credentials_required','provider':provider,'source':source}
         if 'status' not in result: result['status']='idle'
         return result
 
@@ -423,10 +442,11 @@ class ReanalysisMixin:
             if path.stat().st_size>1024**3: raise ValueError('Файл больше 1 ГиБ. Сначала выделите область и уровни.')
             identity=hashlib.sha256((identity+digest(path)).encode()).hexdigest()[:24]
         else:
-            credential=self.source_credential(plan['source'])
+            adapter=get_runtime_adapter(plan['source'])
+            credential=self._adapter_credential(plan['source'])
             # Cached fields remain usable without credentials after a server restart.
-            if not credential and not (self.field_cache/identity/'metadata.json').is_file():
-                provider='cds' if plan['source'] in ('era5','carra2') else 'earthdata'
+            if adapter.auth_provider!='none' and not credential and not (self.field_cache/identity/'metadata.json').is_file():
+                provider=adapter.auth_provider
                 with self.lock:
                     if self.busy: raise ValueError('Сначала завершите или отмените текущую операцию.')
                     task_id=uuid.uuid4().hex
@@ -457,10 +477,11 @@ class ReanalysisMixin:
             spec=self._safe_field_spec(pending.get('spec'))
             if not spec: raise ValueError('Сохранённый план задачи повреждён.')
         plan=request_plan(spec)
-        credential=self.source_credential(plan['source'])
+        adapter=get_runtime_adapter(plan['source'])
+        credential=self._adapter_credential(plan['source'])
         cache_id=plan['key']
-        if not credential and not (self.field_cache/cache_id/'metadata.json').is_file():
-            provider='cds' if plan['source'] in ('era5','carra2') else 'earthdata'
+        if adapter.auth_provider!='none' and not credential and not (self.field_cache/cache_id/'metadata.json').is_file():
+            provider=adapter.auth_provider
             action={'code':'credentials_required','provider':provider,'source':plan['source']}
             with self.lock:
                 # Recheck scope before updating in case a different job replaced it.
