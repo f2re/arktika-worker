@@ -253,6 +253,7 @@ class Handler(BaseHTTPRequestHandler):
                         'maturity':field['maturity'],'source':field['source'],'valid_time':field['valid_time'],
                         'candidate_count':field['candidate_count'],'candidates':candidates,
                         'grid':field['grid'],'field_passport':field['field_passport'],
+                        'detector_passport':field['passport'],
                         'input_coverage':field['input_coverage'],
                         'satellite_comparison':field['satellite_comparison'],
                         'parameters':field['parameters'],'limitations':field['limitations']}

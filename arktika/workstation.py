@@ -26,6 +26,7 @@ from .sources import SourceManagerMixin
 from .reanalysis_service import ReanalysisMixin
 from .product_styles import ProductStyleStore
 from .adapters import AdapterRegistry,WindSpeedAdapter
+from .product_schema import validate_product_passport
 class Workstation(ReanalysisMixin, SourceManagerMixin, AutoCalibrationMixin, ProductFlowMixin, AnalysisMixin, App):
  def __init__(self,state_dir,download_dir=None,token='',config=None,client=None):
   self.config=config or {};super().__init__(state_dir,download_dir,token,client or AuthClient(token,self.config.get('oauth')))
@@ -289,14 +290,22 @@ class Workstation(ReanalysisMixin, SourceManagerMixin, AutoCalibrationMixin, Pro
   rows=[]
   for p in self.product_root.glob('*/product.json'):
    if not re.fullmatch(r'[0-9a-f]{24}',p.parent.name):continue
-   try:rows.append(json.loads(p.read_text(encoding='utf-8')))
+   try:
+    item=json.loads(p.read_text(encoding='utf-8'))
+    validate_product_passport(item.get('passport'))
+    rows.append(item)
    except (ValueError,OSError):continue
   return sorted(rows,key=lambda x:(x['time'],x['id']),reverse=True)
  def product(self,identity):
   if not re.fullmatch(r'[0-9a-f]{24}',identity):raise ValueError('Неверный идентификатор продукта.')
   p=self.product_root/identity/'product.json'
   if not p.exists():raise ValueError('Продукт не найден.')
-  return json.loads(p.read_text(encoding='utf-8'))
+  try:
+   item=json.loads(p.read_text(encoding='utf-8'))
+   validate_product_passport(item.get('passport'))
+   return item
+  except (ValueError,TypeError) as exc:
+   raise ValueError('Паспорт сохранённого продукта повреждён или несовместим.') from exc
  def artifact(self,identity,name):
   p=self.product(identity)
   if name not in p['files']:raise ValueError('Этот файл не относится к продукту.')
