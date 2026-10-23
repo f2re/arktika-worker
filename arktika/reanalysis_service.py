@@ -187,7 +187,8 @@ class ReanalysisMixin:
         records=self._pmc_archive_frame_records(job)
         return build_archive_report(task_id=identity,plan=job['plan'],expected_times=expected,
             interval_hours={source:SOURCES[source]['step_hours'] for source in job['plan']['sources']},
-            frame_records=records,cached_fields=self.fields_state()['fields'])
+            frame_records=records,cached_fields=self.fields_state()['fields'],
+            target_grid=job.get('target_grid'))
 
     def pmc_archive_state(self, data=None):
         self._fields_init()
@@ -279,8 +280,8 @@ class ReanalysisMixin:
         seen=set()
         for meta in metas:
             source,time=meta.get('source'),meta.get('time')
-            if source not in ('era5','merra2'):
-                raise ValueError('Архивный детектор сейчас поддерживает только ERA5 и MERRA-2; CARRA2 можно подключить отдельным адаптером после верификации.')
+            if source not in ('era5','carra2','merra2'):
+                raise ValueError('Архивный детектор поддерживает только ERA5, CARRA2 и MERRA-2.')
             if source not in scheduled or time not in scheduled[source]:
                 raise ValueError('Каждое поле должно принадлежать выбранному источнику и сроку UTC плана.')
             if meta.get('variable')!='wind' or meta.get('level')!=850 or meta.get('time_kind')!='instantaneous_analysis':

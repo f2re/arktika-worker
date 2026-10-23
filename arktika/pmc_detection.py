@@ -21,6 +21,8 @@ import numpy as np
 from pyproj import CRS
 from scipy import ndimage
 
+from .product_schema import product_passport
+
 ALGORITHM_ID = "arktika.experimental_pmc_candidates"
 ALGORITHM_VERSION = "0.2.0"
 METHOD_REFERENCE = "Fang et al. (2025), IMPMCT, doi:10.5194/essd-17-6049-2025"
@@ -96,10 +98,18 @@ def compare_satellite(candidate_mask: np.ndarray,
                       satellite_observation_mask: np.ndarray | None,
                       valid_mask: np.ndarray | None = None,
                       observation_metadata: dict[str, Any] | None = None,
-                      candidate_grid: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Return spatial contingency metrics only for a supplied observed mask."""
+                      candidate_grid: dict[str, Any] | None = None,
+                      coverage_mask: np.ndarray | None = None) -> dict[str, Any]:
+    """Compare candidates only where the satellite supplied a valid observation.
+
+    A missing coverage mask is rejected: a zero in a label mask means an
+    observed negative only inside coverage, while every pixel outside coverage
+    remains unknown and is excluded from contingency metrics.
+    """
     if satellite_observation_mask is None:
         return {"status": "not_supplied", "metrics": None}
+    if coverage_mask is None:
+        raise ValueError("satellite comparison requires an explicit coverage mask")
     required_metadata = ("source", "product_id", "valid_time", "observation_id", "grid")
     if not isinstance(observation_metadata, dict) or any(
             key != "grid" and (not isinstance(observation_metadata.get(key), str) or
@@ -112,13 +122,35 @@ def compare_satellite(candidate_mask: np.ndarray,
     observed = np.asarray(satellite_observation_mask)
     if observed.shape != candidates.shape or observed.dtype.kind not in "biu":
         raise ValueError("satellite observation mask must be a same-grid boolean/integer array")
+    coverage = np.asarray(coverage_mask)
+    if coverage.shape != candidates.shape or coverage.dtype.kind not in "biu":
+        raise ValueError("satellite coverage mask must be a same-grid boolean/integer array")
+    if not np.isin(observed, (0, 1)).all() or not np.isin(coverage, (0, 1)).all():
+        raise ValueError("satellite label and coverage masks must contain only 0/1 values")
     if not _same_grid(candidate_grid, observation_metadata.get("grid")):
         raise ValueError("satellite observation grid must exactly match candidate grid georeferencing")
     observed = observed.astype(bool)
-    tp = int(np.count_nonzero(valid & candidates & observed))
-    fp = int(np.count_nonzero(valid & candidates & ~observed))
-    fn = int(np.count_nonzero(valid & ~candidates & observed))
-    tn = int(np.count_nonzero(valid & ~candidates & ~observed))
+    coverage = coverage.astype(bool)
+    comparison_domain = valid & coverage
+    observed_pixels = int(np.count_nonzero(comparison_domain))
+    if not observed_pixels:
+        return {
+            "status": "matched_no_coverage",
+            "observation": {key: (dict(observation_metadata[key]) if key == "grid"
+                                  else observation_metadata[key].strip())
+                            for key in required_metadata},
+            "metrics": None,
+            "coverage": {
+                "valid_model_pixels": int(np.count_nonzero(valid)),
+                "observed_pixels": 0,
+                "unknown_pixels": int(np.count_nonzero(valid)),
+                "candidate_pixels_outside_coverage": int(np.count_nonzero(valid & candidates)),
+            },
+        }
+    tp = int(np.count_nonzero(comparison_domain & candidates & observed))
+    fp = int(np.count_nonzero(comparison_domain & candidates & ~observed))
+    fn = int(np.count_nonzero(comparison_domain & ~candidates & observed))
+    tn = int(np.count_nonzero(comparison_domain & ~candidates & ~observed))
     union = tp + fp + fn
     return {
         "status": "comparison_only",
@@ -133,6 +165,12 @@ def compare_satellite(candidate_mask: np.ndarray,
             "intersection_over_union": tp / union if union else None,
             "probability_of_detection": tp / (tp + fn) if tp + fn else None,
             "false_alarm_ratio": fp / (tp + fp) if tp + fp else None,
+        },
+        "coverage": {
+            "valid_model_pixels": int(np.count_nonzero(valid)),
+            "observed_pixels": observed_pixels,
+            "unknown_pixels": int(np.count_nonzero(valid & ~coverage)),
+            "candidate_pixels_outside_coverage": int(np.count_nonzero(valid & candidates & ~coverage)),
         },
         "interpretation": "Пространственное сравнение масок; не подтверждает физическую классификацию ПМЦ.",
     }
@@ -150,6 +188,7 @@ def detect_candidates(vorticity_850: np.ndarray, *, grid: dict[str, Any],
                       source_field_metadata: dict[str, Any],
                       satellite_observation_mask: np.ndarray | None = None,
                       satellite_observation_metadata: dict[str, Any] | None = None,
+                      satellite_coverage_mask: np.ndarray | None = None,
                       domain_mask: np.ndarray | None = None) -> dict[str, Any]:
     """Detect experimental circulation candidates from 850-hPa relative vorticity.
 
@@ -239,6 +278,44 @@ def detect_candidates(vorticity_850: np.ndarray, *, grid: dict[str, Any],
             "peak_pixel_rc": [int(ys[peak_index]), int(xs[peak_index])],
             "centroid_pixel_rc": [float(np.mean(ys)), float(np.mean(xs))],
         })
+    limitations = [
+        "Кандидаты не являются подтверждёнными ПМЦ или прогнозом зарождения.",
+        "Реализованы сглаживание и пороговые компоненты; трекинг, steering flow и опубликованные QC-процедуры отсутствуют.",
+        "Спутниковое сравнение описывает только пиксельное перекрытие заданных масок и не является независимой метеорологической верификацией.",
+        "Искажение масштаба конкретной проекции не оценивается; пригодность сетки для заданной широты требует отдельной проверки.",
+    ]
+    valid_pixels = int(np.count_nonzero(np.isfinite(smoothed) & domain))
+    source_record = {"source_id": source.strip()}
+    for key in ("product_id", "field_id", "input_sha256"):
+        value = source_field_metadata.get(key)
+        if isinstance(value, str) and value.strip():
+            source_record[key] = value.strip()
+    passport = product_passport(
+        product_id="arktika.pmc.candidates",
+        algorithm_id=ALGORITHM_ID,
+        algorithm_version=ALGORITHM_VERSION,
+        maturity="experimental",
+        quantity_kind="categorical_classification",
+        quantity="Кандидаты циркуляции, не подтверждённые ПМЦ",
+        units="1",
+        valid_time=timestamp,
+        data_kind="analysis",
+        grid={key: grid[key] for key in required},
+        source_grids=[dict(source_field_metadata.get("grid", grid))],
+        nodata="NaN входной вихревости исключён из обработки; отсутствующее наблюдение не считается отрицательным классом",
+        quality_control={
+            "status": "experimental_screening",
+            "valid_cells": valid_pixels,
+            "missing_or_outside_domain_cells": int(array.size - valid_pixels),
+            "candidate_count": len(candidates),
+            "satellite_comparison_status": "not_supplied" if satellite_observation_mask is None else "provided",
+        },
+        sources=[source_record],
+        calibration_version="not_applicable",
+        calibration_status="not_applicable",
+        limitations=limitations,
+        uncertainty={"status": "not_assessed", "method": None},
+    )
     return {
         "algorithm_id": ALGORITHM_ID,
         "algorithm_version": ALGORITHM_VERSION,
@@ -250,16 +327,13 @@ def detect_candidates(vorticity_850: np.ndarray, *, grid: dict[str, Any],
                   "shape": list(array.shape), "time": timestamp,
                   "source_field_metadata_required": ["isobaric_level_hPa", "quantity", "units", "time"]},
         "grid": {key: grid[key] for key in required},
+        "passport": passport,
         "parameters": dict(PARAMETERS),
         "candidate_count": len(candidates),
         "candidates": candidates,
         "satellite_comparison": compare_satellite(candidate_mask, satellite_observation_mask,
                                                     np.isfinite(smoothed) & domain,
-                                                    satellite_observation_metadata,grid),
-        "limitations": [
-            "Кандидаты не являются подтверждёнными ПМЦ или прогнозом зарождения.",
-            "Реализованы сглаживание и пороговые компоненты; трекинг, steering flow и опубликованные QC-процедуры отсутствуют.",
-            "Спутниковое сравнение описывает только пиксельное перекрытие заданных масок и не является независимой метеорологической верификацией.",
-            "Искажение масштаба конкретной проекции не оценивается; пригодность сетки для заданной широты требует отдельной проверки.",
-        ],
+                                                    satellite_observation_metadata,grid,
+                                                    satellite_coverage_mask),
+        "limitations": limitations,
     }

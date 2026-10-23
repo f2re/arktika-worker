@@ -35,6 +35,21 @@ class ProductSchemaTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'сетке'):
             product_passport(**values)
 
+    def test_archive_product_can_preserve_a_valid_period_without_inventing_one_time(self):
+        values=self.base()
+        values.pop('valid_time')
+        values['valid_period']={'start':'2026-01-01T00:00:00Z','end':'2026-01-02T00:00:00Z'}
+        passport=product_passport(**values)
+        self.assertNotIn('valid_time',passport)
+        self.assertEqual(values['valid_period'],passport['valid_period'])
+
+    def test_rejects_invalid_or_reversed_valid_period(self):
+        values=self.base()
+        values.pop('valid_time')
+        values['valid_period']={'start':'2026-01-02T00:00:00Z','end':'2026-01-01T00:00:00Z'}
+        with self.assertRaisesRegex(ValueError,'раньше'):
+            product_passport(**values)
+
 
 if __name__ == '__main__':
     unittest.main()

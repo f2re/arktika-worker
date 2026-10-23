@@ -52,10 +52,12 @@ class PmcArchiveRunTests(unittest.TestCase):
              "status": "error", "error": "synthetic processing failure"},
         ]
         report = build_archive_report(
-            task_id="t" * 32, plan={"sources": ["era5"]}, expected_times=expected,
+            task_id="t" * 32, plan={"sources": ["era5"], "start": expected["era5"][0],
+                                     "end": expected["era5"][-1]}, expected_times=expected,
             interval_hours={"era5": 1}, frame_records=records,
             cached_fields=[{"source": "era5", "variable": "wind", "level": 850,
                             "time": expected["era5"][0]}],
+            target_grid=GRID,
         )
         source = report["coverage"][0]
         self.assertEqual("partial", report["status"])
@@ -65,6 +67,10 @@ class PmcArchiveRunTests(unittest.TestCase):
         self.assertEqual(expected["era5"][1:], source["unprocessed_preview_utc"])
         self.assertEqual("not_supplied", report["satellite_comparison"]["status"])
         self.assertNotIn("genesis_location", report["tracks_by_source"][0]["tracks"][0])
+        self.assertEqual({"start": expected["era5"][0], "end": expected["era5"][-1]},
+                         report["passport"]["valid_period"])
+        self.assertEqual("candidate_track_catalog", report["passport"]["quantity_kind"])
+        self.assertEqual("not_assessed", report["passport"]["uncertainty"]["status"])
 
     def test_tracks_are_split_at_missing_times_and_marked_left_censored(self):
         expected = {"era5": [f"2024-01-01T{hour:02d}:00:00Z" for hour in range(4)]}
@@ -77,11 +83,27 @@ class PmcArchiveRunTests(unittest.TestCase):
         report = build_archive_report(
             task_id="t" * 32, plan={"sources": ["era5"]}, expected_times=expected,
             interval_hours={"era5": 1}, frame_records=records, cached_fields=[],
+            target_grid=GRID,
         )
         tracks = report["tracks_by_source"][0]["tracks"]
         self.assertEqual(2, len(tracks))
         self.assertTrue(all(track["left_censored"] for track in tracks))
         self.assertEqual(2, report["coverage"][0]["unprocessed_steps"])
+
+    def test_all_failed_archive_does_not_claim_a_product_passport(self):
+        expected = {"era5": ["2024-01-01T00:00:00Z"]}
+        report = build_archive_report(
+            task_id="t" * 32,
+            plan={"sources": ["era5"], "start": expected["era5"][0],
+                  "end": expected["era5"][0]},
+            expected_times=expected,
+            interval_hours={"era5": 1},
+            frame_records=[{"field_id": "a" * 24, "source": "era5",
+                            "valid_time": expected["era5"][0], "status": "error",
+                            "error": "synthetic failure"}],
+            cached_fields=[], target_grid=GRID,
+        )
+        self.assertNotIn("passport", report)
 
 
 if __name__ == "__main__":

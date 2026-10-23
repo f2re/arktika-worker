@@ -68,6 +68,36 @@ class PmcArchivePlanTests(unittest.TestCase):
             finally:
                 app.close()
 
+    def test_cached_carra2_fields_can_run_candidate_archive(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);app=Workstation(root/'state',download_dir=root/'downloads')
+            identity='c'*24
+            field={'id':identity,'source':'carra2','variable':'wind','level':850,
+                   'time_kind':'instantaneous_analysis','time':'2024-01-01T00:00:00Z'}
+            grid={'crs':'EPSG:3413','width':20,'height':20,
+                  'transform':[10000,0,-100000,0,-10000,100000],
+                  'resolution_x_m':10000,'resolution_y_m':10000}
+            plan=request(sources=['carra2'],start='2024-01-01T00:00:00Z',end='2024-01-01T00:00:00Z')
+            result={'algorithm_id':'arktika.experimental_pmc_candidates','algorithm_version':'0.2.0',
+                    'maturity':'experimental','source':'carra2','valid_time':field['time'],
+                    'grid':dict(grid),'candidate_count':0,'candidates':[]}
+            try:
+                with patch.object(app,'fields_state',return_value={'fields':[field]}), \
+                     patch.object(app,'field',return_value=field), \
+                     patch.object(app,'experimental_pmc_candidates',return_value=result):
+                    started=app.pmc_archive_start({'plan':plan,'field_ids':[identity],
+                                                   'target_grid':grid})
+                    self.assertEqual('running',started['status'])
+                    deadline=time.monotonic()+5
+                    while time.monotonic()<deadline:
+                        state=app.pmc_archive_state()
+                        if state['status']!='running':break
+                        time.sleep(.01)
+                    self.assertEqual('completed',state['status'])
+                    self.assertTrue(app.pmc_archive_report(started['id']))
+            finally:
+                app.close()
+
     def test_cached_archive_run_persists_partial_report_and_separates_time_segments(self):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp);app=Workstation(root/'state',download_dir=root/'downloads')
