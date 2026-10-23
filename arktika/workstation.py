@@ -43,7 +43,7 @@ class Workstation(ReanalysisMixin, SourceManagerMixin, AutoCalibrationMixin, Pro
   self.sync_downloads()
   result=super().state();result.update(view_settings=self.store.setting('view_settings',{}),version=__version__,calibration=self.cal,oauth=dict(client_id=self.client.oauth.get('client_id',''),redirect_uri=self.client.oauth.get('redirect_uri',''),refresh_present=bool(self.client.refresh_token)))
   return result
- def experimental_vorticity_850(self,identity):
+ def experimental_vorticity_850(self,identity,*,target_grid=None):
   """Derive an experimental 850-hPa scalar from a checksum-verified wind cache."""
   import xarray as xr
   from .pmc_vorticity import derive_relative_vorticity_850
@@ -119,6 +119,30 @@ class Workstation(ReanalysisMixin, SourceManagerMixin, AutoCalibrationMixin, Pro
   passport['source_file_digest_attestation']='verified against cached field.nc digest before and after loading'
   passport['source_normalizer_version']=meta.get('version')
   passport['limitations'].append('Ревизия исходного набора данных не сохранена в кэше; версия нормализатора не выдаётся за ревизию источника.')
+  if target_grid is not None:
+   from .pmc_projection import reproject_vorticity_to_grid
+   result=reproject_vorticity_to_grid(result['values'],latitude,longitude,
+                                      target_grid=target_grid,source_passport=passport)
+  return result
+ def experimental_pmc_candidates(self,identity,*,target_grid,satellite_observation_mask=None,
+                                 satellite_observation_metadata=None):
+  """Run the explicitly experimental single-time detector on a chosen metric grid."""
+  from .pmc_detection import detect_candidates
+  from .pmc_projection import MAX_DETECTOR_PROJECTION_SCALE_ERROR
+  field=self.experimental_vorticity_850(identity,target_grid=target_grid)
+  passport=field['passport']
+  if passport['projection_scale']['maximum_relative_error']>MAX_DETECTOR_PROJECTION_SCALE_ERROR:
+   raise ValueError('Искажение масштаба целевой проекции превышает 5%; сетка непригодна для этого детектора.')
+  coverage=passport['input_coverage']
+  if coverage['valid_pixels']==0:
+   raise ValueError('В целевой сетке нет валидного покрытия исходного поля; кандидаты не рассчитаны.')
+  result=detect_candidates(field['values'],grid=field['grid'],valid_time=passport['valid_time'],
+                           source=passport['source'],source_field_metadata=passport,
+                           satellite_observation_mask=satellite_observation_mask,
+                           satellite_observation_metadata=satellite_observation_metadata)
+  result['field_passport']=passport
+  result['input_coverage']=coverage
+  result['projection_scale_tolerance_relative']=MAX_DETECTOR_PROJECTION_SCALE_ERROR
   return result
  def derived_adapter_catalogue(self):
   return {'schema_version':'1.0','adapters':self.derived_adapters.catalogue()}

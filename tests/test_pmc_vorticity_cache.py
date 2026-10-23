@@ -7,6 +7,8 @@ from unittest.mock import patch
 
 import numpy as np
 import xarray as xr
+from rasterio.transform import from_bounds
+from rasterio.warp import transform_bounds
 
 from arktika.download import digest
 from arktika.workstation import Workstation
@@ -78,6 +80,41 @@ class CachedVorticity(unittest.TestCase):
         self.assertEqual(result["passport"]["source_version"],
                          "unavailable_from_normalized_cache")
         self.assertNotIn(str(self.root), json.dumps(result["passport"]))
+
+    def test_cache_to_projected_single_time_candidate_pipeline(self):
+        bounds = transform_bounds("EPSG:4326", "EPSG:3413", 20.0, 68.0, 23.0, 70.0,
+                                  densify_pts=21)
+        transform = from_bounds(*bounds, 32, 32)
+        grid = {"crs": "EPSG:3413", "width": 32, "height": 32,
+                "transform": transform, "resolution_x_m": abs(transform.a),
+                "resolution_y_m": abs(transform.e)}
+        result = self.app.experimental_pmc_candidates(self.identity, target_grid=grid)
+        self.assertEqual(result["maturity"], "experimental")
+        self.assertEqual(result["source"], "era5")
+        self.assertEqual(result["field_passport"]["grid"]["crs"], "EPSG:3413")
+        self.assertEqual(result["field_passport"]["grid"]["width"], 32)
+        self.assertEqual(result["field_passport"]["grid"]["height"], 32)
+        self.assertTrue(all(item["classification"] == "candidate" for item in result["candidates"]))
+
+    def test_candidate_pipeline_rejects_projection_scale_distortion(self):
+        bounds = transform_bounds("EPSG:4326", "EPSG:3857", 20.0, 68.0, 23.0, 70.0,
+                                  densify_pts=21)
+        transform = from_bounds(*bounds, 32, 32)
+        grid = {"crs": "EPSG:3857", "width": 32, "height": 32,
+                "transform": transform, "resolution_x_m": abs(transform.a),
+                "resolution_y_m": abs(transform.e)}
+        with self.assertRaisesRegex(ValueError, "Искажение масштаба"):
+            self.app.experimental_pmc_candidates(self.identity, target_grid=grid)
+
+    def test_candidate_pipeline_rejects_target_without_source_coverage(self):
+        bounds = transform_bounds("EPSG:4326", "EPSG:3413", 20.0, 60.0, 23.0, 61.0,
+                                  densify_pts=21)
+        transform = from_bounds(*bounds, 32, 32)
+        grid = {"crs": "EPSG:3413", "width": 32, "height": 32,
+                "transform": transform, "resolution_x_m": abs(transform.a),
+                "resolution_y_m": abs(transform.e)}
+        with self.assertRaisesRegex(ValueError, "нет валидного покрытия"):
+            self.app.experimental_pmc_candidates(self.identity, target_grid=grid)
 
     def test_rejects_wrong_source_and_metadata(self):
         self.metadata["source"] = "carra2"
