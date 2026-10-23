@@ -127,7 +127,8 @@ class Workstation(ReanalysisMixin, SourceManagerMixin, AutoCalibrationMixin, Pro
                                       target_grid=target_grid,source_passport=passport)
   return result
  def experimental_pmc_candidates(self,identity,*,target_grid,satellite_observation_mask=None,
-                                 satellite_observation_metadata=None,region_bounds=None):
+                                 satellite_observation_metadata=None,satellite_coverage_mask=None,
+                                 region_bounds=None):
   """Run the explicitly experimental single-time detector on a chosen metric grid."""
   from .pmc_detection import detect_candidates
   from .pmc_projection import MAX_DETECTOR_PROJECTION_SCALE_ERROR
@@ -155,6 +156,7 @@ class Workstation(ReanalysisMixin, SourceManagerMixin, AutoCalibrationMixin, Pro
                            source=passport['source'],source_field_metadata=passport,
                            satellite_observation_mask=satellite_observation_mask,
                            satellite_observation_metadata=satellite_observation_metadata,
+                           satellite_coverage_mask=satellite_coverage_mask,
                            domain_mask=domain_mask)
   if region_bounds is not None:
    result['domain']={'geographic_bounds_north_west_south_east':list(region_bounds),

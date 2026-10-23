@@ -11,6 +11,7 @@ const qs=obj=>new URLSearchParams(obj).toString();
 let toastTimer;
 function toast(text){$('#toast').textContent=text;$('#toast').hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('#toast').hidden=true,6500);}
 async function api(path,body){const r=await fetch(path,{method:body===undefined?'GET':'POST',headers:body===undefined?{}:{'Content-Type':'application/json','X-Arktika-Request':'1'},body:body===undefined?undefined:JSON.stringify(body)});let v;try{v=await r.json();}catch{throw Error('Сервер вернул не JSON. Проверьте окно Python.');}if(!r.ok)throw Error(v.error||`HTTP ${r.status}`);return v;}
+async function apiForm(path,form){const r=await fetch(path,{method:'POST',headers:{'X-Arktika-Request':'1'},body:form});let v;try{v=await r.json();}catch{throw Error('Сервер вернул не JSON. Проверьте окно Python.');}if(!r.ok)throw Error(v.error||`HTTP ${r.status}`);return v;}
 function bind(id,fn){$(id).addEventListener('click',()=>Promise.resolve().then(fn).catch(e=>toast(e.message)));}
 function open(id){$(id).showModal();}
 function tab(name){$$('.tabs button').forEach(b=>b.classList.toggle('active',b.dataset.tab===name));$$('.tab-panel').forEach(p=>p.hidden=p.id!=='tab-'+name);}
@@ -99,14 +100,23 @@ const PMC_SOURCE_LABELS={era5:'ERA5',carra2:'CARRA2',merra2:'MERRA-2'};
 function pmcRunPanel(){
   if($('#pmcRunPanel'))return;
   const panel=document.createElement('section');panel.id='pmcRunPanel';panel.className='pmc-run-panel';
-  panel.innerHTML=`<h3>Один кэшированный ветровой срок</h3><p class="micro">Экспериментальный расчёт относительной завихрённости 850 гПа. Он не загружает данные и не подтверждает ПМЦ. Для CARRA2 используются 2-D геолокация и производные по криволинейной сетке; реальные метаданные и метеорологическая точность отдельно не валидированы.</p><label>Готовое поле<select id="pmcCachedField"><option value="">Загружаю список…</option></select></label><div class="row"><label>Проекция<select id="pmcRunCrs"><option value="arctic">Арктика · EPSG:3413</option><option value="barents">Баренцево море · EPSG:3995</option><option value="kara">Карское море · EPSG:3576</option></select></label><label>Размер сетки<select id="pmcRunWidth"><option>512</option><option selected>768</option><option>1024</option></select></label></div><button id="pmcRunButton" class="tonal full">Рассчитать кандидаты из кэша</button><div id="pmcRunResult" role="status" aria-live="polite"></div>`;
+  panel.innerHTML=`<h3>Один кэшированный ветровой срок</h3><p class="micro">Экспериментальный расчёт относительной завихрённости 850 гПа. Он не загружает данные и не подтверждает ПМЦ. Для CARRA2 используются 2-D геолокация и производные по криволинейной сетке; реальные метаданные и метеорологическая точность отдельно не валидированы.</p><label>Готовое поле<select id="pmcCachedField"><option value="">Загружаю список…</option></select></label><div class="row"><label>Проекция<select id="pmcRunCrs"><option value="arctic">Арктика · EPSG:3413</option><option value="barents">Баренцево море · EPSG:3995</option><option value="kara">Карское море · EPSG:3576</option></select></label><label>Размер сетки<select id="pmcRunWidth"><option>512</option><option selected>768</option><option>1024</option></select></label></div><details><summary>Добавить спутниковую маску для сравнения</summary><p class="micro">Только локальный пакет из двух одноканальных GeoTIFF 0/1 на одной проецированной сетке и JSON-паспорта. Требуются источник, продукт, срок UTC, идентификатор и точные параметры сетки. Пакет до 16 МиБ; сравнение — пространственное, экспериментальное.</p><p class="micro"><a href="/docs/PMC_OBSERVATIONS.md" target="_blank" rel="noopener">Схема sidecar и пример</a></p><label>Разметка labels.tif<input id="pmcObsLabels" type="file" accept=".tif,.tiff,image/tiff"></label><label>Покрытие coverage.tif<input id="pmcObsCoverage" type="file" accept=".tif,.tiff,image/tiff"></label><label>Паспорт metadata.json<input id="pmcObsMetadata" type="file" accept=".json,application/json"></label><button id="pmcObsImport" type="button" class="tonal">Проверить и добавить маску</button><p id="pmcObsStatus" class="micro" role="status" aria-live="polite">Сравнение не выбрано.</p><label>Маска для этого расчёта<select id="pmcObservation"><option value="">Без спутникового сравнения</option></select></label></details><button id="pmcRunButton" class="tonal full">Рассчитать кандидаты из кэша</button><div id="pmcRunResult" role="status" aria-live="polite"></div>`;
   const plan=$('#pmcArchivePlan');plan.before(panel);
   $('#pmcRunButton').addEventListener('click',()=>runPmcCached().catch(e=>{pmcClearOverlay();pmcRunMessage(e.message,'error-text');}));
-  for(const selector of ['#pmcCachedField','#pmcRunCrs','#pmcRunWidth'])$(selector).addEventListener('change',()=>{
+  $('#pmcObsImport').addEventListener('click',()=>importPmcObservation().catch(e=>{$('#pmcObsStatus').textContent='Импорт отклонён: '+e.message;$('#pmcObsStatus').className='error-text';}));
+  for(const selector of ['#pmcCachedField','#pmcRunCrs','#pmcRunWidth','#pmcObservation'])$(selector).addEventListener('change',()=>{
     pmcClearOverlay();pmcClearResult();
     pmcRunMessage('Параметры изменены. Запустите расчёт снова, чтобы обновить результат.');
     $('#pmcRunButton').disabled=!$('#pmcCachedField').value;
   });
+}
+async function importPmcObservation(){
+  const files={labels:$('#pmcObsLabels').files[0],coverage:$('#pmcObsCoverage').files[0],metadata:$('#pmcObsMetadata').files[0]};
+  if(Object.values(files).some(file=>!file))throw Error('Выберите labels.tif, coverage.tif и metadata.json.');
+  const form=new FormData();for(const [name,file] of Object.entries(files))form.append(name,file,({labels:'labels.tif',coverage:'coverage.tif',metadata:'metadata.json'})[name]);
+  const button=$('#pmcObsImport');button.disabled=true;$('#pmcObsStatus').textContent='Проверяю маски и паспорт…';
+  try{const result=await apiForm('/api/pmc/observations/import',form);const select=$('#pmcObservation'),option=document.createElement('option');option.value=result.observation_id;option.textContent=`${result.observation.source} · ${result.observation.valid_time} · ${result.observation.product}`;select.append(option);select.value=option.value;select.dispatchEvent(new Event('change'));$('#pmcObsStatus').textContent='Маска сохранена локально. Сравнение доступно только при совпадении срока и всей сетки.';$('#pmcObsStatus').className='micro';}
+  finally{button.disabled=false;}
 }
 function pmcClearResult(){const root=$('#pmcRunResult');for(const link of root.querySelectorAll('a[download][href^="blob:"]'))URL.revokeObjectURL(link.href);root.replaceChildren();}
 function pmcRunMessage(message,kind='notice'){const root=$('#pmcRunResult');pmcClearResult();if(!message)return;const p=document.createElement('p');p.className=kind;p.textContent=message;root.append(p);}
@@ -132,6 +142,8 @@ function pmcRenderRunResult(r){
   const box=document.createElement('div');box.className='pmc-run-result';
   const title=document.createElement('strong');title.textContent=`Экспериментальные кандидаты · ${Number(r.candidate_count)||0}`;box.append(title);
   const summary=document.createElement('p');summary.textContent=`${PMC_SOURCE_LABELS[r.source]||r.source} · 850 гПа · ${String(r.valid_time||'срок неизвестен').replace('T',' ').replace('Z',' UTC')} · ${r.algorithm_id||'алгоритм'} ${r.algorithm_version||''}`;box.append(summary);
+  if(r.satellite_comparison?.status==='comparison_only'&&r.satellite_comparison.metrics){const m=r.satellite_comparison.metrics,c=r.satellite_comparison.coverage;const comparison=document.createElement('p');comparison.className='notice';comparison.textContent=`Пиксельное сравнение с ${r.satellite_comparison.observation?.source||'наблюдением'} · покрыто ${c?.observed_pixels??0} пикселей · IoU ${m.intersection_over_union==null?'—':Number(m.intersection_over_union).toFixed(3)} · POD ${m.probability_of_detection==null?'—':Number(m.probability_of_detection).toFixed(3)} · FAR ${m.false_alarm_ratio==null?'—':Number(m.false_alarm_ratio).toFixed(3)}. Это не метеорологическая проверка ПМЦ.`;box.append(comparison);}
+  else if(r.satellite_comparison?.status==='matched_no_coverage'){const comparison=document.createElement('p');comparison.className='notice';comparison.textContent='Спутниковая маска выбрана, но на сетке нет совместно покрытых валидных ячеек; метрики не рассчитаны.';box.append(comparison);}
   const exportLink=document.createElement('a');exportLink.className='text-button';exportLink.textContent='Скачать отчёт JSON';exportLink.download=`pmc-candidates-${String(r.valid_time||'unknown').replace(/[^0-9TZ]/g,'-')}.json`;exportLink.href=URL.createObjectURL(new Blob([JSON.stringify(r,null,2)],{type:'application/json'}));box.append(exportLink);
   if(Array.isArray(r.candidates)&&r.candidates.length){
     const wrap=document.createElement('div');wrap.className='pmc-run-table';wrap.tabIndex=0;wrap.setAttribute('role','region');wrap.setAttribute('aria-label','Таблица экспериментальных кандидатов; прокручивается по горизонтали');const table=document.createElement('table');table.innerHTML='<thead><tr><th>Кандидат</th><th>Класс</th><th>Пик завихрённости, с⁻¹</th><th>Пикселей</th><th>Подтверждение</th></tr></thead>';
@@ -156,13 +168,15 @@ function pmcDrawOverlay(r){
 }
 async function runPmcCached(){
   const fieldId=$('#pmcCachedField').value;if(!fieldId)throw Error('В кэше нет подходящего ветрового поля ERA5/CARRA2/MERRA-2 850 гПа. Откройте «Пространственные поля» и подготовьте срок отдельно.');
-  const controls=['#pmcCachedField','#pmcRunCrs','#pmcRunWidth'].map(selector=>$(selector));
+  const controls=['#pmcCachedField','#pmcRunCrs','#pmcRunWidth','#pmcObservation'].map(selector=>$(selector));
   const selection=controls.map(control=>control.value);
   pmcClearOverlay();$('#pmcRunButton').disabled=true;controls.forEach(control=>control.disabled=true);pmcRunMessage('Считаю только выбранное поле из локального кэша…');
   try{
     const area=await api('/api/map?'+qs({preset:selection[1],width:selection[2]}));
     const target_grid=pmcGridForRun(area,{preset:selection[1]},selection[2]);
-    const result=await api('/api/pmc/run',{field_id:fieldId,target_grid});
+    const observationId=controls[3]?.value;
+    const body={field_id:fieldId,target_grid};if(observationId)body.observation_id=observationId;
+    const result=await api('/api/pmc/run',body);
     if(result.status!=='completed'||result.maturity!=='experimental'||result.field_id!==fieldId)throw Error('Ответ API не соответствует контракту экспериментального расчёта.');
     if(controls.some((control,index)=>control.value!==selection[index]))throw Error('Параметры изменились во время расчёта. Запустите его снова.');
     pmcRenderRunResult(result);
@@ -173,12 +187,18 @@ function pmcRenderSources(sources){
   const root=$('#pmcArchiveSources');root.replaceChildren();
   const rows=Array.isArray(sources)?sources.filter(s=>s&&PMC_SOURCE_LABELS[s.id]):[];
   if(!rows.length){root.textContent='Каталог адаптеров недоступен; отправка плана отключена до ответа сервера.';$('#pmcArchivePlan').disabled=true;return;}
-  for(const source of rows){const label=document.createElement('label');label.className='check';const input=document.createElement('input');input.type='checkbox';input.name='pmcArchiveSource';input.value=source.id;input.disabled=source.id==='carra2';input.checked=!input.disabled;const text=document.createElement('span');text.textContent=`${PMC_SOURCE_LABELS[source.id]} — адаптер зарегистрирован; доступ к аккаунту и наличие поля 850 гПа проверяются отдельно${input.disabled?' · архив пока отключён; одиночный эксперимент доступен':''}`;label.append(input,text);root.append(label);}
+  for(const source of rows){const label=document.createElement('label');label.className='check';const input=document.createElement('input');input.type='checkbox';input.name='pmcArchiveSource';input.value=source.id;input.checked=true;const text=document.createElement('span');text.textContent=`${PMC_SOURCE_LABELS[source.id]} — адаптер зарегистрирован; доступ к аккаунту и наличие поля 850 гПа проверяются отдельно`;label.append(input,text);root.append(label);}
   $('#pmcArchivePlan').disabled=false;
+}
+function pmcObservationChoices(observations){
+  const select=$('#pmcObservation'),items=Array.isArray(observations)?observations:[];select.replaceChildren();
+  const empty=document.createElement('option');empty.value='';empty.textContent='Без спутникового сравнения';select.append(empty);
+  for(const item of items){if(!item||typeof item.observation_id!=='string')continue;const option=document.createElement('option');option.value=item.observation_id;option.textContent=`${item.source} · ${item.valid_time} · ${item.product}`;select.append(option);}
+  $('#pmcObsStatus').textContent=items.length?`Доступны ранее импортированные маски: ${items.length}.`:'Сравнение не выбрано.';
 }
 async function openPmcArchive(){
   pmcInvalidateArchivePlan();pmcRunPanel();pmcClearOverlay();pmcClearResult();pmcCachedChoices([]);$('#pmcCachedField').options[0].textContent='Загружаю список…';$('#pmcArchivePlan').disabled=true;$('#pmcArchiveSources').textContent='Проверяю зарегистрированные адаптеры…';open('#pmcArchiveDialog');
-  try{const state=await api('/api/reanalysis/state');S.pmcArchiveFields=state.fields||[];pmcRenderSources(state.catalogue?.sources||[]);pmcCachedChoices(state.fields||[]);await pmcRefreshArchiveTask();}
+  try{const state=await api('/api/reanalysis/state');S.pmcArchiveFields=state.fields||[];pmcRenderSources(state.catalogue?.sources||[]);pmcCachedChoices(state.fields||[]);const observations=await api('/api/pmc/observations');pmcObservationChoices(observations.observations||[]);await pmcRefreshArchiveTask();}
   catch(e){$('#pmcArchiveSources').textContent='Не удалось прочитать каталог адаптеров.';pmcFeedback('Проверка архива недоступна: '+e.message,'error-text');}
 }
 function pmcArchiveBody(){
@@ -242,16 +262,14 @@ function pmcRenderArchiveFields(plan){
   const intervals={era5:1,carra2:3,merra2:3};for(const source of plan.sources){const step=intervals[source]||1;let time=Date.parse(plan.start);while(time<=Date.parse(plan.end)&&new Date(time).getUTCHours()%step!==0)time+=3600000;for(;time<=Date.parse(plan.end);time+=step*3600000)expected[source].add(new Date(time).toISOString().replace('.000Z','Z'));}
   const fields=S.pmcArchiveFields.filter(field=>expected[field.source]?.has(String(field.time||'').replace('+00:00','Z'))&&field.variable==='wind'&&Number(field.level)===850&&field.time_kind==='instantaneous_analysis'&&!field.difference_of);
   if(!fields.length){const p=document.createElement('p');p.className='empty';p.textContent='В выбранном интервале нет сохранённых мгновенных полей ветра 850 гПа. Сначала подготовьте сроки через «Пространственные поля»; архивный запуск ничего не скачивает.';root.append(p);$('#pmcArchiveRun').disabled=true;return;}
-  const supported=fields.filter(f=>['era5','merra2'].includes(f.source));
-  for(const field of fields){const label=document.createElement('label');label.className='check';const input=document.createElement('input');input.type='checkbox';input.name='pmcArchiveField';input.value=field.id;input.disabled=!['era5','merra2'].includes(field.source);input.checked=!input.disabled;const text=document.createElement('span');text.textContent=`${PMC_SOURCE_LABELS[field.source]||field.source} · ${String(field.time).replace('T',' ').replace('Z',' UTC')}${input.disabled?' — детектор этого источника пока не поддерживает':''}`;label.append(input,text);root.append(label);}
-  $('#pmcArchiveRun').disabled=!supported.length;
-  if(!supported.length){const p=document.createElement('p');p.className='notice';p.textContent='Для текущего экспериментального детектора нужны ERA5 или MERRA-2. Поля CARRA2 пока только отображаются и не обрабатываются.';root.append(p);}
+  for(const field of fields){const label=document.createElement('label');label.className='check';const input=document.createElement('input');input.type='checkbox';input.name='pmcArchiveField';input.value=field.id;input.checked=true;const text=document.createElement('span');text.textContent=`${PMC_SOURCE_LABELS[field.source]||field.source} · ${String(field.time).replace('T',' ').replace('Z',' UTC')}`;label.append(input,text);root.append(label);}
+  $('#pmcArchiveRun').disabled=false;
 }
 async function pmcStartArchive(){
   const plan=S.pmcArchivePlan,field_ids=$$('[name="pmcArchiveField"]:checked').map(e=>e.value);if(!plan||!field_ids.length)throw Error('Сначала проверьте план и выберите кэшированные сроки.');
   const revision=S.pmcArchivePlanRevision;
   const current=pmcArchiveBody();if(JSON.stringify(current)!==JSON.stringify({sources:plan.sources,start:plan.start,end:plan.end,area:plan.area}))throw Error('Параметры плана изменились. Составьте план заново.');
-  if(field_ids.some(id=>!S.pmcArchiveFields.some(f=>f.id===id&&['era5','merra2'].includes(f.source))))throw Error('Можно запускать только поддерживаемые кэшированные ERA5/MERRA-2 поля.');
+  if(field_ids.some(id=>!S.pmcArchiveFields.some(f=>f.id===id&&['era5','carra2','merra2'].includes(f.source))))throw Error('Выберите кэшированные поля ветра 850 гПа из поддерживаемых адаптеров ERA5, CARRA2 или MERRA-2.');
   const preset=$('#pmcRunCrs').value||'arctic',width=Number($('#pmcRunWidth').value||'768');
   const {target_grid}=await api('/api/pmc/archive/grid',{preset,width,area:plan.area});
   if(revision!==S.pmcArchivePlanRevision||S.pmcArchivePlan!==plan)throw Error('Параметры изменились при подготовке сетки. Составьте план заново.');

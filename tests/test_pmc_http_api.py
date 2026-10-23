@@ -35,6 +35,18 @@ class PmcRunHttpTests(unittest.TestCase):
                      'X-Arktika-Request':'1'},data=json.dumps(data).encode())
         return self.opener.open(req,timeout=5)
 
+    def multipart(self,parts):
+        boundary='arktika-test-boundary'
+        chunks=[]
+        for name,filename,payload in parts:
+            chunks.extend((f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"; filename="{filename}"\r\n'.encode(),
+                           b'Content-Type: application/octet-stream\r\n\r\n',payload,b'\r\n'))
+        chunks.append(f'--{boundary}--\r\n'.encode());body=b''.join(chunks)
+        req=urllib.request.Request(self.url+'/api/pmc/observations/import',data=body,
+            headers={'Cookie':'arktika_session=pmc-test','Content-Type':f'multipart/form-data; boundary={boundary}',
+                     'X-Arktika-Request':'1'})
+        return self.opener.open(req,timeout=5)
+
     def test_endpoint_requires_explicit_cached_field_and_target_grid(self):
         for payload in ({'target_grid':self.grid},
                         {'field_id':'wind-1'},
@@ -86,6 +98,44 @@ class PmcRunHttpTests(unittest.TestCase):
                 self.request({'field_id':'carra-field','target_grid':self.grid})
             self.assertEqual(cm.exception.code,400)
             run.assert_called_once()
+
+    def test_optional_observation_id_is_loaded_and_passed_with_coverage(self):
+        import numpy as np
+        fake={
+            'algorithm_id':'arktika.experimental_pmc_candidates','algorithm_version':'0.1.1',
+            'maturity':'experimental','source':'era5','valid_time':'2024-01-01T00:00:00Z',
+            'candidate_count':0,'candidates':[],'grid':self.grid,
+            'field_passport':{'source':'era5'},'input_coverage':{'valid_pixels':12},
+            'satellite_comparison':{'status':'comparison_only','metrics':None},
+            'parameters':{},'limitations':['Метеорологическая точность не проверялась.']}
+        labels=np.zeros((3,4),dtype=np.uint8);coverage=np.ones((3,4),dtype=np.uint8)
+        metadata={'source':'test','product_id':'mask-v1','observation_id':'a'*24,
+                  'valid_time':'2024-01-01T00:00:00Z','grid':self.grid}
+        with patch.object(self.app,'pmc_observation',return_value=(labels,coverage,metadata)) as load, \
+             patch.object(self.app,'experimental_pmc_candidates',return_value=fake) as run:
+            with self.request({'field_id':'explicit-cache-id','target_grid':self.grid,
+                               'observation_id':'a'*24}) as response:
+                result=json.loads(response.read())
+        load.assert_called_once_with('a'*24)
+        run.assert_called_once_with('explicit-cache-id',target_grid=self.grid,
+            satellite_observation_mask=labels,satellite_coverage_mask=coverage,
+            satellite_observation_metadata=metadata)
+        self.assertEqual(result['satellite_comparison']['status'],'comparison_only')
+
+    def test_multipart_import_accepts_only_named_three_part_local_package(self):
+        metadata={'schema_version':'arktika.pmc_satellite_observation.v1'}
+        parts=[('labels','labels.tif',b'labels'),('coverage','coverage.tif',b'coverage'),
+               ('metadata','metadata.json',json.dumps(metadata).encode())]
+        returned={'observation_id':'a'*24,'observation':{'source':'test'},'status':'imported_unverified'}
+        with patch.object(self.app,'register_pmc_observation',return_value=returned) as register:
+            with self.multipart(parts) as response:result=json.loads(response.read())
+        register.assert_called_once_with(b'labels',b'coverage',metadata)
+        self.assertEqual(result,returned)
+        bad=[('labels','wrong.tif',b'labels'),*parts[1:]]
+        with patch.object(self.app,'register_pmc_observation',return_value=returned) as register:
+            with self.assertRaises(urllib.error.HTTPError) as cm:self.multipart(bad)
+            self.assertEqual(cm.exception.code,400)
+            register.assert_not_called()
 
 
 if __name__=='__main__':
