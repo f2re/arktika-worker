@@ -82,7 +82,7 @@ function credentialDialog(action){
       await api('/api/sources/credentials',{provider:spec.provider,format:spec.format,values:payload});
       const result=await api('/api/reanalysis/resume',{id:action.id});
       FIELDS.job={...FIELDS.job,...result,id:action.id,status:result.started?'running':'needs_action',message:'Продолжается сохранённый запрос'};
-      FIELDS.pending=action.id;cleanup();await openFieldDialog(action.source);fieldsJob();await pollFields();
+      FIELDS.pending=action.id;FIELDS.credentialRetry=null;cleanup();await openFieldDialog(action.source);fieldsJob();await pollFields();
     }catch(e){error.textContent=e.message;error.hidden=false;save.disabled=false;}
   };
   dialog.showModal();
