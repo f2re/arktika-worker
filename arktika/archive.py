@@ -16,6 +16,7 @@ from rasterio.enums import ColorInterp, Resampling
 from rasterio.vrt import WarpedVRT
 
 from .download import atomic_json, digest
+from .saved_product_integrity import artifact_manifest, load_cached_product, replace_product_cache
 from .geo import grid, lonlat_grid, solar_elevation
 from .product_schema import SCHEMA_VERSION
 from .model import UTC, iso, parse_time
@@ -157,8 +158,9 @@ def build_composite(scene, root, request, cancel=None, progress=lambda message: 
     identity = hashlib.sha256(json.dumps(dict(inputs=inputs, scene=scene['id'], time=scene['time'],
                               request=request, version=VERSION, passport_schema=SCHEMA_VERSION), sort_keys=True).encode()).hexdigest()[:24]
     final = Path(root)/identity
-    if (final/'product.json').exists():
-        return json.loads((final/'product.json').read_text(encoding='utf-8'))
+    cached = load_cached_product(root, identity)
+    if cached is not None:
+        return cached
     if cancel and cancel.is_set():
         raise Cancelled()
     progress('Нанесение готовой RGB-композиции: '+source['crs'])
@@ -207,6 +209,7 @@ def build_composite(scene, root, request, cancel=None, progress=lambda message: 
                          'resolution':[float(original.res[0]),float(original.res[1])],
                          'resolution_units':'degrees' if original.crs and original.crs.is_geographic else 'm',
                          'nodata':original.nodata if original.nodata is None or np.isfinite(float(original.nodata)) else None}
+        meta['source_grids'] = [source_grid]
         meta['passport'] = product_passport(
             product_id='archive_rgb', algorithm_id='arktika.archive_rgb', algorithm_version=VERSION,
             maturity='implemented', quantity_kind='rgb', quantity='Цветовые компоненты готового продукта поставщика',
@@ -224,10 +227,11 @@ def build_composite(scene, root, request, cancel=None, progress=lambda message: 
         )
         from .processing import write_report
         atomic_json(target/'legend.json', legend);write_report(target,meta,g)
+        meta['artifacts'] = artifact_manifest(target, meta['files'])
         if cancel and cancel.is_set():
             raise Cancelled()
         atomic_json(target/'product.json',meta)
-        os.replace(target,final)
+        replace_product_cache(target,final)
         return meta
     finally:
         if target.exists():
