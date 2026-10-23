@@ -24,13 +24,14 @@ from scipy import ndimage
 from .product_schema import product_passport
 
 ALGORITHM_ID = "arktika.experimental_pmc_candidates"
-ALGORITHM_VERSION = "0.2.0"
+ALGORITHM_VERSION = "0.3.0"
 METHOD_REFERENCE = "Fang et al. (2025), IMPMCT, doi:10.5194/essd-17-6049-2025"
 PARAMETERS = {
     "uniform_radius_km": 60.0,
     "smoothing_operator": "circular uniform mean; nodata-renormalized",
     "minimum_vorticity_s-1": 1.0e-4,
     "peak_vorticity_s-1": 1.2e-4,
+    "peak_diagnostic": "8-neighbour local maxima; plateaus represented by centroid",
     "connectivity": 8,
     "quantity": "850-hPa relative vorticity",
 }
@@ -92,6 +93,31 @@ def _components(mask: np.ndarray) -> list[list[tuple[int, int]]]:
                         queue.append((ny, nx))
         found.append(cells)
     return found
+
+
+def _local_peak_diagnostics(field: np.ndarray, component: np.ndarray) -> list[dict[str, Any]]:
+    """Describe local peaks without partitioning or changing a candidate area.
+
+    This is a discrete diagnostic only. It does not reproduce the published
+    contour/valley-line isolation procedure and must not be used as a vortex
+    count or as evidence of a confirmed PMC.
+    """
+    neighborhood_max = ndimage.maximum_filter(field, size=3, mode="constant", cval=-np.inf)
+    peak_cells = component & np.isfinite(field) & (field >= PARAMETERS["peak_vorticity_s-1"])
+    peak_cells &= field == neighborhood_max
+    peaks = []
+    for plateau in _components(peak_cells):
+        rows = np.fromiter((cell[0] for cell in plateau), dtype=int)
+        cols = np.fromiter((cell[1] for cell in plateau), dtype=int)
+        values = field[rows, cols]
+        peak = float(np.max(values))
+        peaks.append({
+            "peak_vorticity_s-1": peak,
+            "peak_pixel_rc": [float(np.mean(rows)), float(np.mean(cols))],
+            "plateau_pixel_count": int(len(plateau)),
+        })
+    return sorted(peaks, key=lambda item: (
+        -item["peak_vorticity_s-1"], item["peak_pixel_rc"][0], item["peak_pixel_rc"][1]))
 
 
 def compare_satellite(candidate_mask: np.ndarray,
@@ -268,6 +294,9 @@ def detect_candidates(vorticity_850: np.ndarray, *, grid: dict[str, Any],
         peak = float(smoothed[ys[peak_index], xs[peak_index]])
         if peak < peak_threshold:
             continue
+        component = np.zeros(array.shape, dtype=bool)
+        component[ys, xs] = True
+        local_peaks = _local_peak_diagnostics(smoothed, component)
         candidate_mask[ys, xs] = True
         candidates.append({
             "candidate_id": f"pmc-candidate-{len(candidates) + 1:04d}",
@@ -277,10 +306,16 @@ def detect_candidates(vorticity_850: np.ndarray, *, grid: dict[str, Any],
             "peak_850hpa_relative_vorticity_s-1": peak,
             "peak_pixel_rc": [int(ys[peak_index]), int(xs[peak_index])],
             "centroid_pixel_rc": [float(np.mean(ys)), float(np.mean(xs))],
+            "peak_structure": {
+                "status": "diagnostic_only_not_partitioned",
+                "local_maximum_count": len(local_peaks),
+                "local_maxima": local_peaks,
+            },
         })
     limitations = [
         "Кандидаты не являются подтверждёнными ПМЦ или прогнозом зарождения.",
-        "Реализованы сглаживание и пороговые компоненты; трекинг, steering flow и опубликованные QC-процедуры отсутствуют.",
+        "Локальные максимумы внутри связной области выводятся только как диагностика; опубликованные contour/valley-line разделение и оценка изоляции не реализованы.",
+        "Архивный трекер использует соседство центроидов; steering flow, split/merge и опубликованные QC-процедуры отсутствуют.",
         "Спутниковое сравнение описывает только пиксельное перекрытие заданных масок и не является независимой метеорологической верификацией.",
         "Искажение масштаба конкретной проекции не оценивается; пригодность сетки для заданной широты требует отдельной проверки.",
     ]

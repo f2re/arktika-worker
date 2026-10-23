@@ -11,6 +11,8 @@ from unittest.mock import patch
 from arktika.download import atomic_json
 from arktika.pmc_archive import build_plan
 from arktika.workstation import Workstation
+from arktika.pmc_detection import ALGORITHM_ID as PMC_DETECTOR_ID
+from arktika.pmc_detection import ALGORITHM_VERSION as PMC_DETECTOR_VERSION
 
 
 def request(**changes):
@@ -78,7 +80,7 @@ class PmcArchivePlanTests(unittest.TestCase):
                   'transform':[10000,0,-100000,0,-10000,100000],
                   'resolution_x_m':10000,'resolution_y_m':10000}
             plan=request(sources=['carra2'],start='2024-01-01T00:00:00Z',end='2024-01-01T00:00:00Z')
-            result={'algorithm_id':'arktika.experimental_pmc_candidates','algorithm_version':'0.2.0',
+            result={'algorithm_id':PMC_DETECTOR_ID,'algorithm_version':PMC_DETECTOR_VERSION,
                     'maturity':'experimental','source':'carra2','valid_time':field['time'],
                     'grid':dict(grid),'candidate_count':0,'candidates':[]}
             try:
@@ -113,7 +115,7 @@ class PmcArchivePlanTests(unittest.TestCase):
                          private_uri='https://example.invalid/private?signature=secret')
             def result_for(identity,**kwargs):
                 meta=next(field for field in fields if field['id']==identity)
-                return {'algorithm_id':'arktika.experimental_pmc_candidates','algorithm_version':'0.2.0',
+                return {'algorithm_id':PMC_DETECTOR_ID,'algorithm_version':PMC_DETECTOR_VERSION,
                         'maturity':'experimental','source':meta['source'],'valid_time':meta['time'],
                         'grid':dict(grid),'candidate_count':1,
                         'candidates':[{'candidate_id':'candidate-'+meta['time'][11:13],

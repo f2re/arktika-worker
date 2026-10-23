@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 
@@ -66,6 +67,25 @@ class PmcDetectionTests(unittest.TestCase):
         self.assertEqual("2025-01-02T06:00:00Z", result["passport"]["valid_time"])
         self.assertEqual(self.grid, result["passport"]["grid"])
         self.assertEqual("not_assessed", result["passport"]["uncertainty"]["status"])
+
+    def test_multiple_local_maxima_are_reported_without_partitioning_candidate_area(self):
+        values = np.zeros((15, 15), dtype=float)
+        values[7, 3:12] = 1.05e-4
+        values[6:8, 4:6] = 1.8e-4
+        values[6:8, 9:11] = 1.6e-4
+        with patch("arktika.pmc_detection._smooth_uniform_radius", return_value=values):
+            result = self.run_detector()
+
+        self.assertEqual(1, result["candidate_count"])
+        candidate = result["candidates"][0]
+        structure = candidate["peak_structure"]
+        self.assertEqual("diagnostic_only_not_partitioned", structure["status"])
+        self.assertEqual(2, structure["local_maximum_count"])
+        self.assertEqual([1.8e-4, 1.6e-4], [
+            peak["peak_vorticity_s-1"] for peak in structure["local_maxima"]])
+        self.assertEqual([6.5, 4.5], structure["local_maxima"][0]["peak_pixel_rc"])
+        self.assertEqual(13, candidate["pixel_count"])
+        self.assertEqual("0.3.0", result["algorithm_version"])
 
     def test_archive_domain_mask_excludes_candidate_pixels_outside_region(self):
         domain = np.zeros((15, 15), dtype=bool)
