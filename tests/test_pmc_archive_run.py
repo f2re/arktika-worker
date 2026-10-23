@@ -105,6 +105,70 @@ class PmcArchiveRunTests(unittest.TestCase):
         )
         self.assertNotIn("passport", report)
 
+    def test_satellite_comparisons_require_exact_utc_and_target_grid_and_remain_pixel_only(self):
+        times = [f"2024-01-01T{hour:02d}:00:00Z" for hour in range(3)]
+        other_grid = dict(GRID, transform=[10_000, 0, -90_000, 0, -10_000, 100_000])
+
+        def comparison(valid_time, grid):
+            return {
+                "source": "era5",
+                "valid_time": times[0],
+                "grid": dict(GRID),
+                "comparison": {
+                    "status": "comparison_only",
+                    "observation": {"source": "manual_satellite", "product_id": "labels-v1",
+                                     "valid_time": valid_time, "observation_id": "o" * 24,
+                                     "grid": dict(grid)},
+                    "metrics": {"true_positive_pixels": 2, "false_positive_pixels": 1,
+                                "false_negative_pixels": 1, "true_negative_pixels": 16,
+                                "intersection_over_union": .5,
+                                "probability_of_detection": .6666666667,
+                                "false_alarm_ratio": .3333333333},
+                    "coverage": {"observed_pixels": 20, "unknown_pixels": 0},
+                },
+            }
+
+        records = [{"field_id": f"{hour + 1:x}" * 24, "source": "era5", "valid_time": times[hour],
+                    "status": "completed", "result": frame(hour)} for hour in range(3)]
+        wrong_utc = comparison(times[1], GRID)
+        wrong_utc["valid_time"] = times[1]
+        wrong_utc["comparison"]["observation"]["valid_time"] = times[0]
+        report = build_archive_report(
+            task_id="t" * 32, plan={"sources": ["era5"]},
+            expected_times={"era5": times}, interval_hours={"era5": 1},
+            frame_records=records, cached_fields=[], target_grid=GRID,
+            satellite_comparisons=[
+                comparison(times[0], GRID),
+                wrong_utc,
+                {**comparison(times[2], other_grid), "valid_time": times[2]},
+            ],
+        )
+        satellite = report["satellite_comparison"]
+        self.assertEqual("partial_comparison", satellite["status"])
+        self.assertEqual(1, satellite["matched_frame_count"])
+        self.assertEqual(2, satellite["unknown_frame_count"])
+        self.assertEqual(2, satellite["metrics"]["true_positive_pixels"])
+        self.assertEqual("not_meteorological_validation", satellite["validation_status"])
+        self.assertIn("пиксельное", satellite["comparison_basis"])
+        self.assertIn("не означает отсутствие", satellite["unknown_means"])
+        self.assertEqual(3, len(satellite["frames"]))
+        self.assertEqual(["comparison_only", "unknown_unmatched", "unknown_unmatched"],
+                         [row["status"] for row in satellite["frames"]])
+
+    def test_missing_satellite_comparison_stays_unknown(self):
+        times = ["2024-01-01T00:00:00Z"]
+        report = build_archive_report(
+            task_id="t" * 32, plan={"sources": ["era5"]},
+            expected_times={"era5": times}, interval_hours={"era5": 1},
+            frame_records=[{"field_id": "a" * 24, "source": "era5", "valid_time": times[0],
+                            "status": "completed", "result": frame(0)}],
+            cached_fields=[], target_grid=GRID,
+        )
+        satellite = report["satellite_comparison"]
+        self.assertEqual("not_supplied", satellite["status"])
+        self.assertIsNone(satellite["metrics"])
+        self.assertEqual(1, satellite["unknown_frame_count"])
+
 
 if __name__ == "__main__":
     unittest.main()

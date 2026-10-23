@@ -77,7 +77,7 @@ def main():
                     except AssertionError as error:
                         state=page.evaluate('()=>({id:S.product?.id,styleable:productStyleable(S.product),disabled:document.querySelector("#productStyleOpen")?.disabled,disableTrace:window.__styleDisableTrace,toast:document.querySelector("#toast")?.textContent})')
                         raise AssertionError(f'Открытие сохранённого продукта не подготовило шкалу: {state}') from error
-                    style_state=page.evaluate('()=>({id:S.product?.id,styleable:productStyleable(S.product),disabled:document.querySelector("#productStyleOpen")?.disabled,disableTrace:window.__styleDisableTrace,toast:document.querySelector("#toast")?.textContent})')
+                    style_state=page.evaluate('()=>({id:S.product?.id,styleable:productStyleable(S.product),button:!!document.querySelector("#productStyleOpen"),disabled:document.querySelector("#productStyleOpen")?.disabled,disableTrace:window.__styleDisableTrace,toast:document.querySelector("#toast")?.textContent})')
                     assert style_state['button'] and not style_state['disabled'], f'Продукт открылся, но шкала недоступна: {style_state}'
                 def export_product_json(identity):
                     encoded=page.evaluate('''async id=>{const r=await fetch('/artifact/'+encodeURIComponent(id)+'/export.zip');if(!r.ok)throw Error('ZIP HTTP '+r.status);const bytes=new Uint8Array(await r.arrayBuffer());let binary='';for(let i=0;i<bytes.length;i+=8192)binary+=String.fromCharCode(...bytes.subarray(i,i+8192));return btoa(binary)}''',identity)

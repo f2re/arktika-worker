@@ -19,7 +19,7 @@
 | `GET /api/state` | — | Состояние сервера: текущая операция, журнал без секретов, очередь, статус токенов GPTL/STS, режим калибровки |
 | `POST /api/credentials` | `{token, refresh_token?}` | Сохранение токена доступа GPTL только в памяти; пустой токен очищает доступ |
 | `GET /api/sources` | — | Реестр источников данных (GPTL, CDS, Earthdata, локальные), их статус, доступные слои и наличие реквизитов |
-| `POST /api/sources/credentials` | `{provider: "cds" \| "earthdata", text, format?, clear?}` | Запись персонального токена/ключа для CDS (ERA5, CARRA2) или Earthdata (MERRA-2) в память сервера |
+| `POST /api/sources/credentials` | CDS/Earthdata: `{provider, text, format?, clear?}`; сторонний адаптер: `{provider, format: "fields", values: {…}}` или `{provider, clear: true}` | Реквизиты установленных адаптеров проверяются по их схеме и хранятся только в памяти процесса; ответ не содержит значений секретов |
 | `POST /api/oauth/configure` | `{client_id, redirect_uri, scope}` | Несекретная конфигурация OAuth PKCE для GPTL |
 | `POST /api/oauth/start` | `{}` | Генерация URL входа с криптографическим `state` и PKCE `code_challenge` |
 | `GET /oauth/callback` | `code`, `state` | Приём кода авторизации OAuth, обмен на токены и редирект на главную страницу |
