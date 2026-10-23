@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 """Product-first flow on synthetic data; real HTTP, cookies, CSP, and download queue."""
 import argparse
+import base64
+import hashlib
+import io
 import json
 from pathlib import Path
 import sys
 import tempfile
 import threading
 import time
+import zipfile
 
 ROOT=Path(__file__).resolve().parents[1]
 sys.path[:0]=[str(ROOT),str(ROOT/'tests')]
@@ -16,6 +20,7 @@ from arktika.model import normalize_item
 from arktika.workstation import Workstation
 from server import LocalServer
 from test_science import fixture
+from arktika.processing import build_product
 from test_archive import RGBTransport
 
 
@@ -29,6 +34,14 @@ def main():
         transport=RGBTransport(Path(cal_scene['channels']['9']['path']).read_bytes())
         app=Workstation(root/'state',root/'downloads',client=AuthClient(transport=transport))
         app.register_file(scene['channels']['4']['path'])
+        # Stable synthetic numeric products let the browser prove product-scoped styling.
+        style_first=build_product(cal_scene,app.product_root,dict(product='channel',preset='barents',width=256,channel=9),{'mode':'unknown'})
+        style_second=build_product(cal_scene,app.product_root,dict(product='difference',preset='barents',width=256,channel=9),{'mode':'unknown'})
+        style_baseline={}
+        for product in (style_first,style_second):
+            values_path=app.artifact(product['id'],'values.tif')
+            style_baseline[product['id']]={'values_sha256':hashlib.sha256(values_path.read_bytes()).hexdigest(),
+                'passport':json.loads(json.dumps(product['passport']))}
         app.store.set_setting('last_date','2026-01-01');app.store.set_setting('view_settings',dict(preset='barents',product='channel',channel=4))
         remote=dict(type='Feature',id='SYNTHETIC-PRODUCT-FLOW',properties={'platform':'ARCM2','datetime':'2026-01-02T00:00:00Z','processing:level':'L2IR'},assets={})
         for ch in (7,9,10):remote['assets'][f'ch{ch:02d}']={'href':f'https://s3.gptl.ru/SYNTHETIC/A2_20260102000000_ch{ch:02d}.tif','type':'image/tiff','proj:epsg':4326}
@@ -51,6 +64,58 @@ def main():
                     raise AssertionError(expression)
                 def check(name,expr):wait(expr);report['checks'].append(dict(name=name,passed=True))
                 def shot(name):page.screenshot(path=str(out/name))
+                def open_saved_product(identity):
+                    page.locator('#productsOpen').click()
+                    page.locator('#productsDialog').wait_for(state='visible')
+                    page.locator(f'#savedProducts button[data-id="{identity}"]').click()
+                    wait(f'()=>S.product?.id==={json.dumps(identity)}&&!S.busy&&!UI.activeBuild&&document.querySelector("#productStyleOpen")&&!document.querySelector("#productStyleOpen").disabled')
+                def export_product_json(identity):
+                    encoded=page.evaluate('''async id=>{const r=await fetch('/artifact/'+encodeURIComponent(id)+'/export.zip');if(!r.ok)throw Error('ZIP HTTP '+r.status);const bytes=new Uint8Array(await r.arrayBuffer());let binary='';for(let i=0;i<bytes.length;i+=8192)binary+=String.fromCharCode(...bytes.subarray(i,i+8192));return btoa(binary)}''',identity)
+                    with zipfile.ZipFile(io.BytesIO(base64.b64decode(encoded))) as bundle:
+                        names=set(bundle.namelist())
+                        assert {'style.json','legend.json','product.json'}<=names,names
+                        return {name:json.loads(bundle.read(name)) for name in ('style.json','legend.json','product.json')}
+                def save_browser_style(identity,minimum,maximum,palette_id,name,default_minimum,default_maximum):
+                    open_saved_product(identity)
+                    page.locator('#productStyleOpen').click()
+                    page.locator('#productStyleDialog').wait_for(state='visible')
+                    check('Профиль стиля привязан к продукту и версии '+name,
+                          '()=>document.querySelector("#productStyleIdentity").textContent.includes('+json.dumps(identity)+')&&document.querySelector("#productStyleIdentity").textContent.includes(S.product.passport.algorithm.version)')
+                    profile=app.product_style({'id':identity})['style']
+                    absolute_temperature=app.product(identity)['legend']['quantity_kind']=='absolute_temperature' and app.product(identity)['legend']['units']=='K'
+                    expected_minimum=profile['minimum']-273.15 if absolute_temperature else profile['minimum']
+                    expected_maximum=profile['maximum']-273.15 if absolute_temperature else profile['maximum']
+                    assert float(page.locator('#productStyleMinimum').input_value())==float(default_minimum if default_minimum is not None else expected_minimum)
+                    assert float(page.locator('#productStyleMaximum').input_value())==float(default_maximum if default_maximum is not None else expected_maximum)
+                    if absolute_temperature:
+                        check('Пределы абсолютной температуры показаны в °C как в легенде','()=>document.querySelector("#productStyleUnits").textContent==="°C"')
+                    if name=='first':
+                        page.set_viewport_size(dict(width=390,height=844))
+                        check('Панель шкалы работает на узком окне','()=>document.documentElement.scrollWidth<=innerWidth+1&&document.querySelector("#productStyleDialog").scrollWidth<=document.querySelector("#productStyleDialog").clientWidth+1')
+                        page.set_viewport_size(dict(width=1440,height=960))
+                        page.locator('#productStyleMinimum').fill(str(maximum))
+                        page.locator('#productStyleMaximum').fill(str(maximum))
+                        page.locator('#productStyleSave').click()
+                        check('Ошибочный диапазон не сохраняется','()=>document.querySelector("#productStyleDialog").open&&document.querySelector("#productStyleStatus").textContent.includes("меньше максимума")')
+                    page.locator('#productStylePalette').select_option(palette_id)
+                    page.locator('#productStyleMinimum').fill(str(minimum));page.locator('#productStyleMaximum').fill(str(maximum))
+                    page.locator('#productStyleSave').click()
+                    stored_minimum=minimum+273.15 if absolute_temperature else minimum
+                    stored_maximum=maximum+273.15 if absolute_temperature else maximum
+                    wait('()=>!document.querySelector("#productStyleDialog").open&&S.product?.id==='+json.dumps(identity)+'&&Math.abs(S.product.legend.display_min-'+str(stored_minimum)+')<1e-9&&Math.abs(S.product.legend.display_max-'+str(stored_maximum)+')<1e-9')
+                    check('Карта и легенда обновляются после сохранения '+name,
+                          '()=>document.querySelector("#raster").getAttribute("href").includes("?style=")&&document.querySelector("#legend .colorbar").style.backgroundImage.includes("linear-gradient")&&document.querySelector("#legend .scale-labels").textContent.includes('+json.dumps(str(minimum))+')&&document.querySelector("#legend .scale-labels").textContent.includes('+json.dumps(str(maximum))+')')
+                    report['checks'].append(dict(name='Сохранение шкалы с явным действием '+name,passed=True))
+                    assert hashlib.sha256(app.artifact(identity,'values.tif').read_bytes()).hexdigest()==style_baseline[identity]['values_sha256']
+                    assert app.product(identity)['passport']==style_baseline[identity]['passport']
+                    bundle=export_product_json(identity)
+                    assert bundle['style.json']['product_id']==identity
+                    assert bundle['style.json']['algorithm_version']==style_baseline[identity]['passport']['algorithm']['version']
+                    assert bundle['style.json']['minimum']==stored_minimum and bundle['style.json']['maximum']==stored_maximum and bundle['style.json']['palette_id']==palette_id
+                    assert bundle['legend.json']['display_min']==stored_minimum and bundle['legend.json']['display_max']==stored_maximum
+                    assert bundle['product.json']['passport']==style_baseline[identity]['passport']
+                    report['checks'].append(dict(name='values.tif и паспорт неизменны; экспорт содержит актуальные style.json и legend.json '+name,passed=True))
+                    shot('product-style-'+name+'.png')
                 try:
                     page.goto(base+'/#'+server.key)
                     check('Начальный одиночный канал','()=>typeof S!=="undefined"&&S.product?.request.channel===4&&!S.busy&&!UI.activeBuild')
@@ -96,6 +161,20 @@ def main():
                     assert len(app.store.jobs())==3 and transport.calls>0
                     check('Метаданные K используются без ручной настройки','()=>S.product.calibration_status==="metadata"&&!document.querySelector("#calibrationDialog").open')
                     page.locator('#productQuick').click();shot('metadata-ready.png')
+                    check('Для готового RGB продукта экранная шкала недоступна','()=>S.product?.product==="micro24"&&document.querySelector("#productStyleOpen").disabled')
+                    save_browser_style(style_first['id'],-3,7,'blue-amber','first',None,None)
+                    first_saved=export_product_json(style_first['id'])['style.json']
+                    save_browser_style(style_second['id'],0,2,'multicolor','second',-4,2)
+                    second_saved=export_product_json(style_second['id'])['style.json']
+                    assert style_first['id']!=style_second['id']
+                    assert first_saved['product_id']==style_first['id'] and second_saved['product_id']==style_second['id']
+                    open_saved_product(style_first['id'])
+                    check('Возврат к первому продукту восстанавливает его шкалу и легенду',
+                          '()=>S.product?.id==='+json.dumps(style_first['id'])+'&&Math.abs(S.product.legend.display_min-270.15)<1e-9&&Math.abs(S.product.legend.display_max-280.15)<1e-9&&(document.querySelector("#legend .scale-labels").textContent.includes("−3")||document.querySelector("#legend .scale-labels").textContent.includes("-3"))&&document.querySelector("#legend .scale-labels").textContent.includes("7")')
+                    restored=page.evaluate('id=>api("/api/product/style?id="+encodeURIComponent(id))',style_first['id'])
+                    assert restored['style']['minimum']==270.15 and restored['style']['maximum']==280.15 and restored['style']['palette_id']=='blue-amber'
+                    assert restored['style']['product_id']==style_first['id']
+                    report['checks'].append(dict(name='Второй продукт не перезаписывает стиль первого; повторное открытие восстанавливает свой профиль',passed=True))
                     for width in (1024,390):
                         page.set_viewport_size(dict(width=width,height=844));page.locator('#calibrationOpen').click()
                         page.locator('#calibrationDialog').wait_for(state='visible')

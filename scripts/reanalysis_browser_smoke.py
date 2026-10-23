@@ -93,6 +93,16 @@ def main():
                 check('Настройка доступа из окна поля','()=>document.querySelector("#cdsAccessDialog").open')
                 page.locator('#cdsToken').fill('SYNTHETIC-BROWSER-TOKEN-NOT-A-CREDENTIAL');page.locator('#cdsSave').click()
                 check('Возврат к полю после настройки CDS','()=>document.querySelector("#fieldDialog").open&&document.querySelector("#fieldSource").value==="era5"')
+                from arktika.reanalysis_service import RetryableFieldError
+                cached_meta=app.field(identity)
+                def fail_remote(*args,**kwargs):raise RetryableFieldError('Временная ошибка сети. Повторите сохранённый запрос.')
+                app._field_process=fail_remote
+                page.locator('#fieldTime').fill('2024-01-01T00:00');page.locator('#fieldDownload').click()
+                check('Временный сбой показывает повтор сохранённого задания','()=>FIELDS.job.status==="error"&&FIELDS.job.retry_available===true&&!document.querySelector("#fieldRetry").hidden')
+                retry_id=page.evaluate('()=>FIELDS.job.id')
+                app._field_process=lambda payload,**kwargs:{'field':cached_meta,'cached':True}
+                page.locator('#fieldRetry').click()
+                check('Повтор использует тот же id задания и завершает запрос','()=>FIELDS.job.status==="done"&&FIELDS.job.id==="'+retry_id+'"')
                 page.locator('#fieldDifferenceDetails').evaluate('(e)=>e.open=true')
                 second=page.evaluate('()=>FIELDS.fields.find(f=>f.source==="merra2").id')
                 page.locator('#fieldFirst').select_option(second);page.locator('#fieldSecond').select_option(identity)

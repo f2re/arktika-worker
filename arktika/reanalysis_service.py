@@ -34,6 +34,10 @@ ID=re.compile(r'^[0-9a-f]{24}$')
 TASK_ID=re.compile(r'^[0-9a-f]{32}$')
 
 
+class RetryableFieldError(ValueError):
+    """A remote request failed transiently and can be retried with its saved plan."""
+
+
 class ReanalysisMixin:
     @staticmethod
     def _read_pmc_mask_raster(data, label):
@@ -538,6 +542,7 @@ class ReanalysisMixin:
             if spec:
                 result['pending']={'kind':'remote','spec':spec}
                 result['resume_available']=bool(job.get('resume_available',job.get('status') in ('needs_action','interrupted')))
+                result['retry_available']=bool(job.get('retry_available') is True and result.get('status')=='error')
         action=job.get('needs_action')
         if (not isinstance(action,dict) and result.get('status')=='interrupted'
                 and result.get('pending',{}).get('kind')=='remote'):
@@ -580,7 +585,11 @@ class ReanalysisMixin:
             if code: raise ValueError('Обработчик реанализа завершился с ошибкой; частичное поле не используется.')
             try: result=json.loads((work/'result.json').read_text(encoding='utf-8'))
             except (OSError,ValueError): raise ValueError('Обработчик не вернул проверяемый результат.') from None
-            if not result.get('ok'): raise ValueError(result.get('error','Поле не обработано.'))
+            if not result.get('ok'):
+                message=result.get('error','Поле не обработано.')
+                if result.get('retryable') is True and payload.get('path') is None:
+                    raise RetryableFieldError(message)
+                raise ValueError(message)
             return result['result']
 
     def _field_start(self,payload,task_id=None,pending=None):
@@ -609,7 +618,8 @@ class ReanalysisMixin:
                     with self.lock: self._field_job.update(status='cancelled',message='Получение поля остановлено. Ранее готовые поля сохранены.',resume_available=False)
                     raise
                 except Exception as exc:
-                    with self.lock: self._field_job.update(status='error',message=str(exc) if isinstance(exc,ValueError) else 'Не удалось подготовить поле.',resume_available=False)
+                    retryable=isinstance(exc,RetryableFieldError) and bool(pending and pending.get('kind')=='remote')
+                    with self.lock: self._field_job.update(status='error',message=str(exc) if isinstance(exc,ValueError) else 'Не удалось подготовить поле.',resume_available=retryable,retry_available=retryable)
                     raise ValueError(self._field_job['message']) from None
                 finally:
                     with self.lock: atomic_json(self.fields_root/'job.json',self._field_job)
@@ -658,7 +668,9 @@ class ReanalysisMixin:
             job=self._field_job
             if not isinstance(identity,str) or not TASK_ID.fullmatch(identity) or identity!=job.get('id'):
                 raise ValueError('Задача реанализа не найдена или уже заменена.')
-            if job.get('status') not in ('needs_action','interrupted') or not job.get('resume_available'):
+            resumable=job.get('status') in ('needs_action','interrupted') and job.get('resume_available')
+            retryable=job.get('status')=='error' and job.get('retry_available') is True and job.get('resume_available')
+            if not (resumable or retryable):
                 raise ValueError('Эту задачу нельзя возобновить.')
             pending=job.get('pending',{})
             if pending.get('kind')!='remote': raise ValueError('Нет безопасно сохранённого плана удалённого запроса.')

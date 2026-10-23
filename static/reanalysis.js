@@ -47,6 +47,7 @@ function fieldsJob(){
   if($('#fieldStatus'))$('#fieldStatus').textContent=j.message||'';
   if($('#fieldCancel')){$('#fieldCancel').hidden=!(busy||j.status==='needs_action'||(j.status==='interrupted'&&j.resume_available));$('#fieldCancel').disabled=false;}
   if($('#fieldDialogCancel'))$('#fieldDialogCancel').hidden=!(busy||j.status==='needs_action'||(j.status==='interrupted'&&j.resume_available));
+  if($('#fieldRetry'))$('#fieldRetry').hidden=!(j.status==='error'&&j.retry_available===true&&j.resume_available===true);
   for(const id of ['#fieldDownload','#fieldImport','#fieldDifference'])$(id).disabled=busy||pendingAction;
   $('#fieldConfigure').disabled=busy;
   if(j.status==='error'||(j.status==='interrupted'&&!j.resume_available))fieldError(j.message);
@@ -170,11 +171,12 @@ const baseFieldInvalidate=invalidatePoint;
 invalidatePoint=function(){FIELDS.probeEpoch++;$('#fieldProbe')?.replaceChildren();return baseFieldInvalidate();};
 function initFieldUI(){
   if(!$('#taskGrid button')){setTimeout(initFieldUI,100);return;}
-  const block=document.createElement('section');block.id='fieldLayerPanel';block.innerHTML='<div class="section-heading"><h3>Поля реанализа</h3><button id="fieldAddOpen" class="tonal" aria-label="Добавить поле реанализа">＋</button></div><div id="fieldLayerRows"></div><p id="fieldLegacyNotice" class="notice" hidden></p><p id="fieldStatus" class="micro" role="status"></p><button id="fieldCancel" class="text-button" hidden>Отменить сохранённый запрос</button><hr>';
+  const block=document.createElement('section');block.id='fieldLayerPanel';block.innerHTML='<div class="section-heading"><h3>Поля реанализа</h3><button id="fieldAddOpen" class="tonal" aria-label="Добавить поле реанализа">＋</button></div><div id="fieldLayerRows"></div><p id="fieldLegacyNotice" class="notice" hidden></p><p id="fieldStatus" class="micro" role="status"></p><button id="fieldRetry" class="text-button" hidden>Повторить запрос</button><button id="fieldCancel" class="text-button" hidden>Отменить сохранённый запрос</button><hr>';
   $('#productPanel').prepend(block);$('#productRail span').textContent='Слои';$('#productRail').setAttribute('aria-label','Слои и продукты');
   $('#fieldAddOpen').onclick=()=>openFieldDialog().catch(e=>toast(e.message));
 const cancelFieldJob=async()=>{try{await api('/api/reanalysis/cancel',{id:FIELDS.job.id});await refreshFields();}catch(e){toast(e.message);}};
 $('#fieldCancel').onclick=cancelFieldJob;$('#fieldDialogCancel').onclick=cancelFieldJob;
+$('#fieldRetry').onclick=async()=>{try{const result=await api('/api/reanalysis/resume',{id:FIELDS.job.id});FIELDS.job={...FIELDS.job,...result,status:'running',message:'Повторяется сохранённый запрос'};FIELDS.pending=FIELDS.job.id;fieldsJob();await pollFields();}catch(e){fieldError(e.message);}};
   refreshFields().then(data=>{FIELDS.stack=data.stack.filter(s=>fieldMeta(s.id));drawFieldStack();renderFieldMaps();if(FIELDS.job.status==='running')pollFields();}).catch(e=>toast(e.message));
 }
 const baseFieldSaveAccess=saveSourceAccess;
