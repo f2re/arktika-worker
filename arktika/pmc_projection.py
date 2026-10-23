@@ -16,6 +16,7 @@ from rasterio.enums import Resampling
 from rasterio.warp import reproject
 
 from .pmc_vorticity import _coordinates
+from .product_schema import product_passport
 
 MAX_DETECTOR_PROJECTION_SCALE_ERROR = 0.05
 
@@ -198,15 +199,61 @@ def reproject_vorticity_to_grid(values: Any, latitude: Any, longitude: Any, *,
               resampling=Resampling.nearest, init_dest_nodata=True)
     output[warped_valid == 0] = np.nan
     scale = _projection_scale(lat_mesh, lon_mesh, target_crs)
-    passport = dict(source_passport)
-    passport.update({"quantity": "relative_vorticity", "variable": "relative_vorticity",
-                     "level_hPa": 850, "units": "s-1",
-                     "maturity": "experimental", "source_grid": source_grid, "grid": grid,
-                     "projection_scale": scale,
+    raw_sources = source_passport.get("sources")
+    if isinstance(raw_sources, list) and raw_sources:
+        sources = []
+        for item in raw_sources:
+            if not isinstance(item, dict):
+                continue
+            source_id = item.get("source_id", source_passport.get("source"))
+            if isinstance(source_id, str) and source_id.strip():
+                sources.append({"source_id": source_id.strip()})
+    else:
+        sources = [{"source_id": str(source_passport["source"])}]
+    if not sources:
+        raise ValueError("source passport must identify at least one source")
+    source_limitations = source_passport.get("limitations", [])
+    if not isinstance(source_limitations, list) or any(not isinstance(item, str) for item in source_limitations):
+        source_limitations = []
+    source_name = str(source_passport["source"])
+    source_algorithm = source_passport.get("algorithm", {})
+    if not isinstance(source_algorithm, dict):
+        source_algorithm = {}
+    source_algorithm_id = source_algorithm.get("id", source_passport.get("algorithm_id", "unknown"))
+    source_algorithm_version = source_algorithm.get("version", source_passport.get("algorithm_version", "unknown"))
+    passport = product_passport(
+        product_id="arktika.relative_vorticity.850hpa.projected",
+        algorithm_id="arktika.experimental_vorticity_reprojection",
+        algorithm_version="0.1.0",
+        maturity="experimental",
+        quantity_kind="atmospheric_dynamics",
+        quantity="relative_vorticity",
+        units="s-1",
+        valid_time=source_passport["valid_time"],
+        data_kind="analysis",
+        grid=grid,
+        source_grids=[source_grid],
+        nodata="NaN; nearest source validity mask preserved",
+        quality_control={"status": "reprojected", "valid_pixels": int(np.isfinite(output).sum()),
+                         "total_pixels": int(output.size),
+                         "valid_fraction": float(np.isfinite(output).mean())},
+        sources=sources,
+        calibration_version="not_applicable",
+        calibration_status="not_applicable",
+        limitations=(list(source_limitations)
+                     + ["Проекция и её пригодность для детектора не прошли метеорологическую проверку."]),
+    )
+    passport.update({"algorithm_id": "arktika.experimental_vorticity_reprojection",
+                     "algorithm_version": "0.1.0", "maturity": "experimental",
+                     "valid_time": source_passport["valid_time"], "units": "s-1",
+                     "quantity": "relative_vorticity", "variable": "relative_vorticity",
+                     "level_hPa": 850, "source": source_name,
+                     "source_algorithm_id": source_algorithm_id,
+                     "source_algorithm_version": source_algorithm_version,
+                     "source_grid": source_grid, "projection_scale": scale,
                      "input_coverage": {"valid_pixels": int(np.isfinite(output).sum()),
                                         "total_pixels": int(output.size),
                                         "valid_fraction": float(np.isfinite(output).mean())},
-                     "nodata": "NaN; nearest source validity mask preserved",
                      "reprojection": {"method": "rasterio.warp.reproject", "resampling": "bilinear",
                                       "source_georeferencing": ("affine_regular_grid" if source_transform is not None
                                                                  else "2d_latitude_longitude_geolocation_arrays"),

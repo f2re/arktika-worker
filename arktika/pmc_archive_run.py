@@ -275,9 +275,18 @@ def build_archive_report(*, task_id: str, plan: dict[str, Any],
         satellite_metrics = None
     passport = None
     if isinstance(target_grid, dict):
-        all_expected = [stamp for stamps in expected_times.values() for stamp in stamps]
-        period_start = plan.get("start") or (min(all_expected) if all_expected else None)
-        period_end = plan.get("end") or (max(all_expected) if all_expected else None)
+        actual_times = []
+        for row in successful:
+            result = row.get("result", {})
+            stamp = result.get("valid_time") if isinstance(result, dict) else None
+            if stamp is None:
+                stamp = row.get("valid_time")
+            try:
+                actual_times.append(_utc(stamp))
+            except (TypeError, ValueError):
+                continue
+        period_start = min(actual_times).isoformat().replace("+00:00", "Z") if actual_times else None
+        period_end = max(actual_times).isoformat().replace("+00:00", "Z") if actual_times else None
         period = ({"start": _utc(period_start).isoformat().replace("+00:00", "Z"),
                    "end": _utc(period_end).isoformat().replace("+00:00", "Z")}
                   if period_start and period_end else None)
@@ -315,8 +324,8 @@ def build_archive_report(*, task_id: str, plan: dict[str, Any],
                         if key not in seen_grids:
                             source_grids.append(source_grid)
                             seen_grids.add(key)
-        if not source_grids:
-            source_grids = [{"role": "detector_input_grid", **target_grid}]
+        if not source_grids and successful:
+            source_grids = [{"role": "candidate_detection_grid", **target_grid}]
         report_limitations = [
             "Отсутствующие, неполные и ошибочные сроки не трактуются как отсутствие ПМЦ.",
             "Треки строятся только внутри непрерывных последовательностей наблюдавшихся модельных кандидатов.",
@@ -346,7 +355,7 @@ def build_archive_report(*, task_id: str, plan: dict[str, Any],
             calibration_status="not_applicable",
             limitations=report_limitations,
             uncertainty={"status": "not_assessed", "method": None},
-        ) if source_refs and period else None
+        ) if successful and source_refs and source_grids and period else None
     else:
         report_limitations = [
             "Отсутствующие, неполные и ошибочные сроки не трактуются как отсутствие ПМЦ.",
@@ -360,7 +369,7 @@ def build_archive_report(*, task_id: str, plan: dict[str, Any],
         "algorithm_id": ALGORITHM_ID,
         "algorithm_version": ALGORITHM_VERSION,
         "maturity": "experimental",
-        "output_status": "candidate_only",
+        "output_status": "candidate_only" if passport is not None else "not_publishable",
         "forecast": False,
         "status": "partial" if incomplete else "completed",
         "plan": plan,
@@ -382,4 +391,9 @@ def build_archive_report(*, task_id: str, plan: dict[str, Any],
     }
     if passport is not None:
         report["passport"] = passport
+    else:
+        report["publication"] = {
+            "status": "not_publishable",
+            "reason": "Нет успешно обработанных кадров с подтверждёнными источниками, временным периодом и сеткой.",
+        }
     return report
