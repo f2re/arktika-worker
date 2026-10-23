@@ -5,6 +5,7 @@ import numpy as np
 
 from arktika.pmc_detection import (
     ALGORITHM_VERSION,
+    _peak_saddle_diagnostics,
     _smooth_uniform_radius,
     detect_candidates,
 )
@@ -79,13 +80,50 @@ class PmcDetectionTests(unittest.TestCase):
         self.assertEqual(1, result["candidate_count"])
         candidate = result["candidates"][0]
         structure = candidate["peak_structure"]
-        self.assertEqual("diagnostic_only_not_partitioned", structure["status"])
+        self.assertEqual("experimental_saddle_diagnostic_only_not_partitioned", structure["status"])
         self.assertEqual(2, structure["local_maximum_count"])
         self.assertEqual([1.8e-4, 1.6e-4], [
             peak["peak_vorticity_s-1"] for peak in structure["local_maxima"]])
         self.assertEqual([6.5, 4.5], structure["local_maxima"][0]["peak_pixel_rc"])
+        self.assertAlmostEqual(1.0e-4, structure["local_maxima"][0]["saddle_vorticity_s-1"])
+        self.assertAlmostEqual((1.6e-4 - 1.05e-4) / 1.6e-4,
+                               structure["local_maxima"][1]["relative_isolation_contrast"])
+        self.assertTrue(all(peak["isolated_by_experimental_gamma"]
+                            for peak in structure["local_maxima"]))
         self.assertEqual(13, candidate["pixel_count"])
-        self.assertEqual("0.3.0", result["algorithm_version"])
+        self.assertEqual("0.4.0", result["algorithm_version"])
+
+    def test_saddle_diagnostic_does_not_change_candidate_area_for_a_single_peak(self):
+        result = self.run_detector()
+        candidate = result["candidates"][0]
+        self.assertEqual(1, candidate["peak_structure"]["local_maximum_count"])
+        peak = candidate["peak_structure"]["local_maxima"][0]
+        self.assertEqual(1.0e-4, peak["saddle_vorticity_s-1"])
+        self.assertTrue(peak["isolated_by_experimental_gamma"])
+        self.assertEqual(49, candidate["pixel_count"])
+
+    def test_saddle_uses_nearest_stronger_peak_in_branching_topology(self):
+        field = np.array([[10.0, 4.0, 8.0, 6.0, 7.0]])
+        component = np.ones_like(field, dtype=bool)
+        peaks = [
+            {"peak_vorticity_s-1": 10.0, "peak_pixel_rc": [0.0, 0.0],
+             "_seed_rc": [0, 0], "plateau_pixel_count": 1},
+            {"peak_vorticity_s-1": 8.0, "peak_pixel_rc": [0.0, 2.0],
+             "_seed_rc": [0, 2], "plateau_pixel_count": 1},
+            {"peak_vorticity_s-1": 7.0, "peak_pixel_rc": [0.0, 4.0],
+             "_seed_rc": [0, 4], "plateau_pixel_count": 1},
+        ]
+        diagnostics = _peak_saddle_diagnostics(field, component, peaks, threshold=1.0)
+        self.assertEqual(6.0, diagnostics[2]["saddle_vorticity_s-1"])
+        self.assertAlmostEqual(1.0 / 7.0, diagnostics[2]["relative_isolation_contrast"])
+        self.assertFalse(diagnostics[2]["isolated_by_experimental_gamma"])
+
+    def test_saddle_diagnostic_declines_oversized_components_explicitly(self):
+        field = np.ones((1, 16385), dtype=float)
+        component = np.ones_like(field, dtype=bool)
+        peaks = [{"peak_vorticity_s-1": 1.0, "peak_pixel_rc": [0.0, 0.0],
+                  "_seed_rc": [0, 0], "plateau_pixel_count": 1}]
+        self.assertIsNone(_peak_saddle_diagnostics(field, component, peaks, threshold=0.5))
 
     def test_archive_domain_mask_excludes_candidate_pixels_outside_region(self):
         domain = np.zeros((15, 15), dtype=bool)
