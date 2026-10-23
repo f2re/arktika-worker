@@ -15,12 +15,12 @@ from .product_schema import product_passport
 
 
 ALGORITHM_ID = "arktika.experimental_pmc_candidate_linker"
-ALGORITHM_VERSION = "0.1.0"
+ALGORITHM_VERSION = "0.2.0"
 ASSOCIATION_LIMIT_M = 180_000.0
 LIMITATIONS = [
     "Трек связывает только экспериментальные кандидаты и не подтверждает ПМЦ.",
     "Начало траектории наблюдалось в данных; это не оценка места или времени зарождения.",
-    "Разделение и слияние кандидатов не разрешаются; неоднозначные связи отмечаются.",
+    "Неоднозначные компоненты связей разрываются; продолжение разрешено только для однозначных пар 1:1.",
     "Алгоритм не воспроизводит IMPMCT и не выполняет расчёт вихревости или спутниковую детекцию.",
     "Весь входной ряд отклоняется, если соседние кадры разделены интервалом больше max_step_seconds.",
 ]
@@ -84,7 +84,7 @@ def _point_m(candidate: dict[str, Any], transform: tuple[float, ...],
 
 def link_candidates(frames: list[dict[str, Any]], *, max_step_seconds: float = 3600.0,
                     max_distance_m: float = ASSOCIATION_LIMIT_M) -> dict[str, Any]:
-    """Link adjacent hourly candidate frames by deterministic greedy distance.
+    """Link only unambiguous adjacent candidate frames by metric distance.
 
     Frames must be chronological, unique UTC times, and share exact source and
     grid metadata. The complete input is rejected if any interval is greater
@@ -112,6 +112,8 @@ def link_candidates(frames: list[dict[str, Any]], *, max_step_seconds: float = 3
     source = first.get("source")
     grid = first.get("grid")
     master_grid = _grid_key(grid)
+    if not isinstance(grid, dict):
+        raise ValueError("each frame must include grid metadata")
     if not isinstance(source, str) or not source.strip():
         raise ValueError("frame source provenance is required")
     for frame in frames:
@@ -137,8 +139,9 @@ def link_candidates(frames: list[dict[str, Any]], *, max_step_seconds: float = 3
             if not isinstance(candidate, dict):
                 raise ValueError("candidate entries must be objects")
             _point_m(candidate, transform, width, height)
+        matches: list[tuple[int, int, float]] = []
         if frame_index == 0 or not active or not candidates:
-            matches: list[tuple[int, int, float]] = []
+            pass
         else:
             # Candidate order is deterministic for equal-distance tie breaks.
             distances = []
@@ -151,23 +154,69 @@ def link_candidates(frames: list[dict[str, Any]], *, max_step_seconds: float = 3
                         distances.append((distance, prev_index, curr_index))
             prev_degree: dict[int, int] = {}
             curr_degree: dict[int, int] = {}
+            prev_neighbors: dict[int, set[int]] = {}
+            curr_neighbors: dict[int, set[int]] = {}
             for _, pi, ci in distances:
                 prev_degree[pi] = prev_degree.get(pi, 0) + 1
                 curr_degree[ci] = curr_degree.get(ci, 0) + 1
-            if any(n > 1 for n in prev_degree.values()) or any(n > 1 for n in curr_degree.values()):
+                prev_neighbors.setdefault(pi, set()).add(ci)
+                curr_neighbors.setdefault(ci, set()).add(pi)
+
+            # Continue only isolated 1:1 graph edges. A nearest-neighbour
+            # choice inside a split/merge component invents trajectory
+            # continuity unsupported by these centroid-only inputs.
+            matches = [
+                (pi, ci, distance) for distance, pi, ci in distances
+                if prev_degree[pi] == 1 and curr_degree[ci] == 1
+            ]
+
+            ambiguous_prev = {pi for pi, degree in prev_degree.items() if degree > 1}
+            ambiguous_curr = {ci for ci, degree in curr_degree.items() if degree > 1}
+            unseen_prev = set(ambiguous_prev)
+            unseen_curr = set(ambiguous_curr)
+            while unseen_prev or unseen_curr:
+                seed_prev = min(unseen_prev) if unseen_prev else None
+                seed_curr = min(unseen_curr) if seed_prev is None else None
+                component_prev: set[int] = set()
+                component_curr: set[int] = set()
+                pending_prev = [seed_prev] if seed_prev is not None else []
+                pending_curr = [seed_curr] if seed_curr is not None else []
+                while pending_prev or pending_curr:
+                    while pending_prev:
+                        pi = pending_prev.pop()
+                        if pi in component_prev:
+                            continue
+                        component_prev.add(pi)
+                        unseen_prev.discard(pi)
+                        pending_curr.extend(prev_neighbors.get(pi, ()))
+                    while pending_curr:
+                        ci = pending_curr.pop()
+                        if ci in component_curr:
+                            continue
+                        component_curr.add(ci)
+                        unseen_curr.discard(ci)
+                        pending_prev.extend(curr_neighbors.get(ci, ()))
+                possible_links = [
+                    {"previous_index": pi,
+                     "previous_candidate_id": active[pi]["_candidate"].get("candidate_id"),
+                     "current_index": ci,
+                     "current_candidate_id": candidates[ci].get("candidate_id"),
+                     "distance_m": distance}
+                    for distance, pi, ci in sorted(distances, key=lambda item: (item[0], item[1], item[2]))
+                    if pi in component_prev and ci in component_curr
+                ]
                 associations.append({
                     "time": timestamp.isoformat().replace("+00:00", "Z"),
                     "status": "unresolved_split_merge_association",
-                    "limitation": "multiple candidates fall within the association radius; greedy links are ambiguous",
+                    "previous_candidates": [
+                        {"index": pi, "candidate_id": active[pi]["_candidate"].get("candidate_id")}
+                        for pi in sorted(component_prev)],
+                    "current_candidates": [
+                        {"index": ci, "candidate_id": candidates[ci].get("candidate_id")}
+                        for ci in sorted(component_curr)],
+                    "possible_links": possible_links,
+                    "action": "no_tracks_continued_or_created_from_ambiguous_links",
                 })
-            used_prev: set[int] = set()
-            used_curr: set[int] = set()
-            matches = []
-            for distance, pi, ci in sorted(distances, key=lambda item: (item[0], item[1], item[2])):
-                if pi not in used_prev and ci not in used_curr:
-                    matches.append((pi, ci, distance))
-                    used_prev.add(pi)
-                    used_curr.add(ci)
 
         matched_current: set[int] = set()
         new_active: dict[int, dict[str, Any]] = {}

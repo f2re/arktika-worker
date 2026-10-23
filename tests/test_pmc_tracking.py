@@ -116,10 +116,53 @@ class PmcTrackingTests(unittest.TestCase):
     def test_ambiguous_split_merge_is_reported_as_unresolved(self):
         outputs = link_candidates([frame(0, [candidate("a", 5, 5)]),
                                    frame(1, [candidate("b", 5, 4), candidate("c", 5, 6)])])
-        self.assertEqual(2, outputs["track_count"])
+        self.assertEqual(3, outputs["track_count"])
         self.assertEqual("unresolved_split_merge_association",
                          outputs["unresolved_associations"][0]["status"])
-        self.assertTrue(any("не разрешаются" in item for item in outputs["limitations"]))
+        self.assertEqual([["a"], ["b"], ["c"]], [
+            [point["candidate_id"] for point in track["points"]]
+            for track in outputs["tracks"]])
+        association = outputs["unresolved_associations"][0]
+        self.assertEqual("no_tracks_continued_or_created_from_ambiguous_links", association["action"])
+        self.assertEqual({"b", "c"}, {item["current_candidate_id"]
+                                       for item in association["possible_links"]})
+        self.assertTrue(any("пар 1:1" in item for item in outputs["limitations"]))
+
+    def test_ambiguous_merge_does_not_pick_nearest_previous_track(self):
+        outputs = link_candidates([frame(0, [candidate("a", 5, 4), candidate("b", 5, 6)]),
+                                   frame(1, [candidate("c", 5, 5)])])
+        self.assertEqual(3, outputs["track_count"])
+        self.assertEqual([["a"], ["b"], ["c"]], [
+            [point["candidate_id"] for point in track["points"]]
+            for track in outputs["tracks"]])
+        self.assertEqual({"a", "b"}, {item["previous_candidate_id"]
+                                       for item in outputs["unresolved_associations"][0]["possible_links"]})
+
+    def test_independent_one_to_one_link_continues_beside_ambiguous_component(self):
+        outputs = link_candidates([
+            frame(0, [candidate("a", 5, 5), candidate("x", 30, 30)]),
+            frame(1, [candidate("b", 5, 4), candidate("c", 5, 6), candidate("y", 30, 31)]),
+        ])
+        tracks = {tuple(point["candidate_id"] for point in track["points"])
+                  for track in outputs["tracks"]}
+        self.assertEqual({("a",), ("b",), ("c",), ("x", "y")}, tracks)
+        self.assertEqual(1, len(outputs["unresolved_associations"]))
+
+    def test_disconnected_merge_and_split_are_reported_as_separate_components(self):
+        outputs = link_candidates([
+            frame(0, [candidate("a", 5, 4), candidate("b", 5, 6),
+                      candidate("x", 30, 30)]),
+            frame(1, [candidate("c", 5, 5), candidate("y", 30, 29),
+                      candidate("z", 30, 31)]),
+        ])
+        associations = outputs["unresolved_associations"]
+        self.assertEqual(2, len(associations))
+        self.assertEqual({("a", "b")}, {
+            tuple(sorted(item["previous_candidate_id"] for item in row["possible_links"]))
+            for row in associations if row["current_candidates"][0]["candidate_id"] == "c"})
+        self.assertEqual({("y", "z")}, {
+            tuple(sorted(item["current_candidate_id"] for item in row["possible_links"]))
+            for row in associations if row["previous_candidates"][0]["candidate_id"] == "x"})
 
 
 if __name__ == "__main__":
