@@ -608,7 +608,9 @@ class ReanalysisMixin:
             except ValueError: provider=None
             if action.get('code')=='credentials_required' and provider not in (None,'none') and action.get('provider')==provider:
                 safe_action=ReanalysisMixin._credential_action(source)
-                if isinstance(identity,str) and TASK_ID.fullmatch(identity):safe_action['id']=identity
+                if (provider not in ('cds','earthdata') and isinstance(identity,str)
+                        and TASK_ID.fullmatch(identity)):
+                    safe_action['id']=identity
                 result['needs_action']=safe_action
         if 'status' not in result: result['status']='idle'
         return result
