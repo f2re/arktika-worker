@@ -24,14 +24,18 @@ from scipy import ndimage
 from .product_schema import product_passport
 
 ALGORITHM_ID = "arktika.experimental_pmc_candidates"
-ALGORITHM_VERSION = "0.3.0"
+ALGORITHM_VERSION = "0.4.0"
 METHOD_REFERENCE = "Fang et al. (2025), IMPMCT, doi:10.5194/essd-17-6049-2025"
 PARAMETERS = {
     "uniform_radius_km": 60.0,
     "smoothing_operator": "circular uniform mean; nodata-renormalized",
     "minimum_vorticity_s-1": 1.0e-4,
     "peak_vorticity_s-1": 1.2e-4,
-    "peak_diagnostic": "8-neighbour local maxima; plateaus represented by centroid",
+    "peak_diagnostic": "8-neighbour local maxima; maximin saddle isolation diagnostic",
+    "peak_isolation_gamma": 0.15,
+    "peak_isolation_method": "discrete 8-neighbour maximum-bottleneck path; global peak uses component threshold reference",
+    "peak_isolation_max_component_cells": 16384,
+    "peak_isolation_max_local_maxima": 128,
     "connectivity": 8,
     "quantity": "850-hPa relative vorticity",
 }
@@ -114,10 +118,99 @@ def _local_peak_diagnostics(field: np.ndarray, component: np.ndarray) -> list[di
         peaks.append({
             "peak_vorticity_s-1": peak,
             "peak_pixel_rc": [float(np.mean(rows)), float(np.mean(cols))],
+            "_seed_rc": [int(rows[0]), int(cols[0])],
             "plateau_pixel_count": int(len(plateau)),
         })
     return sorted(peaks, key=lambda item: (
         -item["peak_vorticity_s-1"], item["peak_pixel_rc"][0], item["peak_pixel_rc"][1]))
+
+
+def _peak_saddle_diagnostics(field: np.ndarray, component: np.ndarray,
+                             peaks: list[dict[str, Any]],
+                             threshold: float) -> list[dict[str, Any]]:
+    """Estimate peak isolation by maximin connectivity on the discrete grid.
+
+    A descending-value union-find sweep records the merge level of each peak
+    into a stronger peak. This discrete 8-neighbour max-tree approximation is
+    not contour interpolation or the published valley-line method.
+    """
+    if not peaks:
+        return []
+    rows, cols = np.nonzero(component)
+    if (len(rows) > PARAMETERS["peak_isolation_max_component_cells"]
+            or len(peaks) > PARAMETERS["peak_isolation_max_local_maxima"]):
+        return None
+    y0, y1 = int(rows.min()), int(rows.max()) + 1
+    x0, x1 = int(cols.min()), int(cols.max()) + 1
+    local_component = component[y0:y1, x0:x1]
+    local_field = field[y0:y1, x0:x1]
+    flat_component = local_component.ravel()
+    flat_values = local_field.ravel()
+    cells = np.flatnonzero(flat_component)
+    order = cells[np.argsort(-flat_values[cells], kind="stable")]
+    parent = np.full(flat_component.size, -1, dtype=np.int32)
+    labels = np.full(flat_component.size, -1, dtype=np.int32)
+    peak_by_seed = {((peak["_seed_rc"][0] - y0) * local_field.shape[1]
+                     + peak["_seed_rc"][1] - x0): index
+                    for index, peak in enumerate(peaks)}
+    saddles: list[float | None] = [None] * len(peaks)
+
+    def find(node: int) -> int:
+        root = node
+        while parent[root] != root:
+            root = int(parent[root])
+        while node != root:
+            following = int(parent[node])
+            parent[node] = root
+            node = following
+        return root
+
+    width = local_field.shape[1]
+    for cell in order:
+        cell = int(cell)
+        y, x = divmod(cell, width)
+        parent[cell] = cell
+        labels[cell] = peak_by_seed.get(cell, -1)
+        for dy in (-1, 0, 1):
+            for dx in (-1, 0, 1):
+                if dy == 0 and dx == 0:
+                    continue
+                ny, nx = y + dy, x + dx
+                if not (0 <= ny < local_field.shape[0] and 0 <= nx < width):
+                    continue
+                neighbor = ny * width + nx
+                if parent[neighbor] < 0:
+                    continue
+                left, right = find(cell), find(neighbor)
+                if left == right:
+                    continue
+                left_peak, right_peak = int(labels[left]), int(labels[right])
+                if left_peak >= 0 and right_peak >= 0:
+                    if peaks[left_peak]["peak_vorticity_s-1"] >= peaks[right_peak]["peak_vorticity_s-1"]:
+                        stronger, weaker = left_peak, right_peak
+                    else:
+                        stronger, weaker = right_peak, left_peak
+                    if saddles[weaker] is None:
+                        saddles[weaker] = float(local_field[y, x])
+                    labels[left] = stronger
+                elif right_peak >= 0:
+                    labels[left] = right_peak
+                parent[right] = left
+
+    diagnostics = []
+    for index, peak in enumerate(peaks):
+        saddle = float(threshold) if index == 0 or saddles[index] is None else saddles[index]
+        peak_value = float(peak["peak_vorticity_s-1"])
+        contrast = (peak_value - saddle) / peak_value if peak_value > 0 else 0.0
+        diagnostics.append({
+            "peak_vorticity_s-1": peak_value,
+            "peak_pixel_rc": peak["peak_pixel_rc"],
+            "saddle_vorticity_s-1": saddle,
+            "relative_isolation_contrast": contrast,
+            "isolated_by_experimental_gamma": contrast > PARAMETERS["peak_isolation_gamma"],
+            "plateau_pixel_count": peak["plateau_pixel_count"],
+        })
+    return diagnostics
 
 
 def compare_satellite(candidate_mask: np.ndarray,
@@ -297,6 +390,18 @@ def detect_candidates(vorticity_850: np.ndarray, *, grid: dict[str, Any],
         component = np.zeros(array.shape, dtype=bool)
         component[ys, xs] = True
         local_peaks = _local_peak_diagnostics(smoothed, component)
+        saddle_peaks = _peak_saddle_diagnostics(
+            smoothed, component, local_peaks, threshold)
+        if saddle_peaks is None:
+            saddle_peaks = [{
+                "peak_vorticity_s-1": peak["peak_vorticity_s-1"],
+                "peak_pixel_rc": peak["peak_pixel_rc"],
+                "saddle_vorticity_s-1": None,
+                "relative_isolation_contrast": None,
+                "isolated_by_experimental_gamma": None,
+                "isolation_status": "not_computed_component_complexity_limit",
+                "plateau_pixel_count": peak["plateau_pixel_count"],
+            } for peak in local_peaks]
         candidate_mask[ys, xs] = True
         candidates.append({
             "candidate_id": f"pmc-candidate-{len(candidates) + 1:04d}",
@@ -307,14 +412,18 @@ def detect_candidates(vorticity_850: np.ndarray, *, grid: dict[str, Any],
             "peak_pixel_rc": [int(ys[peak_index]), int(xs[peak_index])],
             "centroid_pixel_rc": [float(np.mean(ys)), float(np.mean(xs))],
             "peak_structure": {
-                "status": "diagnostic_only_not_partitioned",
-                "local_maximum_count": len(local_peaks),
-                "local_maxima": local_peaks,
+                "status": ("experimental_saddle_diagnostic_only_not_partitioned"
+                           if all(peak["saddle_vorticity_s-1"] is not None for peak in saddle_peaks)
+                           else "diagnostic_skipped_component_complexity_limit"),
+                "method": PARAMETERS["peak_isolation_method"],
+                "gamma": PARAMETERS["peak_isolation_gamma"],
+                "local_maximum_count": len(saddle_peaks),
+                "local_maxima": saddle_peaks,
             },
         })
     limitations = [
         "Кандидаты не являются подтверждёнными ПМЦ или прогнозом зарождения.",
-        "Локальные максимумы внутри связной области выводятся только как диагностика; опубликованные contour/valley-line разделение и оценка изоляции не реализованы.",
+        "Изоляция максимумов оценивается по дискретному maximin-седлу; это не contour/valley-line алгоритм и не меняет маску кандидата.",
         "Архивный трекер использует соседство центроидов; steering flow, split/merge и опубликованные QC-процедуры отсутствуют.",
         "Спутниковое сравнение описывает только пиксельное перекрытие заданных масок и не является независимой метеорологической верификацией.",
         "Искажение масштаба конкретной проекции не оценивается; пригодность сетки для заданной широты требует отдельной проверки.",
