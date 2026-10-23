@@ -159,6 +159,11 @@ def main():
                     page.locator('#scalePreview').scroll_into_view_if_needed();shot('scale-preview.png')
                     page.locator('#scaleDN2').fill('100')
                     check('Вырожденные опоры не принимаются','()=>!document.querySelector("#scaleError").hidden&&document.querySelector("#scalePreview").childElementCount===0')
+                    for width in (1024,390):
+                        page.set_viewport_size(dict(width=width,height=844))
+                        check('Диалог калибровки без горизонтального переполнения '+str(width),'()=>document.documentElement.scrollWidth<=innerWidth+1&&document.querySelector("#calibrationDialog").scrollWidth<=document.querySelector("#calibrationDialog").clientWidth+1')
+                        shot('scale-'+str(width)+'.png')
+                    page.set_viewport_size(dict(width=1440,height=960))
                     page.locator('#calibrationDialog [data-close]').click()
                     page.locator('[data-task="cth"]').click()
                     check('Высота открывает канал и профильный сценарий','()=>S.product?.product==="channel"&&S.product.request.channel===9&&!S.busy&&!UI.activeBuild&&document.querySelector("#productFeedback").textContent.includes("профиль T(z)")')
@@ -185,11 +190,7 @@ def main():
                     assert restored['style']['minimum']==270.15 and restored['style']['maximum']==280.15 and restored['style']['palette_id']=='blue-amber'
                     assert restored['style']['product_id']==style_first['id']
                     report['checks'].append(dict(name='Второй продукт не перезаписывает стиль первого; повторное открытие восстанавливает свой профиль',passed=True))
-                    for width in (1024,390):
-                        page.set_viewport_size(dict(width=width,height=844));page.locator('#calibrationOpen').click()
-                        page.locator('#calibrationDialog').wait_for(state='visible')
-                        check('Шкала без горизонтального переполнения '+str(width),'()=>document.documentElement.scrollWidth<=innerWidth+1&&document.querySelector("#calibrationDialog").scrollWidth<=document.querySelector("#calibrationDialog").clientWidth+1')
-                        shot('scale-'+str(width)+'.png');page.keyboard.press('Escape')
+                    check('Калибровка недоступна у сохранённого продукта без исходного срока','()=>S.product?.id==='+json.dumps(style_first['id'])+'&&!S.scene&&document.querySelector("#calibrationOpen").disabled')
                     doc=page.context.new_page();resp=doc.goto(base+'/docs/CALIBRATION.html')
                     assert resp.status==200 and 'text/html' in resp.headers.get('content-type','');doc.close()
                     report['checks'].append(dict(name='HTML-методика доступна',passed=True))

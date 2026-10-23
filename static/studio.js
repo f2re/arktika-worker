@@ -318,6 +318,7 @@ selectScene = function(scene) {
   if(changed){clearRange();invalidateRoute();}
   if(!scene.composites?.some(c=>c.id===UI.compositeId))UI.compositeId=scene.composites?.[0]?.id||null;
   original.selectScene(scene);UI.selectedScene=scene.id;
+  $('#calibrationOpen').disabled=Boolean(S.product?.display_only);
   $('#dateCaption').textContent=readableDate(scene.time.slice(0,10));$('#timeCaption').textContent=scene.time.slice(11,16)+' UTC';
   timeStrip();drawChannelChips();renderCatalog();
   if(changed) {
@@ -455,7 +456,7 @@ showProduct = async function(p) {
   const ctx=await setMap(p.grid.preset,p.grid.width,p.id);if(!ctx||epoch!==UI.contextEpoch||revision!==PRODUCT_VIEW_REVISION)return;
   if(S.scene?.id!==p.scene_id){S.scene=S.scenes.find(s=>s.id===p.scene_id)||null;$('#dateCaption').textContent=readableDate(p.time.slice(0,10));$('#timeCaption').textContent=p.time.slice(11,16)+' UTC';}
   api('/api/settings',{view_settings:{preset:p.grid.preset,product:p.product,channel:p.request.channel||9}}).catch(e=>toast(e.message));
-  S.product=p;$('#calibrationState').textContent=p.display_only?'RGB':displayCal[p.calibration_status]||'DN';$('#calibrationOpen').disabled=Boolean(p.display_only);if(p.display_only)UI.compositeId=p.request.composite;$('#preset').value=p.grid.preset;$('#product').value=p.product;$('#channel').value=p.request.channel||9;
+  S.product=p;$('#calibrationState').textContent=p.display_only?'RGB':displayCal[p.calibration_status]||'DN';$('#calibrationOpen').disabled=Boolean(p.display_only||!S.scene);if(p.display_only)UI.compositeId=p.request.composite;$('#preset').value=p.grid.preset;$('#product').value=p.product;$('#channel').value=p.request.channel||9;
   $('#mapTitle').textContent=p.title.replace('Круглосуточная микрофизика','Микрофизика · 24 ч').replace('Интегральная карта спектральных признаков','Спектральные признаки');
   $('#mapSubtitle').textContent=p.platform+' · '+p.time;
   $('#productTag').textContent=(p.platform==='ARCM1'?'Арктика-М1':'Арктика-М2')+' · '+p.time.slice(11,16)+' UTC'+(p.calibration_status==='assumed'?' · исследовательская шкала':'');
@@ -1102,7 +1103,7 @@ poll = async function() {
     $('#status').textContent=r.busy?r.status:'Готово';$('#statusdot').classList.toggle('busy',r.busy);
     $('#cancel').hidden=!r.busy;$('#process').disabled=r.busy;
     const cal=S.product?.calibration_status||r.calibration?.mode;
-    $('#calibrationState').textContent=S.product?.display_only?'RGB':displayCal[cal]||'DN';$('#calibrationOpen').disabled=Boolean(S.product?.display_only);
+    $('#calibrationState').textContent=S.product?.display_only?'RGB':displayCal[cal]||'DN';$('#calibrationOpen').disabled=Boolean(S.product?.display_only||!S.scene);
     $('#calibrationOpen').dataset.tip=sourceCal[cal]||'Единицы каналов';
     $('#downloadPath').textContent=r.download_dir;
     const q=r.queue_counts||{},count=(q.queued||0)+(q.running||0);
