@@ -69,7 +69,7 @@ def main():
                     page.locator('#productsDialog').wait_for(state='visible')
                     page.locator(f'#savedProducts button[data-id="{identity}"]').click()
                     wait(f'()=>S.product?.id==={json.dumps(identity)}&&!S.busy&&!UI.activeBuild')
-                    style_state=page.evaluate('()=>({id:S.product?.id,files:S.product?.files,quantity_kind:S.product?.legend?.quantity_kind,version:S.product?.passport?.algorithm?.version,button:!!document.querySelector("#productStyleOpen"),disabled:document.querySelector("#productStyleOpen")?.disabled})')
+                    style_state=page.evaluate('()=>({id:S.product?.id,files:S.product?.files,quantity_kind:S.product?.legend?.quantity_kind,version:S.product?.passport?.algorithm?.version,button:!!document.querySelector("#productStyleOpen"),disabled:document.querySelector("#productStyleOpen")?.disabled,toast:document.querySelector("#toast")?.textContent})')
                     assert style_state['button'] and not style_state['disabled'], f'Продукт открылся, но шкала недоступна: {style_state}'
                 def export_product_json(identity):
                     encoded=page.evaluate('''async id=>{const r=await fetch('/artifact/'+encodeURIComponent(id)+'/export.zip');if(!r.ok)throw Error('ZIP HTTP '+r.status);const bytes=new Uint8Array(await r.arrayBuffer());let binary='';for(let i=0;i<bytes.length;i+=8192)binary+=String.fromCharCode(...bytes.subarray(i,i+8192));return btoa(binary)}''',identity)
