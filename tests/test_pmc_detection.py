@@ -60,6 +60,12 @@ class PmcDetectionTests(unittest.TestCase):
         self.assertTrue(all(c["confirmation_status"] == "not_confirmed" for c in result["candidates"]))
         self.assertEqual("not_supplied", result["satellite_comparison"]["status"])
         self.assertIsNone(result["satellite_comparison"]["metrics"])
+        self.assertEqual("1.0", result["passport"]["schema_version"])
+        self.assertEqual("experimental", result["passport"]["maturity"])
+        self.assertEqual("categorical_classification", result["passport"]["quantity_kind"])
+        self.assertEqual("2025-01-02T06:00:00Z", result["passport"]["valid_time"])
+        self.assertEqual(self.grid, result["passport"]["grid"])
+        self.assertEqual("not_assessed", result["passport"]["uncertainty"]["status"])
 
     def test_archive_domain_mask_excludes_candidate_pixels_outside_region(self):
         domain = np.zeros((15, 15), dtype=bool)
@@ -78,6 +84,7 @@ class PmcDetectionTests(unittest.TestCase):
             self.run_detector(satellite_observation_mask=observations)
         result = self.run_detector(
             satellite_observation_mask=observations,
+            satellite_coverage_mask=np.ones((15, 15), dtype=bool),
             satellite_observation_metadata={
                 "source": "fixture satellite archive",
                 "product_id": "test-visible-mask",
@@ -91,6 +98,74 @@ class PmcDetectionTests(unittest.TestCase):
         self.assertEqual(0, comparison["metrics"]["true_positive_pixels"])
         self.assertGreater(comparison["metrics"]["false_positive_pixels"], 0)
         self.assertEqual(0.0, comparison["metrics"]["intersection_over_union"])
+        self.assertEqual(225, comparison["coverage"]["observed_pixels"])
+
+    def test_satellite_comparison_excludes_uncovered_candidates_from_metrics(self):
+        coverage = np.zeros((15, 15), dtype=bool)
+        coverage[:3, :3] = True
+        result = self.run_detector(
+            satellite_observation_mask=np.zeros((15, 15), dtype=bool),
+            satellite_coverage_mask=coverage,
+            satellite_observation_metadata={
+                "source": "fixture satellite archive",
+                "product_id": "test-visible-mask",
+                "valid_time": "2025-01-02T06:00:00Z",
+                "observation_id": "fixture-002",
+                "grid": dict(self.grid),
+            },
+        )
+        comparison = result["satellite_comparison"]
+        metrics = comparison["metrics"]
+        self.assertEqual("comparison_only", comparison["status"])
+        self.assertEqual(0, metrics["false_positive_pixels"])
+        self.assertEqual(9, metrics["true_negative_pixels"])
+        self.assertEqual(9, comparison["coverage"]["observed_pixels"])
+        self.assertGreater(comparison["coverage"]["unknown_pixels"], 0)
+        self.assertGreater(comparison["coverage"]["candidate_pixels_outside_coverage"], 0)
+
+    def test_satellite_comparison_requires_explicit_coverage_mask(self):
+        with self.assertRaisesRegex(ValueError, "explicit coverage mask"):
+            self.run_detector(
+                satellite_observation_mask=np.zeros((15, 15), dtype=bool),
+                satellite_observation_metadata={
+                    "source": "fixture satellite archive",
+                    "product_id": "test-visible-mask",
+                    "valid_time": "2025-01-02T06:00:00Z",
+                    "observation_id": "fixture-003",
+                    "grid": dict(self.grid),
+                },
+            )
+
+    def test_satellite_masks_reject_arbitrary_integer_classes(self):
+        with self.assertRaisesRegex(ValueError, "only 0/1"):
+            self.run_detector(
+                satellite_observation_mask=np.full((15, 15), 255, dtype=np.uint8),
+                satellite_coverage_mask=np.ones((15, 15), dtype=bool),
+                satellite_observation_metadata={
+                    "source": "fixture satellite archive",
+                    "product_id": "unclassified-raster",
+                    "valid_time": "2025-01-02T06:00:00Z",
+                    "observation_id": "fixture-005",
+                    "grid": dict(self.grid),
+                },
+            )
+
+    def test_satellite_comparison_distinguishes_no_coverage_from_no_detection(self):
+        result = self.run_detector(
+            satellite_observation_mask=np.zeros((15, 15), dtype=bool),
+            satellite_coverage_mask=np.zeros((15, 15), dtype=bool),
+            satellite_observation_metadata={
+                "source": "fixture satellite archive",
+                "product_id": "test-visible-mask",
+                "valid_time": "2025-01-02T06:00:00Z",
+                "observation_id": "fixture-004",
+                "grid": dict(self.grid),
+            },
+        )
+        comparison = result["satellite_comparison"]
+        self.assertEqual("matched_no_coverage", comparison["status"])
+        self.assertIsNone(comparison["metrics"])
+        self.assertGreater(comparison["coverage"]["candidate_pixels_outside_coverage"], 0)
 
     def test_rejects_missing_or_inconsistent_scientific_metadata(self):
         with self.assertRaisesRegex(ValueError, "grid requires"):
@@ -114,6 +189,7 @@ class PmcDetectionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "same-grid"):
             self.run_detector(
                 satellite_observation_mask=np.zeros((2, 2), dtype=bool),
+                satellite_coverage_mask=np.ones((2, 2), dtype=bool),
                 satellite_observation_metadata={
                     "source": "fixture", "product_id": "mask",
                     "valid_time": "2025-01-02T06:00:00Z", "observation_id": "one",
@@ -127,6 +203,7 @@ class PmcDetectionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "exactly match"):
             self.run_detector(
                 satellite_observation_mask=observations,
+                satellite_coverage_mask=np.ones((15, 15), dtype=bool),
                 satellite_observation_metadata={
                     "source": "fixture", "product_id": "mask",
                     "valid_time": "2025-01-02T06:00:00Z", "observation_id": "one",

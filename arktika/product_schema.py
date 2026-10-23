@@ -18,7 +18,8 @@ def product_passport(
     quantity_kind: str,
     quantity: str,
     units: str,
-    valid_time: str,
+    valid_time: str | None = None,
+    valid_period: dict[str, str] | None = None,
     data_kind: str,
     grid: dict[str, Any],
     source_grids: list[dict[str, Any]],
@@ -38,7 +39,7 @@ def product_passport(
     for name, value in (
         ("product_id", product_id), ("algorithm_id", algorithm_id),
         ("algorithm_version", algorithm_version), ("quantity_kind", quantity_kind),
-        ("quantity", quantity), ("units", units), ("valid_time", valid_time),
+        ("quantity", quantity), ("units", units),
         ("nodata", nodata), ("calibration_version", calibration_version),
         ("calibration_status", calibration_status),
     ):
@@ -50,19 +51,25 @@ def product_passport(
         raise ValueError("Паспорт продукта: сетке нужны CRS, ширина и высота.")
     if not isinstance(source_grids, list) or not source_grids:
         raise ValueError("Паспорт продукта: нужны сведения об исходной сетке.")
-    try:
-        stamp = dt.datetime.fromisoformat(valid_time.replace("Z", "+00:00"))
-    except ValueError:
-        raise ValueError("Паспорт продукта: valid_time должен быть ISO 8601.") from None
-    if stamp.tzinfo is None or stamp.utcoffset() != dt.timedelta(0):
-        raise ValueError("Паспорт продукта: valid_time должен быть указан в UTC.")
+    if (valid_time is None) == (valid_period is None):
+        raise ValueError("Паспорт продукта: укажите valid_time или valid_period.")
+    if valid_time is not None:
+        _validate_utc(valid_time, "valid_time")
+    else:
+        if (not isinstance(valid_period, dict)
+                or set(valid_period) != {"start", "end"}):
+            raise ValueError("Паспорт продукта: valid_period должен содержать start и end.")
+        start = _validate_utc(valid_period["start"], "valid_period.start")
+        end = _validate_utc(valid_period["end"], "valid_period.end")
+        if end < start:
+            raise ValueError("Паспорт продукта: valid_period.end раньше начала периода.")
     if not isinstance(sources, list) or not sources:
         raise ValueError("Паспорт продукта: укажите хотя бы один источник.")
     if not isinstance(quality_control, dict):
         raise ValueError("Паспорт продукта: QC должен быть объектом.")
     if not isinstance(limitations, list) or any(not isinstance(item, str) for item in limitations):
         raise ValueError("Паспорт продукта: ограничения должны быть списком пояснений.")
-    return {
+    passport = {
         "schema_version": SCHEMA_VERSION,
         "product_id": product_id,
         "algorithm": {"id": algorithm_id, "version": algorithm_version},
@@ -71,7 +78,6 @@ def product_passport(
         "quantity": quantity,
         "units": units,
         "data_kind": data_kind,
-        "valid_time": valid_time,
         "grid": grid,
         "source_grids": source_grids,
         "nodata": nodata,
@@ -81,3 +87,20 @@ def product_passport(
         "limitations": limitations,
         "uncertainty": uncertainty or {"status": "not_assessed", "method": None},
     }
+    if valid_time is not None:
+        passport["valid_time"] = valid_time
+    else:
+        passport["valid_period"] = dict(valid_period)
+    return passport
+
+
+def _validate_utc(value: Any, field: str) -> dt.datetime:
+    if not isinstance(value, str):
+        raise ValueError("Паспорт продукта: {} должен быть ISO 8601.".format(field))
+    try:
+        stamp = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        raise ValueError("Паспорт продукта: {} должен быть ISO 8601.".format(field)) from None
+    if stamp.tzinfo is None or stamp.utcoffset() != dt.timedelta(0):
+        raise ValueError("Паспорт продукта: {} должен быть указан в UTC.".format(field))
+    return stamp.astimezone(dt.timezone.utc)

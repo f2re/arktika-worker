@@ -18,6 +18,7 @@ from .geo import grid as map_grid
 from .reanalysis.catalog import validate_area
 
 from .pmc_tracking import link_candidates
+from .product_schema import product_passport
 
 
 ALGORITHM_ID = "arktika.experimental_pmc_archive_run"
@@ -105,7 +106,8 @@ def build_archive_report(*, task_id: str, plan: dict[str, Any],
                          expected_times: dict[str, list[str]],
                          interval_hours: dict[str, int],
                          frame_records: list[dict[str, Any]],
-                         cached_fields: list[dict[str, Any]]) -> dict[str, Any]:
+                         cached_fields: list[dict[str, Any]],
+                         target_grid: dict[str, Any] | None = None) -> dict[str, Any]:
     """Summarize completed cached frames and link only contiguous sequences."""
     successful = [row for row in frame_records if row.get("status") == "completed"
                   and isinstance(row.get("result"), dict)]
@@ -176,7 +178,92 @@ def build_archive_report(*, task_id: str, plan: dict[str, Any],
                            "limitations": linked["limitations"] if segments else []})
 
     incomplete = any(item["unprocessed_steps"] or item["failed_steps"] for item in coverage)
-    return {
+    if target_grid is None:
+        target_grid = next((row["result"].get("grid") for row in successful
+                            if isinstance(row["result"].get("grid"), dict)), None)
+    passport = None
+    if isinstance(target_grid, dict):
+        all_expected = [stamp for stamps in expected_times.values() for stamp in stamps]
+        period_start = plan.get("start") or (min(all_expected) if all_expected else None)
+        period_end = plan.get("end") or (max(all_expected) if all_expected else None)
+        period = ({"start": _utc(period_start).isoformat().replace("+00:00", "Z"),
+                   "end": _utc(period_end).isoformat().replace("+00:00", "Z")}
+                  if period_start and period_end else None)
+        source_refs: list[dict[str, Any]] = []
+        source_grids: list[dict[str, Any]] = []
+        seen_sources: set[tuple[str, str]] = set()
+        seen_grids: set[str] = set()
+        for row in successful:
+            result = row["result"]
+            source = result.get("source")
+            field_passport = result.get("field_passport")
+            refs = field_passport.get("sources", []) if isinstance(field_passport, dict) else []
+            if isinstance(refs, list):
+                for item in refs:
+                    if not isinstance(item, dict):
+                        continue
+                    source_id = item.get("source_id")
+                    field_id = item.get("field_id")
+                    if not isinstance(source_id, str) or not source_id.strip():
+                        continue
+                    identity = (source_id.strip(), field_id.strip() if isinstance(field_id, str) else "")
+                    if identity not in seen_sources:
+                        source_refs.append({"source_id": identity[0], **({"field_id": identity[1]} if identity[1] else {})})
+                        seen_sources.add(identity)
+            if not refs and isinstance(source, str) and source.strip():
+                identity = (source.strip(), "")
+                if identity not in seen_sources:
+                    source_refs.append({"source_id": identity[0]})
+                    seen_sources.add(identity)
+            grids = field_passport.get("source_grids", []) if isinstance(field_passport, dict) else []
+            if isinstance(grids, list):
+                for source_grid in grids:
+                    if isinstance(source_grid, dict):
+                        key = repr(sorted(source_grid.items()))
+                        if key not in seen_grids:
+                            source_grids.append(source_grid)
+                            seen_grids.add(key)
+        if not source_grids:
+            source_grids = [{"role": "detector_input_grid", **target_grid}]
+        report_limitations = [
+            "Отсутствующие, неполные и ошибочные сроки не трактуются как отсутствие ПМЦ.",
+            "Треки строятся только внутри непрерывных последовательностей наблюдавшихся модельных кандидатов.",
+            "Начало трека — первый наблюдавшийся срок данного сегмента; место и время зарождения не оцениваются.",
+            "Кандидаты CARRA2 не являются независимой проверкой ERA5 из-за общих граничных условий; спутниковая морфология, steering flow, split/merge и полный QC IMPMCT не входят в этот процесс.",
+            "Результат не является независимой метеорологической валидацией или прогнозом.",
+        ]
+        passport = product_passport(
+            product_id="arktika.pmc.archive_report",
+            algorithm_id=ALGORITHM_ID,
+            algorithm_version=ALGORITHM_VERSION,
+            maturity="experimental",
+            quantity_kind="candidate_track_catalog",
+            quantity="Каталог наблюдавшихся модельных кандидатов и сегментов треков",
+            units="tracks",
+            valid_period=period,
+            data_kind="analysis",
+            grid=target_grid,
+            source_grids=source_grids,
+            nodata="Отсутствующие и ошибочные сроки неизвестны и исключены из связности треков",
+            quality_control={"status": "partial" if incomplete else "processed",
+                              "processed_frames": len(successful),
+                              "failed_frames": len(errors),
+                              "track_count": sum(item["track_count"] for item in track_rows)},
+            sources=source_refs,
+            calibration_version="not_applicable",
+            calibration_status="not_applicable",
+            limitations=report_limitations,
+            uncertainty={"status": "not_assessed", "method": None},
+        ) if source_refs and period else None
+    else:
+        report_limitations = [
+            "Отсутствующие, неполные и ошибочные сроки не трактуются как отсутствие ПМЦ.",
+            "Треки строятся только внутри непрерывных последовательностей наблюдавшихся модельных кандидатов.",
+            "Начало трека — первый наблюдавшийся срок данного сегмента; место и время зарождения не оцениваются.",
+            "Кандидаты CARRA2 не являются независимой проверкой ERA5 из-за общих граничных условий; спутниковая морфология, steering flow, split/merge и полный QC IMPMCT не входят в этот процесс.",
+            "Результат не является независимой метеорологической валидацией или прогнозом.",
+        ]
+    report = {
         "task_id": task_id,
         "algorithm_id": ALGORITHM_ID,
         "algorithm_version": ALGORITHM_VERSION,
@@ -189,11 +276,8 @@ def build_archive_report(*, task_id: str, plan: dict[str, Any],
         "frames": frame_records,
         "tracks_by_source": track_rows,
         "satellite_comparison": {"status": "not_supplied", "metrics": None},
-        "limitations": [
-            "Отсутствующие, неполные и ошибочные сроки не трактуются как отсутствие ПМЦ.",
-            "Треки строятся только внутри непрерывных последовательностей наблюдавшихся модельных кандидатов.",
-            "Начало трека — первый наблюдавшийся срок данного сегмента; место и время зарождения не оцениваются.",
-            "CARRA2, спутниковая морфология, steering flow, split/merge и полный QC IMPMCT не входят в этот рабочий процесс.",
-            "Результат не является независимой метеорологической валидацией или прогнозом.",
-        ],
+        "limitations": report_limitations,
     }
+    if passport is not None:
+        report["passport"] = passport
+    return report
