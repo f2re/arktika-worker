@@ -76,13 +76,77 @@ class RelativeVorticityTests(unittest.TestCase):
         self.assertEqual(result["values"].shape, (5, 5))
         self.assertTrue(np.isfinite(result["values"]).all())
 
-    def test_rejects_curvilinear_grid(self):
-        lat, lon = self.axes()
-        lat2, lon2 = np.meshgrid(lat, lon, indexing="ij")
-        lon2 = lon2 + 0.01 * np.sin(np.deg2rad(lat2)) * np.arange(lon.size)[None, :]
-        with self.assertRaisesRegex(ValueError, "curvilinear"):
-            derive_relative_vorticity_850(np.ones_like(lat2), np.zeros_like(lat2),
-                                          lat2, lon2, field_metadata=passport())
+    def test_curvilinear_mesh_recovers_solid_body_rotation(self):
+        lat_axis = np.linspace(60, 75, 61)
+        lon_axis = np.linspace(0, 4, 41)
+        lat, lon = np.meshgrid(np.deg2rad(lat_axis), np.deg2rad(lon_axis), indexing="ij")
+        # Smoothly warp both coordinates without changing the physical flow.
+        phi = lat + 0.012 * np.sin(2.0 * lon) * np.cos(lat)
+        lam = lon + 0.015 * np.sin(phi - phi[0, 0])
+        omega = 2.0e-5
+        u = omega * EARTH_RADIUS_M * np.cos(phi)
+        result = derive_relative_vorticity_850(
+            u, np.zeros_like(u), np.rad2deg(phi), np.rad2deg(lam),
+            field_metadata=passport(source="carra2", wind_reference="geographic_from_direction"),
+            grid_id="curvilinear-test-grid")
+        expected = 2.0 * omega * np.sin(phi)
+        np.testing.assert_allclose(result["values"][2:-2, 2:-2],
+                                   expected[2:-2, 2:-2], rtol=2e-4, atol=2e-10)
+        self.assertEqual(result["passport"]["grid"]["grid_type"],
+                         "curvilinear_latitude_longitude")
+        self.assertEqual(result["passport"]["algorithm_version"], "0.2.0")
+
+    def test_curvilinear_mesh_recovers_longitudinal_derivative(self):
+        lat_axis = np.linspace(60, 75, 31)
+        lon_axis = np.linspace(0, 3, 25)
+        lat, lon = np.meshgrid(np.deg2rad(lat_axis), np.deg2rad(lon_axis), indexing="ij")
+        phi = lat + 0.01 * np.sin(lon)
+        lam = lon + 0.01 * np.sin(lat)
+        coefficient = 7.0
+        result = derive_relative_vorticity_850(
+            np.zeros_like(phi), coefficient * lam, np.rad2deg(phi), np.rad2deg(lam),
+            field_metadata=passport(source="carra2", wind_reference="geographic_from_direction"))
+        expected = coefficient / (EARTH_RADIUS_M * np.cos(phi))
+        np.testing.assert_allclose(result["values"][2:-2, 2:-2],
+                                   expected[2:-2, 2:-2], rtol=5e-4, atol=2e-12)
+
+    def test_curvilinear_uniform_eastward_wind_includes_spherical_metric_term(self):
+        lat_axis = np.linspace(60, 75, 31)
+        lon_axis = np.linspace(0, 3, 25)
+        lat, lon = np.meshgrid(np.deg2rad(lat_axis), np.deg2rad(lon_axis), indexing="ij")
+        phi = lat + 0.008 * np.sin(lon)
+        lam = lon + 0.008 * np.sin(lat)
+        speed = 12.0
+        result = derive_relative_vorticity_850(
+            np.full_like(phi, speed), np.zeros_like(phi), np.rad2deg(phi), np.rad2deg(lam),
+            field_metadata=passport(source="carra2", wind_reference="geographic_from_direction"))
+        expected = speed * np.tan(phi) / EARTH_RADIUS_M
+        np.testing.assert_allclose(result["values"][2:-2, 2:-2],
+                                   expected[2:-2, 2:-2], rtol=2e-4, atol=2e-12)
+
+    def test_curvilinear_mesh_unwraps_dateline_consistently(self):
+        phi_axis = np.deg2rad(np.linspace(65, 70, 11))
+        lam_axis = np.deg2rad(np.linspace(178, 182, 13))
+        phi, lam = np.meshgrid(phi_axis, lam_axis, indexing="ij")
+        phi = phi + 0.002 * np.sin(lam - lam[0, 0])
+        lam = lam + 0.003 * np.sin(phi - phi[0, 0])
+        lon_degrees = ((np.rad2deg(lam) + 180.0) % 360.0) - 180.0
+        speed = 8.0
+        result = derive_relative_vorticity_850(
+            np.full_like(phi, speed), np.zeros_like(phi), np.rad2deg(phi), lon_degrees,
+            field_metadata=passport(source="carra2", wind_reference="geographic_from_direction"))
+        expected = speed * np.tan(phi) / EARTH_RADIUS_M
+        np.testing.assert_allclose(result["values"][2:-2, 2:-2],
+                                   expected[2:-2, 2:-2], rtol=1e-3, atol=2e-12)
+
+    def test_rejects_folded_curvilinear_mesh(self):
+        lat_axis = np.linspace(60, 70, 9)
+        lon_axis = np.linspace(0, 8, 9)
+        lat, lon = np.meshgrid(lat_axis, lon_axis, indexing="ij")
+        lon[:, 5:] = lon[:, 5:][:, ::-1]
+        with self.assertRaisesRegex(ValueError, "Jacobian|monotonic"):
+            derive_relative_vorticity_850(np.ones_like(lat), np.zeros_like(lat), lat, lon,
+                                          field_metadata=passport(source="carra2"))
 
     def test_rejects_unproven_vector_reference(self):
         lat, lon = self.axes()
@@ -101,7 +165,7 @@ class RelativeVorticityTests(unittest.TestCase):
         lat, lon = self.axes()
         u = np.ones((31, 21)); v = np.zeros_like(u)
         for changes in (
-            {"source": "carra2"}, {"level_hPa": 700}, {"units": "knots"},
+            {"source": "other"}, {"level_hPa": 700}, {"units": "knots"},
             {"time_kind": "hourly_mean"}, {"valid_time": "2024-01-01T00:00:00+03:00"},
         ):
             with self.subTest(changes=changes), self.assertRaises(ValueError):

@@ -96,6 +96,35 @@ class CachedVorticity(unittest.TestCase):
         self.assertEqual(result["field_passport"]["grid"]["height"], 32)
         self.assertTrue(all(item["classification"] == "candidate" for item in result["candidates"]))
 
+    def test_curvilinear_carra_cache_runs_single_time_experimental_path(self):
+        with xr.open_dataset(self.path) as source:
+            ds = source.load()
+        lat, lon = np.meshgrid(np.linspace(68.0, 70.0, 3), np.linspace(20.0, 23.0, 4), indexing="ij")
+        lon = lon + 0.015 * np.sin(np.deg2rad(lat - 68.0))
+        lat = lat + 0.01 * np.sin(np.deg2rad(lon - 20.0))
+        ds["latitude"] = (("y", "x"), lat,
+                          {"units": "degrees_north", "standard_name": "latitude"})
+        ds["longitude"] = (("y", "x"), lon,
+                           {"units": "degrees_east", "standard_name": "longitude"})
+        ds.attrs.update(source="carra2", wind_reference="geographic_from_direction")
+        ds.to_netcdf(self.path, engine="scipy")
+        self.metadata.update(source="carra2", sha256=digest(self.path))
+        self._write_metadata()
+        bounds = transform_bounds("EPSG:4326", "EPSG:3413", 20.0, 68.0, 23.0, 70.0,
+                                  densify_pts=21)
+        transform = from_bounds(*bounds, 32, 32)
+        grid = {"crs": "EPSG:3413", "width": 32, "height": 32,
+                "transform": transform, "resolution_x_m": abs(transform.a),
+                "resolution_y_m": abs(transform.e)}
+        result = self.app.experimental_pmc_candidates(self.identity, target_grid=grid)
+        self.assertEqual(result["source"], "carra2")
+        self.assertEqual(result["field_passport"]["source_grid"]["grid_type"],
+                         "curvilinear_latitude_longitude")
+        self.assertEqual(result["field_passport"]["reprojection"]["source_georeferencing"],
+                         "2d_latitude_longitude_geolocation_arrays")
+        self.assertTrue(any("CARRA2 использует ERA5" in item
+                            for item in result["field_passport"]["limitations"]))
+
     def test_candidate_pipeline_rejects_projection_scale_distortion(self):
         bounds = transform_bounds("EPSG:4326", "EPSG:3857", 20.0, 68.0, 23.0, 70.0,
                                   densify_pts=21)
@@ -119,7 +148,7 @@ class CachedVorticity(unittest.TestCase):
     def test_rejects_wrong_source_and_metadata(self):
         self.metadata["source"] = "carra2"
         self._write_metadata()
-        with self.assertRaisesRegex(ValueError, "ERA5 и MERRA-2"):
+        with self.assertRaisesRegex(ValueError, "Метаданные NetCDF не совпадают"):
             self.app.experimental_vorticity_850(self.identity)
         self.metadata["source"] = "era5"
         self.metadata["level"] = 700
@@ -171,15 +200,16 @@ class CachedVorticity(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "одинаково упорядоченную двумерную сетку"):
             self.app.experimental_vorticity_850(self.identity)
 
-    def test_rejects_curvilinear_grid(self):
+    def test_accepts_curvilinear_grid_with_verified_cache_metadata(self):
         with xr.open_dataset(self.path) as source:
             ds = source.load()
         ds["latitude"].values[1, 1] += .1
         ds.to_netcdf(self.path, engine="scipy")
         self.metadata["sha256"] = digest(self.path)
         self._write_metadata()
-        with self.assertRaisesRegex(ValueError, "curvilinear"):
-            self.app.experimental_vorticity_850(self.identity)
+        result = self.app.experimental_vorticity_850(self.identity)
+        self.assertEqual(result["passport"]["grid"]["grid_type"],
+                         "curvilinear_latitude_longitude")
 
 
 if __name__ == "__main__":

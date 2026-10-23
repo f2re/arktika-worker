@@ -1,4 +1,4 @@
-"""Experimental reprojection of regular-grid 850 hPa vorticity.
+"""Experimental reprojection of 850 hPa vorticity from geographic grids.
 
 This module only maps an already-derived scalar field onto a caller-selected
 projected grid. It does not validate projection scale suitability or connect to
@@ -14,6 +14,8 @@ from affine import Affine
 from pyproj import CRS, Proj
 from rasterio.enums import Resampling
 from rasterio.warp import reproject
+
+from .pmc_vorticity import _coordinates
 
 MAX_DETECTOR_PROJECTION_SCALE_ERROR = 0.05
 
@@ -139,7 +141,27 @@ def reproject_vorticity_to_grid(values: Any, latitude: Any, longitude: Any, *,
     source = np.ma.asarray(values, dtype=np.float32).filled(np.nan)
     if source.ndim != 2 or min(source.shape) < 2 or np.isinf(source).any():
         raise ValueError("source vorticity must be a finite-or-NaN 2-D array")
-    source_transform, coord_digest, lat_axis, lon_axis = _source_grid(source, latitude, longitude)
+    lat_values = np.asarray(latitude, dtype=np.float64)
+    lon_values = np.asarray(longitude, dtype=np.float64)
+    rectilinear = (lat_values.ndim == lon_values.ndim == 1 or
+                   (lat_values.ndim == lon_values.ndim == 2
+                    and lat_values.shape == lon_values.shape == source.shape
+                    and np.allclose(lat_values, lat_values[:, :1], rtol=0, atol=1e-8)
+                    and np.allclose(lon_values, lon_values[:1, :], rtol=0, atol=1e-8)))
+    if rectilinear:
+        source_transform, coord_digest, lat_axis, lon_axis = _source_grid(
+            source, lat_values, lon_values)
+        lat_mesh, lon_mesh = np.meshgrid(lat_axis, lon_axis, indexing="ij")
+        grid_type = "regular_latitude_longitude"
+    else:
+        phi, lam, grid_type = _coordinates(lat_values, lon_values, source.shape)
+        if grid_type != "curvilinear_latitude_longitude":
+            raise ValueError("source coordinates could not be identified as rectilinear or curvilinear")
+        lat_mesh, lon_mesh = np.rad2deg(phi), np.rad2deg(lam)
+        source_transform = None
+        coord_digest = hashlib.sha256(
+            np.ascontiguousarray(np.stack((phi, lam), axis=0)).astype("<f8").tobytes()
+        ).hexdigest()
     try:
         requested_shape = (int(target_grid["height"]), int(target_grid["width"]))
     except (TypeError, KeyError, ValueError) as exc:
@@ -151,21 +173,31 @@ def reproject_vorticity_to_grid(values: Any, latitude: Any, longitude: Any, *,
             or not isinstance(source_passport.get("grid"), dict)):
         raise ValueError("complete source passport is required for reprojected vorticity")
     source_grid = dict(source_passport["grid"])
-    source_grid.update({"crs": "EPSG:4326", "width": int(source.shape[1]), "height": int(source.shape[0]),
-                   "transform": [float(v) for v in (source_transform.a, source_transform.b, source_transform.c,
-                                                       source_transform.d, source_transform.e, source_transform.f)],
-                   "coordinate_sha256": coord_digest, "grid_type": "regular_latitude_longitude"})
+    source_grid.update({"crs": "EPSG:4326", "width": int(source.shape[1]),
+                        "height": int(source.shape[0]), "coordinate_sha256": coord_digest,
+                        "grid_type": grid_type})
+    if source_transform is not None:
+        source_grid["transform"] = [float(v) for v in (source_transform.a, source_transform.b,
+                                                        source_transform.c, source_transform.d,
+                                                        source_transform.e, source_transform.f)]
+    else:
+        source_grid.pop("transform", None)
+        source_grid["geolocation"] = "latitude_longitude_arrays"
     output = np.full((grid["height"], grid["width"]), np.nan, dtype=np.float32)
     valid = np.isfinite(source).astype(np.uint8)
     warped_valid = np.zeros(output.shape, dtype=np.uint8)
-    reproject(source=source, destination=output, src_transform=source_transform, src_crs="EPSG:4326",
-              src_nodata=np.nan, dst_transform=target_transform, dst_crs=target_crs,
-              dst_nodata=np.nan, resampling=Resampling.bilinear, init_dest_nodata=True)
-    reproject(source=valid, destination=warped_valid, src_transform=source_transform, src_crs="EPSG:4326",
-              dst_transform=target_transform, dst_crs=target_crs, resampling=Resampling.nearest,
+    source_georeferencing = ({"src_transform": source_transform} if source_transform is not None
+                             else {"src_geoloc_array": (lon_mesh, lat_mesh)})
+    source_crs = CRS.from_epsg(4326)
+    reproject(source=source, destination=output, **source_georeferencing,
+              src_crs=source_crs, src_nodata=np.nan, dst_transform=target_transform,
+              dst_crs=target_crs, dst_nodata=np.nan, resampling=Resampling.bilinear,
               init_dest_nodata=True)
+    reproject(source=valid, destination=warped_valid, **source_georeferencing,
+              src_crs=source_crs, dst_transform=target_transform, dst_crs=target_crs,
+              resampling=Resampling.nearest, init_dest_nodata=True)
     output[warped_valid == 0] = np.nan
-    scale = _projection_scale(lat_axis, lon_axis, target_crs)
+    scale = _projection_scale(lat_mesh, lon_mesh, target_crs)
     passport = dict(source_passport)
     passport.update({"quantity": "relative_vorticity", "variable": "relative_vorticity",
                      "level_hPa": 850, "units": "s-1",
@@ -176,6 +208,8 @@ def reproject_vorticity_to_grid(values: Any, latitude: Any, longitude: Any, *,
                                         "valid_fraction": float(np.isfinite(output).mean())},
                      "nodata": "NaN; nearest source validity mask preserved",
                      "reprojection": {"method": "rasterio.warp.reproject", "resampling": "bilinear",
+                                      "source_georeferencing": ("affine_regular_grid" if source_transform is not None
+                                                                 else "2d_latitude_longitude_geolocation_arrays"),
                                       "validity_mask_resampling": "nearest",
                                       "projection_scale_suitability": "not validated"}})
     return {"values": output, "grid": grid, "passport": passport}
