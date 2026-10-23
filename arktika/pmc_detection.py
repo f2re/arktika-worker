@@ -4,13 +4,12 @@ This is a numerical research core, not an operational warning product. A
 positive component is always labelled ``candidate``; satellite overlap is an
 optional comparison and never upgrades a candidate to a confirmed PMC.
 
-The initial vorticity thresholds are inspired by the low-threshold Nordic
-Seas IMPMCT settings (Fang et al., 2025). This prototype applies a Gaussian
-sigma of 60 km and retains connected areas above 1.0e-4 s-1 whose peak reaches
-1.2e-4 s-1. It does not reproduce the paper's uniform-radius smoothing operator. The
-published method includes additional tracking/steering and quality controls;
-this isolated core does not implement those steps. Consequently its output is
-not a reproduction or validation of IMPMCT.
+The vorticity thresholds and circular uniform-radius smoothing are based on
+the low-threshold Nordic Seas IMPMCT settings (Fang et al., 2025). This
+prototype retains connected areas above 1.0e-4 s-1 whose peak reaches
+1.2e-4 s-1. It does not implement the paper's peak partitioning, temporal
+tracking/steering, satellite morphology model, or complete quality controls.
+Consequently its output is not a reproduction or validation of IMPMCT.
 """
 from __future__ import annotations
 
@@ -20,12 +19,14 @@ from typing import Any
 
 import numpy as np
 from pyproj import CRS
+from scipy import ndimage
 
 ALGORITHM_ID = "arktika.experimental_pmc_candidates"
-ALGORITHM_VERSION = "0.1.1"
+ALGORITHM_VERSION = "0.2.0"
 METHOD_REFERENCE = "Fang et al. (2025), IMPMCT, doi:10.5194/essd-17-6049-2025"
 PARAMETERS = {
-    "gaussian_sigma_km": 60.0,
+    "uniform_radius_km": 60.0,
+    "smoothing_operator": "circular uniform mean; nodata-renormalized",
     "minimum_vorticity_s-1": 1.0e-4,
     "peak_vorticity_s-1": 1.2e-4,
     "connectivity": 8,
@@ -45,39 +46,26 @@ def _validate_time(value: str) -> str:
     return parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def _gaussian_kernel(sigma: float) -> np.ndarray:
-    if sigma <= 0.0:
-        return np.array([1.0])
-    radius = max(1, int(np.ceil(3.0 * sigma)))
-    x = np.arange(-radius, radius + 1, dtype=float)
-    kernel = np.exp(-0.5 * (x / sigma) ** 2)
-    return kernel / kernel.sum()
-
-
-def _smooth_valid(values: np.ndarray, sigma_y: float, sigma_x: float) -> np.ndarray:
-    """Separable Gaussian convolution, renormalizing around missing cells."""
-    result = values.copy()
-    valid = np.isfinite(values)
-    weights = valid.astype(float)
-    for axis, sigma in ((1, sigma_x), (0, sigma_y)):
-        kernel = _gaussian_kernel(sigma)
-        radius = len(kernel) // 2
-        pad = [(0, 0), (0, 0)]
-        pad[axis] = (radius, radius)
-        mode = "edge"
-        padded_values = np.pad(np.where(valid, result, 0.0), pad, mode=mode)
-        padded_weights = np.pad(weights, pad, mode=mode)
-        filtered = np.zeros_like(result)
-        filtered_weights = np.zeros_like(result)
-        for index, coefficient in enumerate(kernel):
-            slices = [slice(None), slice(None)]
-            slices[axis] = slice(index, index + result.shape[axis])
-            filtered += coefficient * padded_values[tuple(slices)]
-            filtered_weights += coefficient * padded_weights[tuple(slices)]
-        result = np.divide(filtered, filtered_weights, out=np.full_like(result, np.nan), where=filtered_weights > 0)
-        valid = np.isfinite(result)
-        weights = np.where(valid, 1.0, 0.0)
-    return result
+def _smooth_uniform_radius(values: np.ndarray, *, radius_km: float,
+                           resolution_x_m: float, resolution_y_m: float) -> np.ndarray:
+    """Apply a circular uniform mean in metres, renormalized over valid cells."""
+    array = np.asarray(values, dtype=float)
+    if array.ndim != 2:
+        raise ValueError("vorticity smoothing requires a 2-D array")
+    if any(not np.isfinite(value) or value <= 0
+           for value in (radius_km, resolution_x_m, resolution_y_m)):
+        raise ValueError("radius and grid resolutions must be finite positive values")
+    radius_m = float(radius_km) * 1000.0
+    rx = int(np.ceil(radius_m / float(resolution_x_m)))
+    ry = int(np.ceil(radius_m / float(resolution_y_m)))
+    x_m = np.arange(-rx, rx + 1, dtype=float) * float(resolution_x_m)
+    y_m = np.arange(-ry, ry + 1, dtype=float) * float(resolution_y_m)
+    footprint = (y_m[:, None] ** 2 + x_m[None, :] ** 2) <= radius_m ** 2 + 1e-9
+    kernel = footprint.astype(float)
+    valid = np.isfinite(array)
+    weights = ndimage.convolve(valid.astype(float), kernel, mode="constant", cval=0.0)
+    totals = ndimage.convolve(np.where(valid, array, 0.0), kernel, mode="constant", cval=0.0)
+    return np.divide(totals, weights, out=np.full_like(array, np.nan), where=weights > 0)
 
 
 def _components(mask: np.ndarray) -> list[list[tuple[int, int]]]:
@@ -221,10 +209,9 @@ def detect_candidates(vorticity_850: np.ndarray, *, grid: dict[str, Any],
         if not _same_grid(grid, observed_grid):
             raise ValueError("satellite observation grid metadata must exactly match the reanalysis grid")
 
-    # Prototype-only Gaussian sigma; it is not the paper's uniform-radius filter.
-    sigma_x = PARAMETERS["gaussian_sigma_km"] * 1000.0 / dx
-    sigma_y = PARAMETERS["gaussian_sigma_km"] * 1000.0 / dy
-    smoothed = _smooth_valid(array, sigma_y, sigma_x)
+    smoothed = _smooth_uniform_radius(
+        array, radius_km=PARAMETERS["uniform_radius_km"],
+        resolution_x_m=dx, resolution_y_m=dy)
     threshold = PARAMETERS["minimum_vorticity_s-1"]
     peak_threshold = PARAMETERS["peak_vorticity_s-1"]
     candidate_mask = np.zeros(array.shape, dtype=bool)
