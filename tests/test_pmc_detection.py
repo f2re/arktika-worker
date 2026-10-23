@@ -105,7 +105,7 @@ class PmcDetectionTests(unittest.TestCase):
         self.assertTrue(structure["coverage_conserved"])
         self.assertEqual(13, result["satellite_comparison"]["metrics"]["false_positive_pixels"])
         json.dumps(result, allow_nan=False)
-        self.assertEqual("0.5.0", result["algorithm_version"])
+        self.assertEqual("0.5.1", result["algorithm_version"])
 
     def test_saddle_diagnostic_does_not_change_candidate_area_for_a_single_peak(self):
         result = self.run_detector()
@@ -131,6 +131,50 @@ class PmcDetectionTests(unittest.TestCase):
         self.assertEqual(6.0, diagnostics[2]["saddle_vorticity_s-1"])
         self.assertAlmostEqual(1.0 / 7.0, diagnostics[2]["relative_isolation_contrast"])
         self.assertFalse(diagnostics[2]["isolated_by_experimental_gamma"])
+
+    def test_equal_height_peak_tie_is_unresolved_independent_of_scan_order(self):
+        field = np.array([[10.0, 5.0, 10.0]])
+        component = np.ones_like(field, dtype=bool)
+        peaks = [
+            {"peak_vorticity_s-1": 10.0, "peak_pixel_rc": [0.0, 0.0],
+             "_seed_rc": [0, 0], "plateau_pixel_count": 1},
+            {"peak_vorticity_s-1": 10.0, "peak_pixel_rc": [0.0, 2.0],
+             "_seed_rc": [0, 2], "plateau_pixel_count": 1},
+        ]
+        for ordered_peaks in (peaks, list(reversed(peaks))):
+            with self.subTest(order=[peak["_seed_rc"] for peak in ordered_peaks]):
+                diagnostics = _peak_saddle_diagnostics(
+                    field, component, ordered_peaks, threshold=1.0)
+                self.assertEqual(2, len(diagnostics))
+                self.assertTrue(all(item["saddle_vorticity_s-1"] is None
+                                    for item in diagnostics))
+                self.assertTrue(all(item["isolated_by_experimental_gamma"] is None
+                                    for item in diagnostics))
+                self.assertTrue(all(item["isolation_status"] == "unresolved_equal_height_peak_tie"
+                                    for item in diagnostics))
+
+    def test_equal_height_tie_keeps_component_unpartitioned(self):
+        values = np.zeros((15, 15), dtype=float)
+        values[7, 3:12] = 1.05e-4
+        values[6:9, 4:6] = 1.8e-4
+        values[6:9, 9:11] = 1.8e-4
+        with patch("arktika.pmc_detection._smooth_uniform_radius", return_value=values):
+            result = detect_candidates(
+                values, grid=self.grid, valid_time="2025-01-02T06:00:00Z",
+                source="ERA5: test fixture", source_field_metadata={
+                    "source": "ERA5: test fixture", "variable": "relative_vorticity",
+                    "level_hPa": 850, "units": "s-1",
+                    "valid_time": "2025-01-02T06:00:00Z", "grid": dict(self.grid),
+                })
+
+        self.assertEqual(1, result["candidate_count"])
+        candidate = result["candidates"][0]
+        self.assertEqual("no_isolated_peak_unpartitioned", candidate["partition_status"])
+        self.assertEqual(17, candidate["pixel_count"])
+        maxima = candidate["peak_structure"]["local_maxima"]
+        self.assertEqual(2, len(maxima))
+        self.assertTrue(all(item["isolation_status"] == "unresolved_equal_height_peak_tie"
+                            for item in maxima))
 
     def test_saddle_diagnostic_declines_oversized_components_explicitly(self):
         field = np.ones((1, 16385), dtype=float)
