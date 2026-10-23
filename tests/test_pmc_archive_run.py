@@ -92,6 +92,93 @@ class PmcArchiveRunTests(unittest.TestCase):
         self.assertTrue(all(track["left_censored"] for track in tracks))
         self.assertEqual(2, report["coverage"][0]["unprocessed_steps"])
 
+    def test_candidate_emergence_ledger_distinguishes_empty_screen_from_genesis(self):
+        times = [f"2024-01-01T{hour:02d}:00:00Z" for hour in range(3)]
+        empty = frame(1)
+        empty["candidates"] = []
+        empty["candidate_count"] = 0
+        records = [
+            {"field_id": "a" * 24, "source": "era5", "valid_time": times[0],
+             "status": "completed", "result": frame(0, candidate_id="first")},
+            {"field_id": "b" * 24, "source": "era5", "valid_time": times[1],
+             "status": "completed", "result": empty},
+            {"field_id": "c" * 24, "source": "era5", "valid_time": times[2],
+             "status": "completed", "result": frame(2, candidate_id="later")},
+        ]
+        report = build_archive_report(
+            task_id="t" * 32, plan={"sources": ["era5"]},
+            expected_times={"era5": times}, interval_hours={"era5": 1},
+            frame_records=records, cached_fields=[], target_grid=GRID,
+        )
+        evidence = report["tracks_by_source"][0]["candidate_emergence_evidence"]
+        self.assertEqual("left_censored_at_archive_window_start",
+                         evidence[0]["prior_frame"]["status"])
+        self.assertEqual("previous_processed_frame_had_no_model_candidates",
+                         evidence[1]["prior_frame"]["status"])
+        self.assertEqual(times[1], evidence[1]["prior_frame"]["valid_time"])
+        self.assertEqual("not_assessed", evidence[1]["genesis_assessment"])
+        self.assertIn("не является физическим зарождением", evidence[1]["interpretation"])
+
+    def test_candidate_emergence_with_missing_previous_frame_is_unknown(self):
+        times = [f"2024-01-01T{hour:02d}:00:00Z" for hour in range(4)]
+        records = [
+            {"field_id": "a" * 24, "source": "era5", "valid_time": times[0],
+             "status": "completed", "result": frame(0, candidate_id="before")},
+            {"field_id": "d" * 24, "source": "era5", "valid_time": times[3],
+             "status": "completed", "result": frame(3, candidate_id="after")},
+        ]
+        report = build_archive_report(
+            task_id="t" * 32, plan={"sources": ["era5"]},
+            expected_times={"era5": times}, interval_hours={"era5": 1},
+            frame_records=records, cached_fields=[], target_grid=GRID,
+        )
+        evidence = report["tracks_by_source"][0]["candidate_emergence_evidence"]
+        after = next(item for item in evidence if item["candidate_id"] == "after")
+        self.assertEqual("unknown_previous_expected_frame_missing",
+                         after["prior_frame"]["status"])
+        self.assertEqual(times[2], after["prior_frame"]["valid_time"])
+        self.assertEqual("not_assessed", after["genesis_assessment"])
+
+    def test_candidate_emergence_with_conflicting_previous_records_is_unknown(self):
+        times = [f"2024-01-01T{hour:02d}:00:00Z" for hour in range(2)]
+        records = [
+            {"field_id": "a" * 24, "source": "era5", "valid_time": times[0],
+             "status": "completed", "result": frame(0)},
+            {"field_id": "b" * 24, "source": "era5", "valid_time": times[0],
+             "status": "error", "error": "synthetic processing failure"},
+            {"field_id": "c" * 24, "source": "era5", "valid_time": times[1],
+             "status": "completed", "result": frame(1, candidate_id="later")},
+        ]
+        records[0]["result"]["candidates"][0]["centroid_pixel_rc"] = [0.0, 0.0]
+        records[-1]["result"]["candidates"][0]["centroid_pixel_rc"] = [19.0, 19.0]
+        report = build_archive_report(
+            task_id="t" * 32, plan={"sources": ["era5"]},
+            expected_times={"era5": times}, interval_hours={"era5": 1},
+            frame_records=records, cached_fields=[], target_grid=GRID,
+        )
+        evidence = report["tracks_by_source"][0]["candidate_emergence_evidence"]
+        later = next(item for item in evidence if item["candidate_id"] == "later")
+        self.assertEqual("unknown_ambiguous_previous_expected_frame",
+                         later["prior_frame"]["status"])
+        self.assertIsNone(later["prior_frame"]["candidate_count"])
+
+    def test_candidate_emergence_with_invalid_previous_record_is_unknown(self):
+        times = [f"2024-01-01T{hour:02d}:00:00Z" for hour in range(2)]
+        records = [
+            {"field_id": "a" * 24, "source": "era5", "valid_time": times[0],
+             "status": "processing"},
+            {"field_id": "b" * 24, "source": "era5", "valid_time": times[1],
+             "status": "completed", "result": frame(1, candidate_id="later")},
+        ]
+        report = build_archive_report(
+            task_id="t" * 32, plan={"sources": ["era5"]},
+            expected_times={"era5": times}, interval_hours={"era5": 1},
+            frame_records=records, cached_fields=[], target_grid=GRID,
+        )
+        evidence = report["tracks_by_source"][0]["candidate_emergence_evidence"]
+        self.assertEqual("unknown_invalid_previous_expected_frame_record",
+                         evidence[0]["prior_frame"]["status"])
+
     def test_all_failed_archive_does_not_claim_a_product_passport(self):
         expected = {"era5": ["2024-01-01T00:00:00Z"]}
         report = build_archive_report(
@@ -130,6 +217,10 @@ class PmcArchiveRunTests(unittest.TestCase):
         self.assertEqual("candidate_detection_grid", passport["source_grids"][0]["role"])
         self.assertEqual("candidate_only", report["output_status"])
         self.assertNotIn("publication", report)
+        evidence = report["tracks_by_source"][0]["candidate_emergence_evidence"]
+        self.assertIsNone(evidence[0]["onset_in_expected_schedule"])
+        self.assertEqual("unknown_expected_schedule_unavailable",
+                         evidence[0]["prior_frame"]["status"])
 
     def test_no_frames_is_explicitly_not_publishable_even_with_requested_grid_and_period(self):
         report = build_archive_report(
