@@ -27,12 +27,14 @@ from .reanalysis_service import ReanalysisMixin
 from .product_styles import ProductStyleStore
 from .adapters import AdapterRegistry,WindSpeedAdapter
 from .product_schema import validate_product_passport
-class Workstation(ReanalysisMixin, SourceManagerMixin, AutoCalibrationMixin, ProductFlowMixin, AnalysisMixin, App):
+from .derived_product_service import DerivedProductServiceMixin
+class Workstation(DerivedProductServiceMixin, ReanalysisMixin, SourceManagerMixin, AutoCalibrationMixin, ProductFlowMixin, AnalysisMixin, App):
  def __init__(self,state_dir,download_dir=None,token='',config=None,client=None):
   self.config=config or {};super().__init__(state_dir,download_dir,token,client or AuthClient(token,self.config.get('oauth')))
   with self.store.lock,self.store.conn:
    self.store.conn.execute('CREATE TABLE IF NOT EXISTS scenes(id TEXT PRIMARY KEY,stamp TEXT,data TEXT)')
   self.product_root=self.store.root/'products';self.product_root.mkdir(exist_ok=True)
+  self.derived_product_root=self.store.root/'derived-products';self.derived_product_root.mkdir(exist_ok=True)
   # Registry entries are trusted Python objects registered by application code;
   # HTTP requests can inspect metadata but cannot load or register executable code.
   self.derived_adapters=AdapterRegistry();self.derived_adapters.register(WindSpeedAdapter())

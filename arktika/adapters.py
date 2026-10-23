@@ -104,14 +104,23 @@ def _utc(value: str) -> str:
 
 
 def _grid_signature(grid: Mapping[str, Any]) -> tuple[Any, ...]:
-    if not isinstance(grid, Mapping) or any(key not in grid for key in _GRID_KEYS):
-        raise ValueError("Сетка входного поля должна содержать CRS, размер и transform.")
+    if not isinstance(grid, Mapping) or any(key not in grid for key in ("crs", "width", "height")):
+        raise ValueError("Сетка входного поля должна содержать CRS и размеры.")
     width, height = grid["width"], grid["height"]
     if (not isinstance(grid["crs"], str) or not grid["crs"].strip()
             or isinstance(width, bool) or not isinstance(width, int) or width <= 0
             or isinstance(height, bool) or not isinstance(height, int) or height <= 0
-            or not isinstance(grid["transform"], (tuple, list))
-            or len(grid["transform"]) != 6):
+            ):
+        raise ValueError("Геометрия сетки входного поля некорректна.")
+    if "transform" not in grid:
+        grid_type = grid.get("grid_type")
+        digest = grid.get("coordinate_sha256", grid.get("geolocation_sha256"))
+        if (not isinstance(grid_type, str) or not _ID.fullmatch(grid_type.replace("-", "_"))
+                or not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest)
+                or not (grid.get("geolocation") or grid.get("coordinate_variables"))):
+            raise ValueError("Сетка входного поля требует affine-привязку или контрольную сумму геолокации.")
+        return (grid["crs"], width, height, grid_type, digest)
+    if not isinstance(grid["transform"], (tuple, list)) or len(grid["transform"]) != 6:
         raise ValueError("Геометрия сетки входного поля некорректна.")
     transform = tuple(float(value) for value in grid["transform"])
     if not np.isfinite(transform).all():
@@ -124,7 +133,7 @@ def _source_record(source: Mapping[str, Any]) -> dict[str, Any]:
         raise ValueError("Для входного поля нужна запись источника.")
     # Accept only provenance identifiers and a content digest. Never persist auth,
     # local paths or request URLs in a derived-product passport.
-    allowed = {"id", "dataset", "sha256", "label"}
+    allowed = {"id", "dataset", "field_id", "sha256", "label", "level_hpa"}
     forbidden = {"credential", "token", "password", "login", "path", "uri", "url"}
     if any(key.lower() in forbidden for key in source):
         raise ValueError("Реквизиты, пути и URI не являются provenance продукта.")

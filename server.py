@@ -134,6 +134,12 @@ class Handler(BaseHTTPRequestHandler):
             elif path=='/api/profiles':result={'profiles':app.profiles()}
             elif path=='/api/scenes':result={'scenes':app.scenes(q.get('date',''),q.get('platform',''))}
             elif path=='/api/products':result={'products':app.products()}
+            elif path=='/api/derived-products':result={'products':app.derived_products()}
+            elif path.startswith('/derived-artifact/'):
+                bits=path.split('/')
+                if len(bits)!=4:raise ValueError('Неверный путь производного продукта.')
+                p=app.derived_product_artifact(bits[2],bits[3])
+                self.send(200,p.read_bytes(),'application/octet-stream');return
             elif path=='/api/product/style':result=app.product_style({'id':q.get('id','')})
             elif path=='/api/map':result=app.context(q.get('preset','arctic'),int(q.get('width',1000)),q.get('product'))
             elif path=='/api/motion-result':
@@ -259,6 +265,7 @@ class Handler(BaseHTTPRequestHandler):
                         'parameters':field['parameters'],'limitations':field['limitations']}
             elif path=='/api/reanalysis/resume':result=app.fields_resume(data)
             elif path=='/api/reanalysis/import':result=app.fields_add(data,local=True)
+            elif path=='/api/derived-adapters/run':result=app.run_derived_adapter(data)
             elif path=='/api/reanalysis/stack':result=app.fields_stack(data)
             elif path=='/api/reanalysis/render':result=app.fields_render(data)
             elif path=='/api/reanalysis/probe':result=app.fields_probe(data)
