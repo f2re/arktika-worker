@@ -101,7 +101,7 @@ def main():
                 check('Временный сбой показывает повтор сохранённого задания','()=>FIELDS.job.status==="error"&&FIELDS.job.retry_available===true&&!document.querySelector("#fieldRetry").hidden')
                 retry_id=page.evaluate('()=>FIELDS.job.id')
                 app._field_process=lambda payload,**kwargs:{'field':cached_meta,'cached':True}
-                page.locator('#fieldRetry').click()
+                page.locator('#fieldDialogRetry').click()
                 check('Повтор использует тот же id задания и завершает запрос','()=>FIELDS.job.status==="done"&&FIELDS.job.id==="'+retry_id+'"')
                 page.locator('#fieldDifferenceDetails').evaluate('(e)=>e.open=true')
                 second=page.evaluate('()=>FIELDS.fields.find(f=>f.source==="merra2").id')
