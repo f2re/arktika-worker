@@ -188,8 +188,8 @@ class Handler(BaseHTTPRequestHandler):
         if not self.gate(path!='/api/bootstrap'):return
         if self.headers.get('X-Arktika-Request')!='1':
             self.send(403,{'error':'Нет заголовка защиты локального запроса.'});return
-        if path=='/api/pmc/observations/import':
-            self.do_pmc_observation_import();return
+        if path in ('/api/pmc/observations/import','/api/pmc/observations/preview'):
+            self.do_pmc_observation_import(preview=path.endswith('/preview'));return
         if self.headers.get('Content-Type','').split(';')[0]!='application/json':
             self.send(415,{'error':'Ожидается application/json.'});return
         try:
@@ -353,8 +353,8 @@ class Handler(BaseHTTPRequestHandler):
             else:self.send(404,{'error':'Маршрут не найден.'});return
             self.send(200,result)
         except Exception as e:self.error(e)
-    def do_pmc_observation_import(self):
-        """Accept one bounded local multipart package without logging its payload."""
+    def do_pmc_observation_import(self, preview=False):
+        """Preview or import one bounded local multipart package without logging it."""
         if self.headers.get('Transfer-Encoding'):
             self.send(411,{'error':'Для загрузки требуется ограниченный Content-Length.'});return
         try:n=int(self.headers.get('Content-Length',''))
@@ -386,8 +386,10 @@ class Handler(BaseHTTPRequestHandler):
             if set(parts)!=set(expected):raise ValueError('Загрузите маски labels.tif, coverage.tif и metadata.json.')
             metadata=json.loads(parts['metadata'].decode('utf-8'))
             if not isinstance(metadata,dict):raise ValueError('metadata.json должен содержать JSON-объект.')
-            result=self.server.app.register_pmc_observation(
-                parts['labels'],parts['coverage'],metadata)
+            method=(self.server.app.preview_pmc_observation if preview
+                    else self.server.app.register_pmc_observation)
+            result=method(parts['labels'],parts['coverage'],metadata,
+                          metadata_source_bytes=parts['metadata'])
             self.send(200,result)
         except Exception as e:self.error(e)
     def error(self,e):

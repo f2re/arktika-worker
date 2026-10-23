@@ -8,6 +8,10 @@ import tempfile
 import threading
 import time
 
+import numpy as np
+import rasterio
+from rasterio.transform import from_origin
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT), str(ROOT / "tests")]
 from playwright.sync_api import sync_playwright
@@ -82,11 +86,42 @@ def main():
                     )
                     page.locator("#pmcArchiveDialog").evaluate("el=>el.scrollTop=el.scrollHeight")
                     page.locator("#pmcRunPanel details summary").click()
-                    page.locator("#pmcObsImport").click()
+                    page.locator("#pmcObsPreview").click()
                     check(
                         "Пустой импорт показывает понятную ошибку без запроса",
                         '()=>document.querySelector("#pmcObsStatus").textContent.includes("Выберите labels.tif")',
                     )
+                    assert not any(url.endswith("/api/pmc/observations/preview") for _, url in requests)
+                    report["checks"].append({"name": "Пустой предпросмотр не отправляет запрос", "passed": True})
+
+                    transform = from_origin(200000, -1000000, 25000, 25000)
+                    grid = {"crs":"EPSG:3413", "width":2, "height":2,
+                            "transform":list(transform[:6]),
+                            "resolution_x_m":25000.0, "resolution_y_m":25000.0}
+                    package = root / "package"
+                    package.mkdir()
+                    for name, values in (("labels", [[0,1],[0,0]]),
+                                         ("coverage", [[1,1],[0,1]])):
+                        with rasterio.open(package / f"{name}.tif", "w", driver="GTiff",
+                                width=2, height=2, count=1, dtype="uint8",
+                                crs=grid["crs"], transform=transform) as ds:
+                            ds.write(np.asarray(values, dtype=np.uint8), 1)
+                    metadata = {"schema_version":"arktika.pmc_satellite_observation.v1",
+                        "observation_ref":"smoke-scene-20240101", "source":"smoke-test",
+                        "product":"reviewed-labels", "product_version":"1",
+                        "valid_time":"2024-01-01T00:00:00Z",
+                        "label_convention":"0=no_pmc,1=pmc_candidate",
+                        "qc_status":"not_assessed", "grid":grid, "nodata":None}
+                    (package / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+                    page.locator("#pmcObsLabels").set_input_files(str(package / "labels.tif"))
+                    page.locator("#pmcObsCoverage").set_input_files(str(package / "coverage.tif"))
+                    page.locator("#pmcObsMetadata").set_input_files(str(package / "metadata.json"))
+                    page.locator("#pmcObsPreview").click()
+                    check("Предпросмотр показывает сетку и покрытие без сохранения",
+                        '()=>document.querySelector("#pmcObsStatus").textContent.includes("покрытие 75%")&&document.querySelector("#pmcObservation").options.length===1&&document.querySelector("#pmcObsImport").disabled===false')
+                    page.locator("#pmcObsImport").click()
+                    check("Подтверждение сохраняет пакет и выбирает маску",
+                        '()=>document.querySelector("#pmcObsStatus").textContent.includes("imported_unverified")&&document.querySelector("#pmcObservation").options.length===2')
                     check(
                         "Требования спутниковой разметки объяснены",
                         '()=>document.querySelector("#pmcArchiveDialog").textContent.includes("размеченная маска")',

@@ -84,12 +84,9 @@ class ReanalysisMixin:
             # Rasterio rejects HTML/XML error pages and malformed uploads here.
             raise ValueError(f'{label}: файл не является читаемым GeoTIFF.') from exc
 
-    def register_pmc_observation(self, labels_bytes: bytes, coverage_bytes: bytes, metadata: dict) -> dict:
-        """Validate and persist an explicitly attributed satellite label/coverage pair.
-
-        This stores masks only. It does not assess meteorological correctness or
-        calculate a detection score.
-        """
+    def _prepare_pmc_observation(self, labels_bytes: bytes, coverage_bytes: bytes,
+                                 metadata: dict, metadata_source_bytes: bytes | None = None):
+        """Validate an attributed mask pair without creating or changing storage."""
         import numpy as np
         from datetime import datetime,timezone
 
@@ -149,6 +146,59 @@ class ReanalysisMixin:
                     algorithm_version='0.1.0',status='imported_unverified')
         source_digest=hashlib.sha256(labels_bytes+coverage_bytes).hexdigest()
         safe['source_files_sha256']=source_digest
+        if metadata_source_bytes is None:
+            metadata_source_bytes=json.dumps(metadata,ensure_ascii=False,
+                sort_keys=True,separators=(',',':')).encode('utf-8')
+        if not isinstance(metadata_source_bytes,bytes):
+            raise ValueError('Байты sidecar должны быть представлены UTF-8 JSON.')
+        package_digest=hashlib.sha256()
+        for name,payload in ((b'labels',labels_bytes),(b'coverage',coverage_bytes),
+                             (b'metadata',metadata_source_bytes)):
+            package_digest.update(len(name).to_bytes(2,'big'))
+            package_digest.update(name)
+            package_digest.update(len(payload).to_bytes(8,'big'))
+            package_digest.update(payload)
+        safe['source_package_sha256']=package_digest.hexdigest()
+        return labels,coverage,safe
+
+    def preview_pmc_observation(self, labels_bytes: bytes, coverage_bytes: bytes,
+                                metadata: dict,
+                                metadata_source_bytes: bytes | None = None) -> dict:
+        """Return structural preview statistics; do not store or assess accuracy."""
+        import numpy as np
+
+        labels,coverage,safe=self._prepare_pmc_observation(
+            labels_bytes,coverage_bytes,metadata,metadata_source_bytes)
+        total=int(coverage.size)
+        observed=int(np.count_nonzero(coverage))
+        positives=int(np.count_nonzero((labels==1)&(coverage==1)))
+        return {
+            'status':'preview_only',
+            'ingestion_status':'not_ingested',
+            'observation':{key:safe[key] for key in (
+                'observation_ref','source','product','product_version','valid_time',
+                'label_convention','qc_status','grid','units','algorithm_id',
+                'algorithm_version')},
+            'structural_summary':{
+                'grid':safe['grid'],
+                'total_pixels':total,
+                'covered_pixels':observed,
+                'coverage_fraction':observed/total if total else 0.0,
+                'positive_label_pixels_within_coverage':positives,
+                'unknown_pixels':total-observed,
+            },
+            'source_package_sha256':safe['source_package_sha256'],
+            'meaning':'Структурная проверка пакета. Положительная метка не подтверждена как ПМЦ; нулевые метки и неизвестное покрытие не являются метеорологической оценкой.',
+        }
+
+    def register_pmc_observation(self, labels_bytes: bytes, coverage_bytes: bytes,
+                                 metadata: dict,
+                                 metadata_source_bytes: bytes | None = None) -> dict:
+        """Validate and persist an attributed mask pair without assessing accuracy."""
+        import numpy as np
+
+        labels,coverage,safe=self._prepare_pmc_observation(
+            labels_bytes,coverage_bytes,metadata,metadata_source_bytes)
         payload=io.BytesIO()
         np.savez_compressed(payload,labels=labels,coverage=coverage,
                             metadata=np.frombuffer(json.dumps(safe,ensure_ascii=False,separators=(',',':')).encode('utf-8'),dtype=np.uint8))
