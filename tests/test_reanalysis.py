@@ -267,7 +267,9 @@ class ServiceIntegration(unittest.TestCase):
         self.app.task.join(20)
         self.assertFalse(self.app.busy)
         state=self.app.fields_state();self.assertEqual(state['job']['id'],r['id'])
-        self.assertEqual(state['job']['status'],'done',state['job'])
+        diagnostic=self.app._field_job.get('_worker_error_type')
+        detail=state['job'] if not diagnostic else {'job':state['job'],'worker_error_type':diagnostic}
+        self.assertEqual(state['job']['status'],'done',detail)
         return state['job']['field_id']
     def test_real_subprocess_import_render_probe_and_export(self):
         identity=self.load();meta=self.app.field(identity)

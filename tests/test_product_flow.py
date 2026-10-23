@@ -156,6 +156,33 @@ class ProductFlowTests(unittest.TestCase):
         d=self.scale();d['offset']=5;self.app.save_scale(d)
         self.assertEqual(self.app.product(r['id'])['calibration_config']['channels']['9']['offset'],0)
         self.assertEqual(r['calibration_status'],'assumed')
+    def make_saved_product(self):
+        self.app.save_scale(self.scale())
+        scene=self.app.scene(self.scene['id']);cal,_=self.app.radiometry_config(scene)
+        return build_product(scene,self.app.product_root,dict(product='micro24',preset='barents',width=256),cal)
+    def test_saved_product_attests_all_files_and_exports_after_validation(self):
+        product=self.make_saved_product()
+        self.assertEqual(set(product['artifacts']),set(product['files'])-{'product.json'})
+        self.assertTrue(all({'sha256','size_bytes'}<=set(item) for item in product['artifacts'].values()))
+        self.assertEqual(self.app.product(product['id'])['id'],product['id'])
+        self.assertTrue(self.app.artifact(product['id'],'display.tif').is_file())
+        self.assertTrue(self.app.export(product['id']))
+    def test_tampered_saved_product_is_hidden_and_rejected_by_read_paths(self):
+        product=self.make_saved_product();target=self.app.product_root/product['id']/'display.tif'
+        target.write_bytes(target.read_bytes()+b'changed')
+        self.assertNotIn(product['id'],[item['id'] for item in self.app.products()])
+        for operation in (lambda:self.app.product(product['id']),
+                          lambda:self.app.artifact(product['id'],'display.tif'),
+                          lambda:self.app.export(product['id'])):
+            with self.subTest(operation=operation),self.assertRaises(ValueError):operation()
+    def test_product_passport_must_match_record_and_safe_artifact_names(self):
+        product=self.make_saved_product();meta=self.app.product_root/product['id']/'product.json'
+        data=json.loads(meta.read_text(encoding='utf-8'));data['passport']['units']='spoofed'
+        meta.write_text(json.dumps(data),encoding='utf-8')
+        with self.assertRaises(ValueError):self.app.product(product['id'])
+        data=json.loads(json.dumps(product));data['files'].append('../outside.tif')
+        meta.write_text(json.dumps(data),encoding='utf-8')
+        with self.assertRaises(ValueError):self.app.product(product['id'])
     def test_conflicting_stac_cannot_fall_back_to_tiff(self):
         fixture(self.local,units=True);scene=self.app.scene(self.scene['id'])
         scene['channels']['9']['raster_bands']=[dict(unit='K',scale=.1)]

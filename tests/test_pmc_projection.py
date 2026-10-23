@@ -8,6 +8,7 @@ from rasterio.warp import transform_bounds
 
 from arktika.pmc_projection import reproject_vorticity_to_grid as _reproject_vorticity_to_grid
 from arktika.pmc_vorticity import _coordinates
+from arktika.pmc_projection import reproject_observation_masks
 
 
 def reproject_vorticity_to_grid(values, latitude, longitude, *, target_grid, source_passport=None):
@@ -175,6 +176,74 @@ class PmcProjectionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "do not match"):
             _reproject_vorticity_to_grid(source, self.lat, self.lon, target_grid=self.grid,
                                          source_passport=passport)
+
+    def test_binary_observation_masks_reproject_with_nearest_and_preserve_unknown_coverage(self):
+        source = {"crs": "EPSG:3413", "width": 2, "height": 2,
+                  "transform": [1000, 0, 0, 0, -1000, 2000],
+                  "resolution_x_m": 1000.0, "resolution_y_m": 1000.0}
+        target = {"crs": "EPSG:3413", "width": 4, "height": 4,
+                  "transform": [500, 0, 0, 0, -500, 2000],
+                  "resolution_x_m": 500.0, "resolution_y_m": 500.0}
+        labels = np.array([[0, 1], [1, 0]], dtype=np.uint8)
+        coverage = np.array([[1, 1], [1, 0]], dtype=np.uint8)
+        projected, observed, provenance = reproject_observation_masks(
+            labels, coverage, source_grid=source, target_grid=target)
+        self.assertEqual(provenance["method"], "nearest_neighbor")
+        self.assertEqual(provenance["source_grid"]["width"], 2)
+        self.assertEqual(provenance["target_grid"]["width"], 4)
+        self.assertEqual(projected.dtype, np.uint8)
+        self.assertTrue(np.isin(projected, (0, 1)).all())
+        self.assertTrue(np.isin(observed, (0, 1)).all())
+        self.assertTrue(np.all(projected[observed == 0] == 0))
+        self.assertTrue((observed == 0).any())
+        self.assertTrue((projected == 1).any())
+
+    def test_observation_reprojection_leaves_outside_footprint_unknown(self):
+        source = {"crs": "EPSG:3413", "width": 2, "height": 2,
+                  "transform": [1000, 0, 0, 0, -1000, 2000],
+                  "resolution_x_m": 1000.0, "resolution_y_m": 1000.0}
+        target = {"crs": "EPSG:3413", "width": 4, "height": 2,
+                  "transform": [1000, 0, -1000, 0, -1000, 2000],
+                  "resolution_x_m": 1000.0, "resolution_y_m": 1000.0}
+        labels = np.ones((2, 2), dtype=np.uint8)
+        coverage = np.ones((2, 2), dtype=np.uint8)
+        projected, observed, _ = reproject_observation_masks(
+            labels, coverage, source_grid=source, target_grid=target)
+        np.testing.assert_array_equal(observed[:, (0, 3)], 0)
+        np.testing.assert_array_equal(projected[:, (0, 3)], 0)
+        self.assertTrue((observed[:, 1:3] == 1).all())
+
+    def test_observation_source_grid_accepts_a_rotated_affine(self):
+        resolution = float(np.hypot(1000, 50))
+        source = {"crs": "EPSG:3413", "width": 2, "height": 2,
+                  "transform": [1000, 50, 0, 50, -1000, 2000],
+                  "resolution_x_m": resolution, "resolution_y_m": resolution}
+        target = {"crs": "EPSG:3413", "width": 4, "height": 4,
+                  "transform": [500, 0, 0, 0, -500, 2000],
+                  "resolution_x_m": 500.0, "resolution_y_m": 500.0}
+        labels = np.array([[0, 1], [1, 0]], dtype=np.uint8)
+        coverage = np.ones((2, 2), dtype=np.uint8)
+        projected, observed, provenance = reproject_observation_masks(
+            labels, coverage, source_grid=source, target_grid=target)
+        self.assertEqual(provenance["method"], "nearest_neighbor")
+        self.assertEqual(provenance["source_grid"]["transform"], source["transform"])
+        self.assertTrue((observed == 1).any())
+        self.assertTrue(np.isin(projected, (0, 1)).all())
+
+    def test_observation_mask_identity_and_invalid_label_coverage_are_checked(self):
+        grid = {"crs": "EPSG:3413", "width": 2, "height": 2,
+                "transform": [1000, 0, 0, 0, -1000, 2000],
+                "resolution_x_m": 1000.0, "resolution_y_m": 1000.0}
+        labels = np.array([[0, 1], [1, 0]], dtype=np.uint8)
+        coverage = np.array([[1, 1], [1, 0]], dtype=np.uint8)
+        same_labels, same_coverage, provenance = reproject_observation_masks(
+            labels, coverage, source_grid=grid, target_grid=dict(grid))
+        self.assertEqual(provenance["method"], "identity")
+        np.testing.assert_array_equal(same_labels, labels)
+        np.testing.assert_array_equal(same_coverage, coverage)
+        coverage[0, 1] = 0
+        with self.assertRaisesRegex(ValueError, "outside the coverage"):
+            reproject_observation_masks(labels, coverage, source_grid=grid, target_grid=grid)
 
 
 if __name__ == "__main__":

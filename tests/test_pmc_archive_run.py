@@ -228,6 +228,23 @@ class PmcArchiveRunTests(unittest.TestCase):
         self.assertEqual("comparable", agreement["frames"][0]["status"])
         self.assertEqual(1, len(agreement["frames"][0]["pairs"][0]["matches"]))
 
+    def test_satellite_reprojection_failure_reason_is_reported_as_unknown(self):
+        stamp = "2024-01-01T00:00:00Z"
+        report = build_archive_report(
+            task_id="t" * 32, plan={"sources": ["era5"]},
+            expected_times={"era5": [stamp]}, interval_hours={"era5": 1},
+            frame_records=[{"field_id": "a" * 24, "source": "era5", "valid_time": stamp,
+                            "status": "completed", "result": frame(0)}],
+            cached_fields=[], target_grid=GRID,
+            satellite_comparisons=[{"source": "era5", "valid_time": stamp,
+                                    "comparison": {"status": "unknown_unmatched", "metrics": None,
+                                                   "reason_code": "observation_grid_unavailable"}}],
+        )
+        satellite = report["satellite_comparison"]
+        self.assertEqual("not_supplied", satellite["status"])
+        self.assertEqual("unknown_unmatched", satellite["frames"][0]["status"])
+        self.assertEqual("observation_grid_unavailable", satellite["frames"][0]["reason_code"])
+
 
 if __name__ == "__main__":
     unittest.main()

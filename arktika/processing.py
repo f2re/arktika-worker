@@ -11,6 +11,7 @@ from .products import PRODUCTS
 from .product_schema import SCHEMA_VERSION, product_passport
 from .geo import grid,lonlat_grid,solar_elevation,map_context
 from .download import digest,atomic_json
+from .saved_product_integrity import artifact_manifest,load_cached_product,replace_product_cache
 PALETTE=[[25,46,88],[40,92,164],[47,170,194],[216,236,222],[251,211,89],[235,110,63],[158,30,65]]
 FLAGS=[dict(value=0,color='#00000000',name='Нет данных'),dict(value=1,color='#896ad8',name='Холодный ИК-сигнал: T9 < 233,15 K'),dict(value=2,color='#f2ba4b',name='Ночной спектральный признак низкой водяной облачности'),dict(value=3,color='#e55365',name='Спектральная несогласованность / контроль качества'),dict(value=4,color='#718497',name='Признак не выделен; безопасность не оценена')]
 class CalibrationError(ValueError):pass
@@ -154,7 +155,8 @@ def build_product(scene,root,request,cal,cancel=None,progress=lambda x:None):
  rgb[~valid]=0;rgba=np.dstack([rgb,np.where(valid,255,0).astype('uint8')])
  identity=hashlib.sha256(json.dumps(dict(inputs=inputs,request=request,cal=cal,grid={k:v for k,v in g.items() if k!='transform'},recipe=RECIPES.get(product),rules=THRESHOLDS,rules_version=VERSION,version='0.2.3',passport_schema=SCHEMA_VERSION),sort_keys=True).encode()).hexdigest()[:24]
  final=Path(root)/identity
- if (final/'product.json').exists():return json.loads((final/'product.json').read_text(encoding='utf-8'))
+ cached=load_cached_product(root,identity)
+ if cached is not None:return cached
  target=Path(root)/(identity+'.building')
  if target.exists():shutil.rmtree(target)
  target.mkdir(parents=True)
@@ -171,6 +173,7 @@ def build_product(scene,root,request,cal,cancel=None,progress=lambda x:None):
  algorithm_version='0.2.3'
  legend.update(title=title,scene_time=scene['time'],scene_id=scene['id'],product=product,status=status,valid_pixels=int(valid.sum()),total_pixels=int(valid.size),version=algorithm_version)
  meta=dict(id=identity,scene_id=scene['id'],platform=scene['platform'],time=scene['time'],product=product,title=title,calibration_status=status,time_assumed=scene.get('time_assumed',True),grid={k:v for k,v in g.items() if k!='transform'},transform=list(g['transform'])[:6],inputs=inputs,request=request,calibration_config=cal,legend=legend,files=['map.png','night.png','display.tif','quality.tif','legend.json','product.json','report.html'])
+ meta['source_grids']=[m['source_grid'] for m in metas]
  spec=next((item for item in PRODUCTS if item['id']==product),{})
  quantity={
   'channel':'Яркостная температура канала' if kelvin else 'Хранимые значения канала',
@@ -196,8 +199,9 @@ def build_product(scene,root,request,cal,cancel=None,progress=lambda x:None):
  if field is not None:meta['files'].append('values.tif')
  atomic_json(target/'legend.json',legend)
  write_report(target,meta,g)
+ meta['artifacts']=artifact_manifest(target,meta['files'])
  atomic_json(target/'product.json',meta)
- os.replace(target,final)
+ replace_product_cache(target,final)
  return meta
 
 def write_report(target,meta,g):

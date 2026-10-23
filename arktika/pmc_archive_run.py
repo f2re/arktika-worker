@@ -261,8 +261,12 @@ def build_archive_report(*, task_id: str, plan: dict[str, Any],
                 valid_match = False
         metrics = comparison.get("metrics")
         if not valid_match or comparison.get("status") != "comparison_only" or not isinstance(metrics, dict):
-            satellite_frames.append({"source": row.get("source"), "valid_time": row.get("valid_time"),
-                                     "status": "unknown_unmatched", "metrics": None})
+            frame = {"source": row.get("source"), "valid_time": row.get("valid_time"),
+                     "status": "unknown_unmatched", "metrics": None}
+            reason_code = comparison.get("reason_code")
+            if reason_code in {"duplicate_exact_time_observations", "observation_grid_unavailable"}:
+                frame["reason_code"] = reason_code
+            satellite_frames.append(frame)
             continue
         counts = {key: metrics.get(key) for key in aggregate}
         if any(isinstance(value, bool) or not isinstance(value, int) or value < 0

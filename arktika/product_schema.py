@@ -126,6 +126,51 @@ def product_passport(
     return passport
 
 
+def validate_product_passport(value: Any) -> dict[str, Any]:
+    """Validate a serialized passport again when a saved product is read.
+
+    The builder protects new outputs. This read-time check prevents a damaged,
+    stale, or hand-edited ``product.json`` from being presented as a usable
+    product merely because it was once written to the local cache.
+    """
+    if not isinstance(value, dict):
+        raise ValueError("Паспорт сохранённого продукта отсутствует или повреждён.")
+    if value.get("schema_version") != SCHEMA_VERSION:
+        raise ValueError("Версия паспорта сохранённого продукта не поддерживается.")
+    algorithm = value.get("algorithm")
+    calibration = value.get("calibration")
+    uncertainty = value.get("uncertainty")
+    if not isinstance(algorithm, dict) or not isinstance(calibration, dict):
+        raise ValueError("Паспорт сохранённого продукта повреждён.")
+    if not isinstance(uncertainty, dict) or uncertainty.get("status") not in (
+            "not_assessed", "assessed"):
+        raise ValueError("Статус неопределённости продукта не указан явно.")
+    try:
+        return product_passport(
+            product_id=value["product_id"],
+            algorithm_id=algorithm["id"],
+            algorithm_version=algorithm["version"],
+            maturity=value["maturity"],
+            quantity_kind=value["quantity_kind"],
+            quantity=value["quantity"],
+            units=value["units"],
+            valid_time=value.get("valid_time"),
+            valid_period=value.get("valid_period"),
+            data_kind=value["data_kind"],
+            grid=value["grid"],
+            source_grids=value["source_grids"],
+            nodata=value["nodata"],
+            quality_control=value["quality_control"],
+            sources=value["sources"],
+            calibration_version=calibration["version"],
+            calibration_status=calibration["status"],
+            limitations=value["limitations"],
+            uncertainty=uncertainty,
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("Паспорт сохранённого продукта неполон.") from exc
+
+
 def _validate_utc(value: Any, field: str) -> dt.datetime:
     if not isinstance(value, str):
         raise ValueError("Паспорт продукта: {} должен быть ISO 8601.".format(field))

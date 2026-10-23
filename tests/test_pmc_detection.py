@@ -105,7 +105,7 @@ class PmcDetectionTests(unittest.TestCase):
         self.assertTrue(structure["coverage_conserved"])
         self.assertEqual(13, result["satellite_comparison"]["metrics"]["false_positive_pixels"])
         json.dumps(result, allow_nan=False)
-        self.assertEqual("0.5.0", result["algorithm_version"])
+        self.assertEqual("0.5.1", result["algorithm_version"])
 
     def test_saddle_diagnostic_does_not_change_candidate_area_for_a_single_peak(self):
         result = self.run_detector()
@@ -132,13 +132,6 @@ class PmcDetectionTests(unittest.TestCase):
         self.assertAlmostEqual(1.0 / 7.0, diagnostics[2]["relative_isolation_contrast"])
         self.assertFalse(diagnostics[2]["isolated_by_experimental_gamma"])
 
-    def test_saddle_diagnostic_declines_oversized_components_explicitly(self):
-        field = np.ones((1, 16385), dtype=float)
-        component = np.ones_like(field, dtype=bool)
-        peaks = [{"peak_vorticity_s-1": 1.0, "peak_pixel_rc": [0.0, 0.0],
-                  "_seed_rc": [0, 0], "plateau_pixel_count": 1}]
-        self.assertIsNone(_peak_saddle_diagnostics(field, component, peaks, threshold=0.5))
-
     def test_equal_height_peak_tie_is_unresolved_independent_of_scan_order(self):
         field = np.array([[10.0, 5.0, 10.0]])
         component = np.ones_like(field, dtype=bool)
@@ -148,7 +141,6 @@ class PmcDetectionTests(unittest.TestCase):
             {"peak_vorticity_s-1": 10.0, "peak_pixel_rc": [0.0, 2.0],
              "_seed_rc": [0, 2], "plateau_pixel_count": 1},
         ]
-
         for ordered_peaks in (peaks, list(reversed(peaks))):
             with self.subTest(order=[peak["_seed_rc"] for peak in ordered_peaks]):
                 diagnostics = _peak_saddle_diagnostics(
@@ -160,6 +152,37 @@ class PmcDetectionTests(unittest.TestCase):
                                     for item in diagnostics))
                 self.assertTrue(all(item["isolation_status"] == "unresolved_equal_height_peak_tie"
                                     for item in diagnostics))
+
+    def test_equal_height_tie_keeps_component_unpartitioned(self):
+        values = np.zeros((15, 15), dtype=float)
+        values[7, 3:12] = 1.05e-4
+        values[6:9, 4:6] = 1.8e-4
+        values[6:9, 9:11] = 1.8e-4
+        with patch("arktika.pmc_detection._smooth_uniform_radius", return_value=values):
+            result = detect_candidates(
+                values, grid=self.grid, valid_time="2025-01-02T06:00:00Z",
+                source="ERA5: test fixture", source_field_metadata={
+                    "source": "ERA5: test fixture", "variable": "relative_vorticity",
+                    "level_hPa": 850, "units": "s-1",
+                    "valid_time": "2025-01-02T06:00:00Z", "grid": dict(self.grid),
+                })
+
+        self.assertEqual(1, result["candidate_count"])
+        candidate = result["candidates"][0]
+        self.assertEqual("unresolved_equal_height_peak_tie_unpartitioned",
+                         candidate["partition_status"])
+        self.assertEqual(17, candidate["pixel_count"])
+        maxima = candidate["peak_structure"]["local_maxima"]
+        self.assertEqual(2, len(maxima))
+        self.assertTrue(all(item["isolation_status"] == "unresolved_equal_height_peak_tie"
+                            for item in maxima))
+
+    def test_saddle_diagnostic_declines_oversized_components_explicitly(self):
+        field = np.ones((1, 16385), dtype=float)
+        component = np.ones_like(field, dtype=bool)
+        peaks = [{"peak_vorticity_s-1": 1.0, "peak_pixel_rc": [0.0, 0.0],
+                  "_seed_rc": [0, 0], "plateau_pixel_count": 1}]
+        self.assertIsNone(_peak_saddle_diagnostics(field, component, peaks, threshold=0.5))
 
     def test_local_peak_preview_is_bounded_when_component_has_many_maxima(self):
         field = np.zeros((60, 60), dtype=float)
@@ -203,6 +226,29 @@ class PmcDetectionTests(unittest.TestCase):
         self.assertGreater(comparison["metrics"]["false_positive_pixels"], 0)
         self.assertEqual(0.0, comparison["metrics"]["intersection_over_union"])
         self.assertEqual(225, comparison["coverage"]["observed_pixels"])
+
+    def test_satellite_comparison_retains_validated_rotated_source_grid_provenance(self):
+        source_grid = {
+            "crs": "EPSG:3413", "width": 15, "height": 15,
+            "transform": [60000, 1000, -450000, 500, -60000, 450000],
+            "resolution_x_m": float(np.hypot(60000, 500)),
+            "resolution_y_m": float(np.hypot(1000, 60000)),
+        }
+        result = self.run_detector(
+            satellite_observation_mask=np.zeros((15, 15), dtype=np.uint8),
+            satellite_coverage_mask=np.ones((15, 15), dtype=np.uint8),
+            satellite_observation_metadata={
+                "source": "fixture satellite archive", "product_id": "test-visible-mask",
+                "valid_time": "2025-01-02T06:00:00Z", "observation_id": "fixture-rotated",
+                "grid": dict(self.grid),
+                "regridding": {"method": "nearest_neighbor", "source_grid": source_grid,
+                               "target_grid": dict(self.grid)},
+            },
+        )
+        comparison = result["satellite_comparison"]
+        self.assertEqual("nearest_neighbor", comparison["observation"]["regridding"]["method"])
+        self.assertEqual(source_grid["transform"],
+                         comparison["observation"]["regridding"]["source_grid"]["transform"])
 
     def test_satellite_comparison_excludes_uncovered_candidates_from_metrics(self):
         coverage = np.zeros((15, 15), dtype=bool)

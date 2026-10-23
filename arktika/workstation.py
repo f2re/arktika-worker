@@ -26,12 +26,15 @@ from .sources import SourceManagerMixin
 from .reanalysis_service import ReanalysisMixin
 from .product_styles import ProductStyleStore
 from .adapters import AdapterRegistry,WindSpeedAdapter
-class Workstation(ReanalysisMixin, SourceManagerMixin, AutoCalibrationMixin, ProductFlowMixin, AnalysisMixin, App):
+from .saved_product_integrity import artifact_manifest,product_metadata_path,validate_saved_product
+from .derived_product_service import DerivedProductServiceMixin
+class Workstation(DerivedProductServiceMixin, ReanalysisMixin, SourceManagerMixin, AutoCalibrationMixin, ProductFlowMixin, AnalysisMixin, App):
  def __init__(self,state_dir,download_dir=None,token='',config=None,client=None):
   self.config=config or {};super().__init__(state_dir,download_dir,token,client or AuthClient(token,self.config.get('oauth')))
   with self.store.lock,self.store.conn:
    self.store.conn.execute('CREATE TABLE IF NOT EXISTS scenes(id TEXT PRIMARY KEY,stamp TEXT,data TEXT)')
   self.product_root=self.store.root/'products';self.product_root.mkdir(exist_ok=True)
+  self.derived_product_root=self.store.root/'derived-products';self.derived_product_root.mkdir(exist_ok=True)
   # Registry entries are trusted Python objects registered by application code;
   # HTTP requests can inspect metadata but cannot load or register executable code.
   self.derived_adapters=AdapterRegistry();self.derived_adapters.register(WindSpeedAdapter())
@@ -289,14 +292,21 @@ class Workstation(ReanalysisMixin, SourceManagerMixin, AutoCalibrationMixin, Pro
   rows=[]
   for p in self.product_root.glob('*/product.json'):
    if not re.fullmatch(r'[0-9a-f]{24}',p.parent.name):continue
-   try:rows.append(json.loads(p.read_text(encoding='utf-8')))
-   except (ValueError,OSError):continue
+   try:
+    item=json.loads(product_metadata_path(self.product_root,p.parent.name).read_text(encoding='utf-8'))
+    validate_saved_product(p.parent,item)
+    rows.append(item)
+   except (ValueError,OSError,TypeError):continue
   return sorted(rows,key=lambda x:(x['time'],x['id']),reverse=True)
  def product(self,identity):
   if not re.fullmatch(r'[0-9a-f]{24}',identity):raise ValueError('Неверный идентификатор продукта.')
-  p=self.product_root/identity/'product.json'
-  if not p.exists():raise ValueError('Продукт не найден.')
-  return json.loads(p.read_text(encoding='utf-8'))
+  try:
+   p=product_metadata_path(self.product_root,identity)
+   item=json.loads(p.read_text(encoding='utf-8'))
+   validate_saved_product(p.parent,item)
+   return item
+  except (ValueError,TypeError,OSError) as exc:
+   raise ValueError('Паспорт сохранённого продукта повреждён или несовместим.') from exc
  def artifact(self,identity,name):
   p=self.product(identity)
   if name not in p['files']:raise ValueError('Этот файл не относится к продукту.')
@@ -343,8 +353,13 @@ class Workstation(ReanalysisMixin, SourceManagerMixin, AutoCalibrationMixin, Pro
     dst.write(rgba.transpose(2,0,1));dst.colorinterp=(rasterio.enums.ColorInterp.red,rasterio.enums.ColorInterp.green,rasterio.enums.ColorInterp.blue,rasterio.enums.ColorInterp.alpha);dst.update_tags(**tags,style_schema=style['schema_version'])
    Image.fromarray(rgba).save(stage/'map.png')
    (stage/'style.json').write_text(json.dumps(style,ensure_ascii=False,allow_nan=False,indent=2),encoding='utf-8')
-   atomic_json(stage/'legend.json',legend);atomic_json(stage/'product.json',meta)
+   atomic_json(stage/'legend.json',legend)
    g=self.product_grid(meta);write_report(stage,meta,g)
+   # Preserve attestations for untouched large rasters; replace hashes only
+   # for files rebuilt in this style transaction.
+   meta['artifacts'].update(artifact_manifest(
+    stage,('display.tif','map.png','style.json','legend.json','report.html')))
+   atomic_json(stage/'product.json',meta)
    names=('display.tif','map.png','style.json','legend.json','report.html','product.json')
    replaced=[]
    for name in names:

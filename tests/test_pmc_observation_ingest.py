@@ -70,6 +70,25 @@ class PmcObservationIngest(unittest.TestCase):
         self.assertEqual([item['observation_id'] for item in state['observations']],[result['observation_id']])
         self.assertNotIn('path',state['observations'][0])
 
+    def test_exact_time_observation_is_reprojected_for_archive_grid(self):
+        self.register()
+        target = {'crs':'EPSG:3413','width':6,'height':4,
+                  'transform':[12500,0,200000,0,-12500,-1000000],
+                  'resolution_x_m':12500.0,'resolution_y_m':12500.0}
+        observation = self.app._pmc_observation_for_frame(self.metadata['valid_time'], target)
+        self.assertEqual(observation['metadata']['regridding']['method'],'nearest_neighbor')
+        self.assertEqual(observation['metadata']['regridding']['source_grid']['width'],3)
+        self.assertEqual(observation['metadata']['grid'],target)
+        self.assertEqual(observation['labels'].shape,(4,6))
+        self.assertEqual(observation['coverage'].shape,(4,6))
+
+    def test_duplicate_exact_time_observations_have_safe_unknown_reason(self):
+        self.register()
+        self.register(metadata={**self.metadata,'observation_ref':'scene-20240101-b'})
+        result = self.app._pmc_observation_for_frame(
+            self.metadata['valid_time'], self.metadata['grid'])
+        self.assertEqual(result,{'unavailable_reason':'duplicate_exact_time_observations'})
+
     def test_html_xml_and_malformed_inputs_are_not_accepted_as_geotiff(self):
         for payload in (b'<html>denied</html>',b'<?xml version="1.0"?><Error/>',b'not a raster'):
             with self.subTest(payload=payload),self.assertRaisesRegex(ValueError,'GeoTIFF'):

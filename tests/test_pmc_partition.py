@@ -77,22 +77,70 @@ class PmcPartitionTests(unittest.TestCase):
         self.assertTrue(np.array_equal(first["labels"], second["labels"]))
 
     def test_contour_core_keeps_cells_that_nearest_seed_would_reassign(self):
-        field = np.array([[10e-6, 10e-6, 4e-6, 4e-6, 4e-6,
-                           7e-6, 7e-6, 7e-6, 8e-6, 8e-6, 8e-6, 8e-6]])
-        component = np.ones_like(field, dtype=bool)
+        field = np.zeros((7, 14), dtype=float)
+        field[3, 1:13] = np.array([10e-6, 10e-6, 4e-6, 4e-6, 4e-6,
+                                   7e-6, 7e-6, 7e-6, 7e-6, 7e-6, 7e-6, 8e-6])
+        component = field >= 3e-6
         peaks = [
-            {"peak_vorticity_s-1": 10e-6, "peak_pixel_rc": [0.0, 0.5],
-             "peak_seed_pixel_rc": [0, 0], "saddle_vorticity_s-1": 4e-6,
+            {"peak_vorticity_s-1": 10e-6, "peak_pixel_rc": [3.0, 1.5],
+             "peak_seed_pixel_rc": [3, 1], "saddle_vorticity_s-1": 4e-6,
              "relative_isolation_contrast": 0.6, "isolated_by_experimental_gamma": True},
-            {"peak_vorticity_s-1": 8e-6, "peak_pixel_rc": [0.0, 9.5],
-             "peak_seed_pixel_rc": [0, 11], "saddle_vorticity_s-1": 4e-6,
+            {"peak_vorticity_s-1": 8e-6, "peak_pixel_rc": [3.0, 12.0],
+             "peak_seed_pixel_rc": [3, 12], "saddle_vorticity_s-1": 4e-6,
              "relative_isolation_contrast": 0.5, "isolated_by_experimental_gamma": True},
         ]
         result = partition_component(
             field, component, peaks, threshold=3e-6,
             grid={"transform": [1, 0, 0, 0, -1, 0]}, boundary_censored=False)
-        # Col 5 lies inside peak 2's contour core, although seed 1 is nearer.
-        self.assertEqual(2, int(result["labels"][0, 5]))
+        # Col 6 lies inside peak 2's interpolated contour core, although seed 1 is nearer.
+        self.assertEqual(2, int(result["labels"][3, 6]))
+        self.assertEqual("interpolated_marching_squares_core_plus_nearest_remainder",
+                         result["regions"][1]["allocation"])
+
+    def test_ambiguous_contour_keeps_component_unsplit(self):
+        field = np.zeros((7, 14), dtype=float)
+        field[3, 1:13] = np.array([10e-6, 10e-6, 5e-6, 5e-6, 5e-6,
+                                   6e-6, 7e-6, 7e-6, 7e-6, 7e-6, 7e-6, 8e-6])
+        component = field >= 4e-6
+        peaks = [
+            {"peak_vorticity_s-1": 10e-6, "peak_pixel_rc": [3.0, 1.5],
+             "peak_seed_pixel_rc": [3, 1], "saddle_vorticity_s-1": 5e-6,
+             "relative_isolation_contrast": 0.5, "isolated_by_experimental_gamma": True},
+            {"peak_vorticity_s-1": 8e-6, "peak_pixel_rc": [3.0, 12.0],
+             "peak_seed_pixel_rc": [3, 12], "saddle_vorticity_s-1": 5e-6,
+             "relative_isolation_contrast": 0.375, "isolated_by_experimental_gamma": True},
+        ]
+        result = partition_component(
+            field, component, peaks, threshold=4e-6,
+            grid={"transform": [1, 0, 0, 0, -1, 0]}, boundary_censored=False)
+
+        self.assertEqual("contour_trace_unresolved_unpartitioned", result["status"])
+        self.assertEqual(1, len(result["regions"]))
+        self.assertTrue(result["coverage_conserved"])
+
+    def test_nested_contour_cores_preserve_each_peak_seed_and_nonempty_region(self):
+        field = np.zeros((7, 15), dtype=float)
+        field[3, 1:14] = np.array([10, 10, 6, 6, 6, 6, 6, 6, 6, 6, 6, 9, 0]) * 1e-6
+        component = field >= 1e-6
+        peaks = [
+            {"peak_vorticity_s-1": 10e-6, "peak_pixel_rc": [3.0, 1.5],
+             "peak_seed_pixel_rc": [3, 1], "saddle_vorticity_s-1": 1e-6,
+             "relative_isolation_contrast": 0.9, "isolated_by_experimental_gamma": True},
+            {"peak_vorticity_s-1": 9e-6, "peak_pixel_rc": [3.0, 12.0],
+             "peak_seed_pixel_rc": [3, 12], "saddle_vorticity_s-1": 6e-6,
+             "relative_isolation_contrast": 1 / 3, "isolated_by_experimental_gamma": True},
+        ]
+        result = partition_component(
+            field, component, peaks, threshold=1e-6,
+            grid={"transform": [1, 0, 0, 0, -1, 0]}, boundary_censored=False)
+
+        self.assertEqual("partitioned_experimental", result["status"])
+        self.assertEqual(1, int(result["labels"][3, 1]))
+        self.assertEqual(2, int(result["labels"][3, 12]))
+        self.assertTrue(all(region["pixel_count"] > 0 for region in result["regions"]))
+        self.assertTrue(all(region["centroid_pixel_rc"] is not None
+                            for region in result["regions"]))
+        self.assertTrue(result["coverage_conserved"])
 
 
 if __name__ == "__main__":
