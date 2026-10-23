@@ -24,6 +24,8 @@ from .pmc_archive import build_plan as build_pmc_archive_plan
 from .pmc_archive_run import MAX_FIELDS as MAX_PMC_ARCHIVE_FIELDS
 from .pmc_archive_run import build_archive_report
 from .pmc_archive_run import validate_grid as validate_pmc_archive_grid
+from .pmc_detection import ALGORITHM_ID as PMC_DETECTOR_ID
+from .pmc_detection import ALGORITHM_VERSION as PMC_DETECTOR_VERSION
 from .reanalysis.adapters import get_runtime_adapter
 from .reanalysis.catalog import SOURCES, VERSION, catalogue, request_plan
 
@@ -307,8 +309,8 @@ class ReanalysisMixin:
                 continue
             result=record.get('result')
             if record.get('status')!='completed' or not isinstance(result,dict):continue
-            if (result.get('algorithm_id')!='arktika.experimental_pmc_candidates'
-                    or result.get('algorithm_version')!='0.2.0'
+            if (result.get('algorithm_id')!=PMC_DETECTOR_ID
+                    or result.get('algorithm_version')!=PMC_DETECTOR_VERSION
                     or result.get('source')!=meta.get('source')
                     or result.get('valid_time')!=meta.get('time')
                     or result.get('grid')!=job.get('target_grid')
