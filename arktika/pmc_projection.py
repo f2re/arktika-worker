@@ -67,8 +67,8 @@ def _source_grid(values: np.ndarray, latitude: Any, longitude: Any) -> tuple[Aff
     dx = float(np.median(np.diff(lon)))
     dy = float(np.median(np.diff(lat)))
     transform = Affine(dx, 0, float(lon[0] - dx / 2), 0, dy, float(lat[0] - dy / 2))
-    lat2, lon2 = np.meshgrid(lat, lon, indexing="ij")
-    digest = hashlib.sha256(np.stack((lat2, lon2)).astype("<f8").tobytes()).hexdigest()
+    lat2, lon2 = np.meshgrid(np.deg2rad(lat), np.deg2rad(lon), indexing="ij")
+    digest = hashlib.sha256(np.ascontiguousarray(np.stack((lat2, lon2)).astype("<f8")).tobytes()).hexdigest()
     return transform, digest, lat, lon
 
 
@@ -144,25 +144,26 @@ def reproject_vorticity_to_grid(values: Any, latitude: Any, longitude: Any, *,
         raise ValueError("source vorticity must be a finite-or-NaN 2-D array")
     lat_values = np.asarray(latitude, dtype=np.float64)
     lon_values = np.asarray(longitude, dtype=np.float64)
+    phi, lam, coordinate_grid_type = _coordinates(lat_values, lon_values, source.shape)
+    coord_digest = hashlib.sha256(
+        np.ascontiguousarray(np.stack((phi, lam), axis=0)).astype("<f8").tobytes()
+    ).hexdigest()
     rectilinear = (lat_values.ndim == lon_values.ndim == 1 or
                    (lat_values.ndim == lon_values.ndim == 2
                     and lat_values.shape == lon_values.shape == source.shape
                     and np.allclose(lat_values, lat_values[:, :1], rtol=0, atol=1e-8)
                     and np.allclose(lon_values, lon_values[:1, :], rtol=0, atol=1e-8)))
     if rectilinear:
-        source_transform, coord_digest, lat_axis, lon_axis = _source_grid(
+        source_transform, _, lat_axis, lon_axis = _source_grid(
             source, lat_values, lon_values)
         lat_mesh, lon_mesh = np.meshgrid(lat_axis, lon_axis, indexing="ij")
         grid_type = "regular_latitude_longitude"
     else:
-        phi, lam, grid_type = _coordinates(lat_values, lon_values, source.shape)
+        grid_type = coordinate_grid_type
         if grid_type != "curvilinear_latitude_longitude":
             raise ValueError("source coordinates could not be identified as rectilinear or curvilinear")
         lat_mesh, lon_mesh = np.rad2deg(phi), np.rad2deg(lam)
         source_transform = None
-        coord_digest = hashlib.sha256(
-            np.ascontiguousarray(np.stack((phi, lam), axis=0)).astype("<f8").tobytes()
-        ).hexdigest()
     try:
         requested_shape = (int(target_grid["height"]), int(target_grid["width"]))
     except (TypeError, KeyError, ValueError) as exc:
@@ -173,6 +174,9 @@ def reproject_vorticity_to_grid(values: Any, latitude: Any, longitude: Any, *,
             or any(not source_passport.get(key) for key in required_provenance)
             or not isinstance(source_passport.get("grid"), dict)):
         raise ValueError("complete source passport is required for reprojected vorticity")
+    attested_coordinate_digest = source_passport["grid"].get("coordinate_sha256")
+    if not isinstance(attested_coordinate_digest, str) or attested_coordinate_digest != coord_digest:
+        raise ValueError("source coordinate arrays do not match the vorticity passport digest")
     source_grid = dict(source_passport["grid"])
     source_grid.update({"crs": "EPSG:4326", "width": int(source.shape[1]),
                         "height": int(source.shape[0]), "coordinate_sha256": coord_digest,
@@ -199,30 +203,31 @@ def reproject_vorticity_to_grid(values: Any, latitude: Any, longitude: Any, *,
               resampling=Resampling.nearest, init_dest_nodata=True)
     output[warped_valid == 0] = np.nan
     scale = _projection_scale(lat_mesh, lon_mesh, target_crs)
-    raw_sources = source_passport.get("sources")
-    if isinstance(raw_sources, list) and raw_sources:
-        sources = []
-        for item in raw_sources:
-            if not isinstance(item, dict):
-                continue
-            source_id = item.get("source_id", source_passport.get("source"))
-            if isinstance(source_id, str) and source_id.strip():
-                sources.append({"source_id": source_id.strip()})
+    source_name = str(source_passport["source"])
+    source_version = source_passport.get("source_version")
+    source_records = source_passport.get("sources")
+    if isinstance(source_records, list) and source_records:
+        source_records = [dict(item) for item in source_records if isinstance(item, dict)]
+        if not source_records:
+            raise ValueError("source passport must identify at least one safe source record")
     else:
-        sources = [{"source_id": str(source_passport["source"])}]
-    if not sources:
-        raise ValueError("source passport must identify at least one source")
+        source_records = [{"provider": source_name,
+                           "dataset_version": source_version or "not_recorded",
+                           "source_algorithm_id": source_passport["algorithm_id"],
+                           "source_algorithm_version": source_passport["algorithm_version"]}]
     source_limitations = source_passport.get("limitations", [])
     if not isinstance(source_limitations, list) or any(not isinstance(item, str) for item in source_limitations):
         source_limitations = []
-    source_name = str(source_passport["source"])
     source_algorithm = source_passport.get("algorithm", {})
     if not isinstance(source_algorithm, dict):
         source_algorithm = {}
     source_algorithm_id = source_algorithm.get("id", source_passport.get("algorithm_id", "unknown"))
     source_algorithm_version = source_algorithm.get("version", source_passport.get("algorithm_version", "unknown"))
-    passport = product_passport(
-        product_id="arktika.relative_vorticity.850hpa.projected",
+    source_grid_for_schema = dict(source_grid)
+    source_grid_for_schema["coordinate_sha256"] = coord_digest
+    common = product_passport(
+        product_id="vorticity850-projected:{}:{}:{}".format(
+            source_name, source_passport["algorithm_id"], source_passport["valid_time"]),
         algorithm_id="arktika.experimental_vorticity_reprojection",
         algorithm_version="0.1.0",
         maturity="experimental",
@@ -230,24 +235,29 @@ def reproject_vorticity_to_grid(values: Any, latitude: Any, longitude: Any, *,
         quantity="relative_vorticity",
         units="s-1",
         valid_time=source_passport["valid_time"],
-        data_kind="analysis",
+        data_kind=source_passport.get("data_kind", "analysis"),
         grid=grid,
-        source_grids=[source_grid],
+        source_grids=[source_grid_for_schema],
         nodata="NaN; nearest source validity mask preserved",
-        quality_control={"status": "reprojected", "valid_pixels": int(np.isfinite(output).sum()),
-                         "total_pixels": int(output.size),
-                         "valid_fraction": float(np.isfinite(output).mean())},
-        sources=sources,
+        quality_control={"status": "technical_checks_applied",
+                         "rules": ["source passport required", "explicit target CRS/transform/resolution",
+                                   "nodata mask warped with nearest neighbour"]},
+        sources=source_records,
         calibration_version="not_applicable",
         calibration_status="not_applicable",
-        limitations=(list(source_limitations)
-                     + ["Проекция и её пригодность для детектора не прошли метеорологическую проверку."]),
+        limitations=["Перепроецирование экспериментально; пригодность масштаба целевой проекции не валидирована.",
+                     "Результат не является прогнозом или подтверждением ПМЦ.",
+                     "Метеорологическая точность не проверялась."],
+        uncertainty={"status": "not_assessed", "method": None},
     )
+    passport = dict(source_passport)
+    passport.update(common)
+    passport["limitations"] = list(dict.fromkeys(
+        [*source_limitations, *common.get("limitations", [])]))
     passport.update({"algorithm_id": "arktika.experimental_vorticity_reprojection",
-                     "algorithm_version": "0.1.0", "maturity": "experimental",
-                     "valid_time": source_passport["valid_time"], "units": "s-1",
-                     "quantity": "relative_vorticity", "variable": "relative_vorticity",
-                     "level_hPa": 850, "source": source_name,
+                     "algorithm_version": "0.1.0", "source": source_name,
+                     "source_version": source_version,
+                     "variable": "relative_vorticity", "level_hPa": 850,
                      "source_algorithm_id": source_algorithm_id,
                      "source_algorithm_version": source_algorithm_version,
                      "source_grid": source_grid, "projection_scale": scale,

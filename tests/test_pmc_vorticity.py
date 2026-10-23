@@ -43,6 +43,13 @@ class RelativeVorticityTests(unittest.TestCase):
         self.assertEqual("era5", result["passport"]["sources"][0]["source_id"])
         self.assertEqual(result["passport"]["claimed_source_file_sha256"], "b" * 64)
         self.assertEqual(len(result["passport"]["input_arrays_sha256"]), 64)
+        self.assertEqual(result["passport"]["quantity_kind"], "atmospheric_dynamics")
+        self.assertEqual(result["passport"]["data_kind"], "analysis")
+        self.assertEqual(result["passport"]["sources"][0]["field_id"], "a" * 24)
+        self.assertEqual(result["passport"]["source_grids"][0]["coordinate_sha256"],
+                         result["passport"]["grid"]["coordinate_sha256"])
+        self.assertEqual(result["passport"]["quality_control"]["status"],
+                         "input_contract_checked")
 
     def test_missing_wind_stencil_remains_missing(self):
         lat, lon = self.axes()

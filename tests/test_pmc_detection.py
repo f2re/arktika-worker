@@ -139,6 +139,28 @@ class PmcDetectionTests(unittest.TestCase):
                   "_seed_rc": [0, 0], "plateau_pixel_count": 1}]
         self.assertIsNone(_peak_saddle_diagnostics(field, component, peaks, threshold=0.5))
 
+    def test_equal_height_peak_tie_is_unresolved_independent_of_scan_order(self):
+        field = np.array([[10.0, 5.0, 10.0]])
+        component = np.ones_like(field, dtype=bool)
+        peaks = [
+            {"peak_vorticity_s-1": 10.0, "peak_pixel_rc": [0.0, 0.0],
+             "_seed_rc": [0, 0], "plateau_pixel_count": 1},
+            {"peak_vorticity_s-1": 10.0, "peak_pixel_rc": [0.0, 2.0],
+             "_seed_rc": [0, 2], "plateau_pixel_count": 1},
+        ]
+
+        for ordered_peaks in (peaks, list(reversed(peaks))):
+            with self.subTest(order=[peak["_seed_rc"] for peak in ordered_peaks]):
+                diagnostics = _peak_saddle_diagnostics(
+                    field, component, ordered_peaks, threshold=1.0)
+                self.assertEqual(2, len(diagnostics))
+                self.assertTrue(all(item["saddle_vorticity_s-1"] is None
+                                    for item in diagnostics))
+                self.assertTrue(all(item["isolated_by_experimental_gamma"] is None
+                                    for item in diagnostics))
+                self.assertTrue(all(item["isolation_status"] == "unresolved_equal_height_peak_tie"
+                                    for item in diagnostics))
+
     def test_local_peak_preview_is_bounded_when_component_has_many_maxima(self):
         field = np.zeros((60, 60), dtype=float)
         field[1::3, 1::3] = 2.0
