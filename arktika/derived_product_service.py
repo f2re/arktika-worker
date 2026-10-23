@@ -202,6 +202,8 @@ class DerivedProductServiceMixin:
                 continue
             try:
                 record = json.loads(path.read_text(encoding="utf-8"))
+                if not isinstance(record, dict) or record.get("id") != path.parent.name:
+                    continue
                 validate_product_passport(record.get("passport"))
                 self._validate_derived_artifacts(record)
                 rows.append(record)
@@ -217,6 +219,8 @@ class DerivedProductServiceMixin:
         path = self.derived_product_root / identity / "product.json"
         try:
             record = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(record, dict) or record.get("id") != identity:
+                raise ValueError("Идентификатор производного продукта не совпадает с записью.")
             from .product_schema import validate_product_passport
             validate_product_passport(record.get("passport"))
             self._validate_derived_artifacts(record)
@@ -230,7 +234,10 @@ class DerivedProductServiceMixin:
     def _validate_derived_artifacts(self, record):
         artifacts = record.get("artifacts")
         declared = artifacts.get("values.npz") if isinstance(artifacts, dict) else None
-        path = self.derived_product_root / record["id"] / "values.npz"
+        identity = record.get("id") if isinstance(record, dict) else None
+        if not isinstance(identity, str) or not _FIELD_ID.fullmatch(identity):
+            raise ValueError("Идентификатор производного продукта повреждён.")
+        path = self.derived_product_root / identity / "values.npz"
         if (not isinstance(declared, dict) or not path.is_file()
                 or declared.get("sha256") != digest(path)
                 or declared.get("size_bytes") != path.stat().st_size):

@@ -22,7 +22,7 @@
     "arktika/auth.py": "9c7d579a5d2e39f0df2bc73d3c0a6a9dc40c24d2fa7401803b7e0db4259ba142",
     "arktika/auto_calibration.py": "527e36478aa14578d4f8892970fa9cca8bc519b3201220a285e214525bd1981c",
     "arktika/catalog.py": "192185393812651049a705bf1adb5390b28482295f5fee37bdfb8fb681c6285d",
-    "arktika/derived_product_service.py": "bec3e07f8d8b3cdbbfa17a755e07acf6f852613fe275fcbb448ed9e02728fcc0",
+    "arktika/derived_product_service.py": "ba5f888197879ddf74bd2b299a69b526fd35e6bb1c3770acda0da0e0a688d793",
     "arktika/download.py": "e1bf7253c2f7d6d217dda79604d0b119800019ea4a702881dd2687668398da5f",
     "arktika/electrol2_srf.json": "e87a7a303fdd6a670473e541ec933af18dfa46c883ada14358577403f4297f8c",
     "arktika/era5_access.py": "6e4ea7be27ce24284b62de756978582752e2ce0c8e736204086e1881aec40e8a",
