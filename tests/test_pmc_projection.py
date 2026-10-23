@@ -1,11 +1,14 @@
 """Synthetic numerical contracts; projection scale and meteorology are unvalidated."""
+import hashlib
 import unittest
 
 import numpy as np
 from rasterio.transform import from_bounds
 from rasterio.warp import transform_bounds
 
-from arktika.pmc_projection import reproject_observation_masks, reproject_vorticity_to_grid as _reproject_vorticity_to_grid
+from arktika.pmc_projection import reproject_vorticity_to_grid as _reproject_vorticity_to_grid
+from arktika.pmc_vorticity import _coordinates
+from arktika.pmc_projection import reproject_observation_masks
 
 
 def reproject_vorticity_to_grid(values, latitude, longitude, *, target_grid, source_passport=None):
@@ -14,6 +17,10 @@ def reproject_vorticity_to_grid(values, latitude, longitude, *, target_grid, sou
         "algorithm_id": "test-vorticity", "algorithm_version": "1.0.0",
         "grid": {"crs": "EPSG:4326", "grid_id": "fixture"},
     }
+    if "coordinate_sha256" not in source_passport.get("grid", {}):
+        phi, lam, _ = _coordinates(latitude, longitude, np.asarray(values).shape)
+        coordinates = np.ascontiguousarray(np.stack((phi, lam), axis=0)).astype("<f8")
+        source_passport["grid"]["coordinate_sha256"] = hashlib.sha256(coordinates.tobytes()).hexdigest()
     return _reproject_vorticity_to_grid(values, latitude, longitude,
                                         target_grid=target_grid, source_passport=source_passport)
 
@@ -51,6 +58,13 @@ class PmcProjectionTests(unittest.TestCase):
         self.assertEqual(result["passport"]["source"], "era5")
         self.assertEqual(result["passport"]["valid_time"], src_passport["valid_time"])
         self.assertEqual(result["passport"]["grid"], result["grid"])
+        self.assertEqual(result["passport"]["schema_version"], "1.0")
+        self.assertEqual(result["passport"]["quantity_kind"], "atmospheric_dynamics")
+        self.assertEqual(result["passport"]["data_kind"], "analysis")
+        self.assertEqual(result["passport"]["source_grids"][0]["coordinate_sha256"],
+                         result["passport"]["source_grid"]["coordinate_sha256"])
+        self.assertEqual(result["passport"]["grid"]["transform"], result["grid"]["transform"])
+        self.assertEqual(result["passport"]["calibration"]["status"], "not_applicable")
         self.assertEqual(result["passport"]["source_grid"]["grid_id"] if "grid_id" in result["passport"]["source_grid"] else "fixture", "fixture")
         self.assertEqual(result["passport"]["variable"], "relative_vorticity")
         self.assertEqual(result["passport"]["level_hPa"], 850)
@@ -153,6 +167,15 @@ class PmcProjectionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "complete source passport"):
             _reproject_vorticity_to_grid(np.ones((51, 51)), self.lat, self.lon,
                                          target_grid=self.grid, source_passport=None)
+
+    def test_rejects_same_shape_coordinates_not_attested_by_source_passport(self):
+        source = np.ones((51, 51))
+        passport = {"source": "era5", "valid_time": "2024-01-01T00:00:00Z",
+                    "algorithm_id": "test-vorticity", "algorithm_version": "1.0.0",
+                    "grid": {"crs": "EPSG:4326", "coordinate_sha256": "0" * 64}}
+        with self.assertRaisesRegex(ValueError, "do not match"):
+            _reproject_vorticity_to_grid(source, self.lat, self.lon, target_grid=self.grid,
+                                         source_passport=passport)
 
     def test_binary_observation_masks_reproject_with_nearest_and_preserve_unknown_coverage(self):
         source = {"crs": "EPSG:3413", "width": 2, "height": 2,

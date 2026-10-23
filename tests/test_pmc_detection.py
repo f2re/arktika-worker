@@ -169,7 +169,8 @@ class PmcDetectionTests(unittest.TestCase):
 
         self.assertEqual(1, result["candidate_count"])
         candidate = result["candidates"][0]
-        self.assertEqual("no_isolated_peak_unpartitioned", candidate["partition_status"])
+        self.assertEqual("unresolved_equal_height_peak_tie_unpartitioned",
+                         candidate["partition_status"])
         self.assertEqual(17, candidate["pixel_count"])
         maxima = candidate["peak_structure"]["local_maxima"]
         self.assertEqual(2, len(maxima))

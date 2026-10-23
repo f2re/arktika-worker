@@ -69,6 +69,8 @@ class PmcArchiveRunTests(unittest.TestCase):
         self.assertNotIn("genesis_location", report["tracks_by_source"][0]["tracks"][0])
         self.assertEqual({"start": expected["era5"][0], "end": expected["era5"][0]},
                          report["passport"]["valid_period"])
+        self.assertEqual(expected["era5"][0], report["plan"]["start"])
+        self.assertEqual(expected["era5"][-1], report["plan"]["end"])
         self.assertEqual("candidate_track_catalog", report["passport"]["quantity_kind"])
         self.assertEqual("not_assessed", report["passport"]["uncertainty"]["status"])
 
@@ -104,6 +106,43 @@ class PmcArchiveRunTests(unittest.TestCase):
             cached_fields=[], target_grid=GRID,
         )
         self.assertNotIn("passport", report)
+        self.assertEqual("not_publishable", report["output_status"])
+        self.assertEqual("not_publishable", report["publication"]["status"])
+
+    def test_successful_frames_supply_honest_fallback_source_grid_and_period(self):
+        records = [
+            {"field_id": "a" * 24, "source": "era5",
+             "valid_time": "2024-01-01T00:00:00Z", "status": "completed",
+             "result": frame(0)},
+            {"field_id": "b" * 24, "source": "era5",
+             "valid_time": "2024-01-01T02:00:00Z", "status": "completed",
+             "result": frame(2)},
+        ]
+        report = build_archive_report(
+            task_id="t" * 32, plan={"sources": ["era5"]},
+            expected_times={}, interval_hours={"era5": 1},
+            frame_records=records, cached_fields=[], target_grid=GRID,
+        )
+        passport = report["passport"]
+        self.assertEqual({"start": "2024-01-01T00:00:00Z",
+                          "end": "2024-01-01T02:00:00Z"}, passport["valid_period"])
+        self.assertEqual([{"source_id": "era5"}], passport["sources"])
+        self.assertEqual("candidate_detection_grid", passport["source_grids"][0]["role"])
+        self.assertEqual("candidate_only", report["output_status"])
+        self.assertNotIn("publication", report)
+
+    def test_no_frames_is_explicitly_not_publishable_even_with_requested_grid_and_period(self):
+        report = build_archive_report(
+            task_id="t" * 32,
+            plan={"sources": ["era5"], "start": "2024-01-01T00:00:00Z",
+                  "end": "2024-01-01T00:00:00Z"},
+            expected_times={"era5": ["2024-01-01T00:00:00Z"]},
+            interval_hours={"era5": 1}, frame_records=[], cached_fields=[],
+            target_grid=GRID,
+        )
+        self.assertNotIn("passport", report)
+        self.assertEqual("not_publishable", report["output_status"])
+        self.assertEqual("not_publishable", report["publication"]["status"])
 
     def test_satellite_comparisons_require_exact_utc_and_target_grid_and_remain_pixel_only(self):
         times = [f"2024-01-01T{hour:02d}:00:00Z" for hour in range(3)]
@@ -168,6 +207,26 @@ class PmcArchiveRunTests(unittest.TestCase):
         self.assertEqual("not_supplied", satellite["status"])
         self.assertIsNone(satellite["metrics"])
         self.assertEqual(1, satellite["unknown_frame_count"])
+
+    def test_cross_source_agreement_is_explicitly_candidate_only(self):
+        records = [
+            {"field_id": "a" * 24, "source": "era5", "valid_time": "2024-01-01T00:00:00Z",
+             "status": "completed", "result": frame(0, "era5", "e1")},
+            {"field_id": "b" * 24, "source": "merra2", "valid_time": "2024-01-01T00:00:00Z",
+             "status": "completed", "result": frame(0, "merra2", "m1")},
+        ]
+        report = build_archive_report(
+            task_id="t" * 32, plan={"sources": ["era5", "merra2"]},
+            expected_times={"era5": ["2024-01-01T00:00:00Z"],
+                            "merra2": ["2024-01-01T00:00:00Z"]},
+            interval_hours={"era5": 1, "merra2": 1}, frame_records=records,
+            cached_fields=[], target_grid=GRID,
+        )
+        agreement = report["cross_source_candidate_agreement"]
+        self.assertEqual("experimental", agreement["maturity"])
+        self.assertEqual("not_provided", agreement["genesis_assessment"])
+        self.assertEqual("comparable", agreement["frames"][0]["status"])
+        self.assertEqual(1, len(agreement["frames"][0]["pairs"][0]["matches"]))
 
     def test_satellite_reprojection_failure_reason_is_reported_as_unknown(self):
         stamp = "2024-01-01T00:00:00Z"

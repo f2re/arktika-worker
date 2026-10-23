@@ -169,12 +169,16 @@ def derive_relative_vorticity_850(u: Any, v: Any, latitude: Any, longitude: Any,
             "coordinate_sha256": coordinate_digest,
             "geolocation": "latitude_longitude_arrays", "grid_id": grid_id}
     source_record = {"source_id": field_metadata["source"],
+                     "provider": field_metadata["source"],
                      "dataset_version": field_metadata["source_version"],
                      "field_id": field_metadata["field_id"],
                      "claimed_source_file_sha256": field_metadata["input_sha256"],
-                     "source_file_digest_attestation": "caller_supplied"}
+                     "claimed_file_sha256": field_metadata["input_sha256"],
+                     "source_file_digest_attestation": "caller_supplied",
+                     "file_digest_attestation": "caller_supplied; numerical function does not read or verify the cache file"}
     passport = product_passport(
-        product_id="arktika.relative_vorticity.850hpa",
+        product_id="vorticity850:{}:{}:{}".format(
+            field_metadata["source"], field_metadata["field_id"], timestamp),
         algorithm_id=ALGORITHM_ID,
         algorithm_version=ALGORITHM_VERSION,
         maturity="experimental",
@@ -184,9 +188,15 @@ def derive_relative_vorticity_850(u: Any, v: Any, latitude: Any, longitude: Any,
         valid_time=timestamp,
         data_kind="analysis",
         grid=grid,
-        source_grids=[dict(grid)],
+        source_grids=[{"crs": "EPSG:4326", "width": int(eastward.shape[1]),
+                       "height": int(eastward.shape[0]), "grid_type": grid_type,
+                       "coordinate_sha256": coordinate_digest,
+                       "geolocation": "latitude_longitude_arrays", "grid_id": grid_id}],
         nodata="NaN; derivative stencils touching missing input remain missing",
-        quality_control={"status": "computed", "nonfinite_output_pixels": int(np.size(zeta) - np.isfinite(zeta).sum())},
+        quality_control={"status": "input_contract_checked",
+                         "rules": ["850-hPa instantaneous analysis", "wind in m s-1",
+                                   "geographic east/north reference required",
+                                   "nonfinite/nodata stencil propagation"]},
         sources=[source_record],
         calibration_version="not_applicable",
         calibration_status="not_applicable",
@@ -196,7 +206,8 @@ def derive_relative_vorticity_850(u: Any, v: Any, latitude: Any, longitude: Any,
             "Криволинейная сетка поддерживается только как структурированная 2-D географическая mesh с невырожденным согласованным Jacobian; реальная геометрия CARRA2 здесь не проверялась.",
             "Полярные широты |latitude| >= 87° отклоняются из-за вырожденности регулярной lat/lon метрики.",
             "Эта функция только выводит поле вихревости; перепроецирование и детектор выполняются отдельно и не означают метеорологическую проверку.",
-        ],
+        ] + (["CARRA2 использует ERA5 в граничных условиях; их согласие не является независимым подтверждением."]
+             if field_metadata["source"] == "carra2" else []),
     )
     passport.update({
         "algorithm_id": ALGORITHM_ID,
@@ -218,6 +229,7 @@ def derive_relative_vorticity_850(u: Any, v: Any, latitude: Any, longitude: Any,
                    "derivative": ("second-order numpy.gradient on geographic coordinate radians"
                                   if grid_type == "regular_latitude_longitude"
                                   else "second-order row/column gradients transformed through the local spherical-coordinate Jacobian"),
-                   "boundary": "second-order one-sided derivative", "spatial_interpolation": "none"},
+                   "boundary": "second-order one-sided derivative",
+                   "spatial_interpolation": "none"},
     })
     return {"values": zeta.astype(np.float32), "passport": passport}

@@ -458,19 +458,25 @@ def detect_candidates(vorticity_850: np.ndarray, *, grid: dict[str, Any],
                            and local_peak_count > PARAMETERS["peak_isolation_max_local_maxima"])
         saddle_peaks = None if (component_too_large or over_peak_limit) else _peak_saddle_diagnostics(
             smoothed, component, local_peaks, threshold)
+        unresolved_peak_tie = bool(saddle_peaks and any(
+            item.get("isolation_status") == "unresolved_equal_height_peak_tie"
+            for item in saddle_peaks))
         candidate_mask[ys, xs] = True
-        if saddle_peaks is None:
-            saddle_peaks = [{
-                "peak_vorticity_s-1": local_peak["peak_vorticity_s-1"],
-                "peak_pixel_rc": local_peak["peak_pixel_rc"],
-                "peak_seed_pixel_rc": local_peak["_seed_rc"],
-                "saddle_vorticity_s-1": None,
-                "relative_isolation_contrast": None,
-                "isolated_by_experimental_gamma": None,
-                "isolation_status": "not_computed_component_complexity_limit",
-                "plateau_pixel_count": local_peak["plateau_pixel_count"],
-            } for local_peak in local_peaks]
-            partition = {"status": "component_complexity_limit_unpartitioned",
+        if saddle_peaks is None or unresolved_peak_tie:
+            if saddle_peaks is None:
+                saddle_peaks = [{
+                    "peak_vorticity_s-1": local_peak["peak_vorticity_s-1"],
+                    "peak_pixel_rc": local_peak["peak_pixel_rc"],
+                    "peak_seed_pixel_rc": local_peak["_seed_rc"],
+                    "saddle_vorticity_s-1": None,
+                    "relative_isolation_contrast": None,
+                    "isolated_by_experimental_gamma": None,
+                    "isolation_status": "not_computed_component_complexity_limit",
+                    "plateau_pixel_count": local_peak["plateau_pixel_count"],
+                } for local_peak in local_peaks]
+            status = ("unresolved_equal_height_peak_tie_unpartitioned" if unresolved_peak_tie
+                      else "component_complexity_limit_unpartitioned")
+            partition = {"status": status,
                          "labels": component.astype(np.int16),
                          "regions": [{"label": 1, "pixel_count": int(len(cells)),
                                       "centroid_pixel_rc": [float(np.mean(ys)), float(np.mean(xs))],

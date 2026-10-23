@@ -18,11 +18,12 @@ from .geo import grid as map_grid
 from .reanalysis.catalog import validate_area
 
 from .pmc_tracking import link_candidates
+from .pmc_source_agreement import compare_candidate_sources
 from .product_schema import product_passport
 
 
 ALGORITHM_ID = "arktika.experimental_pmc_archive_run"
-ALGORITHM_VERSION = "0.1.0"
+ALGORITHM_VERSION = "0.2.0"
 MAX_FIELDS = 128
 MAX_GRID_PIXELS = 1_048_576
 
@@ -179,6 +180,32 @@ def build_archive_report(*, task_id: str, plan: dict[str, Any],
                            "limitations": linked["limitations"] if segments else []})
 
     incomplete = any(item["unprocessed_steps"] or item["failed_steps"] for item in coverage)
+    source_agreement = None
+    if len(plan["sources"]) > 1:
+        agreement_frames = []
+        for row in successful:
+            result = row["result"]
+            if isinstance(result.get("source"), str) and isinstance(result.get("valid_time"), str):
+                agreement_frames.append({
+                    "source": result["source"],
+                    "valid_time": result["valid_time"],
+                    "grid": result.get("grid"),
+                    "candidates": result.get("candidates", []),
+                })
+        try:
+            source_agreement = compare_candidate_sources(
+                agreement_frames, expected_sources=plan["sources"],
+                expected_times=expected_times)
+        except (TypeError, ValueError) as exc:
+            # The report remains useful when one source cannot participate in
+            # an exact-grid comparison, but never guesses coordinates or links.
+            source_agreement = {
+                "status": "unavailable_invalid_candidate_metadata",
+                "reason": str(exc),
+                "maturity": "experimental",
+                "confirmation_status": "not_confirmed",
+                "genesis_assessment": "not_provided",
+            }
     if target_grid is None:
         target_grid = next((row["result"].get("grid") for row in successful
                             if isinstance(row["result"].get("grid"), dict)), None)
@@ -279,12 +306,13 @@ def build_archive_report(*, task_id: str, plan: dict[str, Any],
         satellite_metrics = None
     passport = None
     if isinstance(target_grid, dict):
-        actual_times = []
+        # The product passport describes only successfully processed frames.
+        # The requested study interval remains available in the plan/coverage,
+        # but must not make a partial product appear to span missing times.
+        actual_times: list[datetime] = []
         for row in successful:
-            result = row.get("result", {})
-            stamp = result.get("valid_time") if isinstance(result, dict) else None
-            if stamp is None:
-                stamp = row.get("valid_time")
+            result = row["result"]
+            stamp = result.get("valid_time") or row.get("valid_time")
             try:
                 actual_times.append(_utc(stamp))
             except (TypeError, ValueError):
@@ -303,6 +331,7 @@ def build_archive_report(*, task_id: str, plan: dict[str, Any],
             source = result.get("source")
             field_passport = result.get("field_passport")
             refs = field_passport.get("sources", []) if isinstance(field_passport, dict) else []
+            source_ref_count = len(source_refs)
             if isinstance(refs, list):
                 for item in refs:
                     if not isinstance(item, dict):
@@ -315,12 +344,13 @@ def build_archive_report(*, task_id: str, plan: dict[str, Any],
                     if identity not in seen_sources:
                         source_refs.append({"source_id": identity[0], **({"field_id": identity[1]} if identity[1] else {})})
                         seen_sources.add(identity)
-            if not refs and isinstance(source, str) and source.strip():
+            if len(source_refs) == source_ref_count and isinstance(source, str) and source.strip():
                 identity = (source.strip(), "")
                 if identity not in seen_sources:
                     source_refs.append({"source_id": identity[0]})
                     seen_sources.add(identity)
             grids = field_passport.get("source_grids", []) if isinstance(field_passport, dict) else []
+            source_grid_count = len(source_grids)
             if isinstance(grids, list):
                 for source_grid in grids:
                     if isinstance(source_grid, dict):
@@ -328,8 +358,15 @@ def build_archive_report(*, task_id: str, plan: dict[str, Any],
                         if key not in seen_grids:
                             source_grids.append(source_grid)
                             seen_grids.add(key)
-        if not source_grids and successful:
-            source_grids = [{"role": "candidate_detection_grid", **target_grid}]
+            # A frame's declared grid is evidence for the grid on which its
+            # candidates were detected. Do not label the archive target grid as
+            # an upstream source grid unless a frame actually declares it.
+            frame_grid = result.get("grid")
+            if len(source_grids) == source_grid_count and isinstance(frame_grid, dict):
+                key = repr(sorted(frame_grid.items()))
+                if key not in seen_grids:
+                    source_grids.append({"role": "candidate_detection_grid", **frame_grid})
+                    seen_grids.add(key)
         report_limitations = [
             "Отсутствующие, неполные и ошибочные сроки не трактуются как отсутствие ПМЦ.",
             "Треки строятся только внутри непрерывных последовательностей наблюдавшихся модельных кандидатов.",
@@ -337,6 +374,9 @@ def build_archive_report(*, task_id: str, plan: dict[str, Any],
             "Кандидаты CARRA2 не являются независимой проверкой ERA5 из-за общих граничных условий; спутниковая морфология, steering flow, split/merge и полный QC IMPMCT не входят в этот процесс.",
             "Результат не является независимой метеорологической валидацией или прогнозом.",
         ]
+        # A report is a publishable product only when provenance and time span
+        # are evidenced by the plan or processed frames. Missing data yields an
+        # explicit no-product report below; source/time metadata is never guessed.
         passport = product_passport(
             product_id="arktika.pmc.archive_report",
             algorithm_id=ALGORITHM_ID,
@@ -380,6 +420,12 @@ def build_archive_report(*, task_id: str, plan: dict[str, Any],
         "coverage": coverage,
         "frames": frame_records,
         "tracks_by_source": track_rows,
+        "cross_source_candidate_agreement": source_agreement or {
+            "status": "not_applicable_single_source",
+            "maturity": "experimental",
+            "confirmation_status": "not_confirmed",
+            "genesis_assessment": "not_provided",
+        },
         "satellite_comparison": {
             "status": satellite_status,
             "comparison_basis": "пиксельное сравнение маски кандидатов и вручную импортированной спутниковой разметки",
