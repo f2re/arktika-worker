@@ -444,6 +444,7 @@ setMap = async function(preset,width=1000,product) {
 };
 
 showProduct = async function(p) {
+  const revision=++PRODUCT_VIEW_REVISION;
   const epoch=UI.contextEpoch;
   if(UI.activeBuild&&UI.activeEpoch!==epoch)return;
   const current=buildRequest();
@@ -451,7 +452,7 @@ showProduct = async function(p) {
   const keepView=S.map?.grid.crs===p.grid.crs&&S.map?.grid.preset===p.grid.preset&&S.map?.grid.width===p.grid.width;
   const view=keepView&&S.view?[...S.view]:null;
   const oldPoint=keepView&&S.product?.scene_id===p.scene_id?UI.lastPoint:null;
-  const ctx=await setMap(p.grid.preset,p.grid.width,p.id);if(!ctx||epoch!==UI.contextEpoch)return;
+  const ctx=await setMap(p.grid.preset,p.grid.width,p.id);if(!ctx||epoch!==UI.contextEpoch||revision!==PRODUCT_VIEW_REVISION)return;
   if(S.scene?.id!==p.scene_id){S.scene=S.scenes.find(s=>s.id===p.scene_id)||null;$('#dateCaption').textContent=readableDate(p.time.slice(0,10));$('#timeCaption').textContent=p.time.slice(11,16)+' UTC';}
   api('/api/settings',{view_settings:{preset:p.grid.preset,product:p.product,channel:p.request.channel||9}}).catch(e=>toast(e.message));
   S.product=p;$('#calibrationState').textContent=p.display_only?'RGB':displayCal[p.calibration_status]||'DN';$('#calibrationOpen').disabled=Boolean(p.display_only);if(p.display_only)UI.compositeId=p.request.composite;$('#preset').value=p.grid.preset;$('#product').value=p.product;$('#channel').value=p.request.channel||9;
@@ -463,6 +464,7 @@ showProduct = async function(p) {
   $('#exportProduct').disabled=false;$('#scienceBanner').textContent='';
   $('#motionLayer').replaceChildren();S.route=null;$('#routeResult').replaceChildren();
   invalidatePoint();drawLegend(p.legend);productHint();
+  try{await loadProductStyle(p);if(revision!==PRODUCT_VIEW_REVISION||S.product?.id!==p.id)return;$('#productStyleOpen').disabled=!productStyleable(p);}catch(e){if(revision!==PRODUCT_VIEW_REVISION)return;$('#productStyleOpen').disabled=true;toast('Шкала этого продукта пока недоступна: '+e.message);}
   if(view){S.view=view;$('#map').setAttribute('viewBox',view.join(' '));}
   await redrawRouteDraft();
   if(oldPoint)await inspectAt(oldPoint.x,oldPoint.y);
