@@ -75,6 +75,20 @@ class ScienceTests(unittest.TestCase):
    import zipfile,io
    with zipfile.ZipFile(io.BytesIO(archive)) as bundle:self.assertIn('style.json',bundle.namelist())
   finally:app.close()
+ def test_saved_product_read_fails_closed_when_passport_is_removed(self):
+  app=Workstation(self.root/'state')
+  product=build_product(self.scene,app.product_root,
+      dict(product='channel',preset='barents',width=256,channel=9),{'mode':'assumed'})
+  metadata=app.product_root/product['id']/'product.json'
+  saved=json.loads(metadata.read_text(encoding='utf-8'))
+  saved.pop('passport')
+  metadata.write_text(json.dumps(saved),encoding='utf-8')
+  try:
+   with self.assertRaisesRegex(ValueError,'Паспорт'):
+    app.product(product['id'])
+   self.assertNotIn(product['id'],[item['id'] for item in app.products()])
+  finally:
+   app.close()
  def test_legend_quantity_kinds_are_explicit(self):
   fixture(self.root,True)
   channel=self.build();difference=self.build('difference',{'mode':'assumed'});composite=self.build('micro24',{'mode':'assumed'})

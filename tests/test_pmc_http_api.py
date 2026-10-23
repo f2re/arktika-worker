@@ -73,6 +73,8 @@ class PmcRunHttpTests(unittest.TestCase):
                     'transform':[1000,0,-2000,0,-1000,5000],
                     'resolution_x_m':1000,'resolution_y_m':1000},
             'field_passport':{'source':'era5','algorithm_id':'arktika.experimental_relative_vorticity_850'},
+            'passport':{'algorithm':{'id':'arktika.experimental_pmc_candidates','version':'0.1.1'},
+                        'quantity_kind':'candidate_catalog'},
             'input_coverage':{'valid_pixels':10,'total_pixels':12,'valid_fraction':10/12},
             'satellite_comparison':{'status':'not_supplied','metrics':None},
             'parameters':{'gaussian_sigma_km':60},'limitations':['Кандидат не подтверждён.']}
@@ -84,6 +86,8 @@ class PmcRunHttpTests(unittest.TestCase):
         self.assertEqual(result['maturity'],'experimental')
         self.assertEqual(result['candidate_count'],1)
         self.assertEqual(result['field_passport']['source'],'era5')
+        self.assertEqual(result['detector_passport']['algorithm']['id'],
+                         'arktika.experimental_pmc_candidates')
         candidate=result['candidates'][0]
         self.assertEqual(candidate['peak_xy_m'],[500,3500])
         self.assertEqual(candidate['centroid_xy_m'],[0,3500])
@@ -106,6 +110,8 @@ class PmcRunHttpTests(unittest.TestCase):
             'maturity':'experimental','source':'era5','valid_time':'2024-01-01T00:00:00Z',
             'candidate_count':0,'candidates':[],'grid':self.grid,
             'field_passport':{'source':'era5'},'input_coverage':{'valid_pixels':12},
+            'passport':{'algorithm':{'id':'arktika.experimental_pmc_candidates','version':'0.1.1'},
+                        'quantity_kind':'candidate_catalog'},
             'satellite_comparison':{'status':'comparison_only','metrics':None},
             'parameters':{},'limitations':['Метеорологическая точность не проверялась.']}
         labels=np.zeros((3,4),dtype=np.uint8);coverage=np.ones((3,4),dtype=np.uint8)

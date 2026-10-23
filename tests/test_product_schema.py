@@ -1,6 +1,6 @@
 import unittest
 
-from arktika.product_schema import product_passport
+from arktika.product_schema import product_passport, validate_product_passport
 
 
 class ProductSchemaTests(unittest.TestCase):
@@ -18,6 +18,19 @@ class ProductSchemaTests(unittest.TestCase):
     def test_missing_uncertainty_is_not_silently_clear(self):
         passport=product_passport(**self.base())
         self.assertEqual(passport['uncertainty'],{'status':'not_assessed','method':None})
+
+    def test_serialized_passport_is_revalidated_without_dropping_extra_metadata(self):
+        passport=product_passport(**self.base())
+        passport['research_note']='extra product metadata'
+        checked=validate_product_passport(passport)
+        self.assertEqual(checked['algorithm'],passport['algorithm'])
+        self.assertEqual(checked['valid_time'],passport['valid_time'])
+
+    def test_serialized_passport_rejects_unknown_or_missing_contract(self):
+        passport=product_passport(**self.base())
+        del passport['units']
+        with self.assertRaisesRegex(ValueError,'неполон'):
+            validate_product_passport(passport)
 
     def test_rejects_non_utc_time(self):
         values=self.base()
