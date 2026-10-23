@@ -267,6 +267,11 @@ def main():
         atomic_json(folder/'result.json',{'ok':False,'error':'Нет библиотеки для этого формата. Повторите install; для GRIB дополнительно установите requirements-grib.txt.'})
     except Exception as exc:
         retryable=payload.get('action')=='prepare' and not payload.get('path') and _retryable_network_error(exc)
-        atomic_json(folder/'result.json',{'ok':False,'retryable':retryable,'error':'Временная ошибка сети. Повторите сохранённый запрос.' if retryable else 'Не удалось получить или обработать поле. Проверьте подключение, права на набор данных и формат файла. Непроверенный результат не сохранён.'})
+        # This non-user-facing type helps CI distinguish platform failures. Do
+        # not include exception text, paths, or traceback: they may contain
+        # provider credentials or private filesystem details.
+        atomic_json(folder/'result.json',{'ok':False,'retryable':retryable,
+            'error_type':type(exc).__name__,
+            'error':'Временная ошибка сети. Повторите сохранённый запрос.' if retryable else 'Не удалось получить или обработать поле. Проверьте подключение, права на набор данных и формат файла. Непроверенный результат не сохранён.'})
 
 if __name__=='__main__': main()

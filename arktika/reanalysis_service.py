@@ -644,7 +644,12 @@ class ReanalysisMixin:
                 message=result.get('error','Поле не обработано.')
                 if result.get('retryable') is True and payload.get('path') is None:
                     raise RetryableFieldError(message)
-                raise ValueError(message)
+                error=ValueError(message)
+                error.worker_error_type=(result.get('error_type')
+                                         if isinstance(result.get('error_type'),str)
+                                         and re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]{0,79}',result['error_type'])
+                                         else None)
+                raise error
             return result['result']
 
     def _field_start(self,payload,task_id=None,pending=None):
@@ -674,10 +679,13 @@ class ReanalysisMixin:
                     raise
                 except Exception as exc:
                     retryable=isinstance(exc,RetryableFieldError) and bool(pending and pending.get('kind')=='remote')
-                    with self.lock: self._field_job.update(status='error',message=str(exc) if isinstance(exc,ValueError) else 'Не удалось подготовить поле.',resume_available=retryable,retry_available=retryable)
+                    with self.lock:
+                        self._field_job.update(status='error',message=str(exc) if isinstance(exc,ValueError) else 'Не удалось подготовить поле.',resume_available=retryable,retry_available=retryable)
+                        diagnostic=getattr(exc,'worker_error_type',None)
+                        if diagnostic: self._field_job['_worker_error_type']=diagnostic
                     raise ValueError(self._field_job['message']) from None
                 finally:
-                    with self.lock: atomic_json(self.fields_root/'job.json',self._field_job)
+                    with self.lock: atomic_json(self.fields_root/'job.json',self._sanitize_field_job(self._field_job))
             self.start('Поле реанализа',work)
             self._field_job=self._sanitize_field_job(self._field_job)
             atomic_json(self.fields_root/'job.json',self._field_job)
