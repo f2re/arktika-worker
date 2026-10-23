@@ -29,6 +29,7 @@ class ReanalysisAdapter(Protocol):
     name: str
     transport_id: str
     auth_provider: str
+    credential_request: Callable[[], dict[str, Any]]
     dataset_ids: tuple[str, ...]
     supported_variables: frozenset[str]
 
@@ -42,6 +43,18 @@ class ReanalysisAdapter(Protocol):
 
 
 @dataclass(frozen=True, slots=True)
+class CredentialField:
+    """Safe operator-facing input description; values are never adapter metadata."""
+
+    id: str
+    label: str
+    input_type: str = "password"
+    required: bool = True
+    help: str = ""
+    max_length: int = 4096
+
+
+@dataclass(frozen=True, slots=True)
 class AdapterMetadata:
     """Immutable descriptive metadata; it never contains a credential or client."""
 
@@ -51,6 +64,12 @@ class AdapterMetadata:
     auth_provider: str
     dataset_ids: tuple[str, ...]
     supported_variables: frozenset[str]
+    credential_fields: tuple[CredentialField, ...] = ()
+    credential_format: str = "fields"
+    credential_help: str = ""
+    # Operator-declared endpoint metadata. It is not an egress control unless
+    # the selected transport separately enforces it.
+    allowed_hosts: tuple[str, ...] = ()
     adapter_version: str = "1.0.0"
     maturity: str = "implemented"
 
@@ -97,6 +116,20 @@ class AdapterImplementation:
     @property
     def maturity(self) -> str:
         return self.metadata.maturity
+
+    def credential_request(self) -> dict[str, Any]:
+        """Return sanitized form metadata, never credential values or adapter code."""
+        return {
+            "provider": self.auth_provider,
+            "format": self.metadata.credential_format,
+            "help": self.metadata.credential_help,
+            "fields": [
+                {"id": field.id, "label": field.label, "type": field.input_type,
+                 "required": field.required, "help": field.help,
+                 "max_length": field.max_length}
+                for field in self.metadata.credential_fields
+            ],
+        }
 
     def catalogue_entry(self) -> dict[str, Any] | None:
         if self.catalogue_builder is None:
@@ -276,8 +309,34 @@ class AdapterRegistry:
                 or not callable(adapter.planner) or not callable(adapter.fetcher)
                 or not callable(adapter.normalizer)):
             raise ValueError("Адаптер должен иметь source_id и методы plan/fetch/normalize.")
-        if meta.auth_provider not in ("cds", "earthdata", "none"):
-            raise ValueError("Для источника нужен поддерживаемый провайдер доступа: cds, earthdata или none.")
+        if not isinstance(meta.auth_provider, str) or not re.fullmatch(r"[a-z][a-z0-9_-]{1,63}", meta.auth_provider):
+            raise ValueError("Идентификатор провайдера доступа должен быть безопасным slug.")
+        if meta.auth_provider == "none" and meta.credential_fields:
+            raise ValueError("Локальный провайдер none не может запрашивать реквизиты.")
+        if meta.credential_format != "fields" or not isinstance(meta.credential_fields, tuple):
+            raise ValueError("Формат реквизитов адаптера должен быть fields с неизменяемой схемой.")
+        field_ids = set()
+        for field in meta.credential_fields:
+            if (not isinstance(field, CredentialField)
+                    or not re.fullmatch(r"[a-z][a-z0-9_]{0,39}", field.id)
+                    or field.id in field_ids
+                    or not isinstance(field.label, str) or not field.label.strip() or len(field.label) > 100
+                    or field.input_type not in ("text", "password")
+                    or not isinstance(field.required, bool)
+                    or not isinstance(field.help, str) or len(field.help) > 300
+                    or isinstance(field.max_length, bool) or not isinstance(field.max_length, int)
+                    or not 1 <= field.max_length <= 8192):
+                raise ValueError("Схема реквизитов адаптера содержит небезопасное или некорректное поле.")
+            field_ids.add(field.id)
+        if (not isinstance(meta.credential_help, str) or len(meta.credential_help) > 500
+                or not isinstance(meta.allowed_hosts, tuple)
+                or any(not isinstance(host, str) or not re.fullmatch(
+                    r"(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\.(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?))+",
+                    host.lower()) for host in meta.allowed_hosts)
+                or len(set(h.lower() for h in meta.allowed_hosts)) != len(meta.allowed_hosts)):
+            raise ValueError("Справка или список узлов доступа адаптера некорректны.")
+        if meta.auth_provider != "none" and not meta.credential_fields:
+            raise ValueError("Провайдер доступа должен явно описать поля для ввода реквизитов.")
         if meta.maturity not in ("implemented", "experimental", "planned"):
             raise ValueError("Для адаптера нужно явно указать статус готовности.")
         if meta.source_id not in SOURCES and adapter.catalogue_builder is None:
@@ -354,6 +413,15 @@ def _builtin_adapter(source_id: str, dataset_ids: tuple[str, ...]) -> AdapterImp
             auth_provider=str(source["auth"]),
             dataset_ids=dataset_ids,
             supported_variables=_builtin_supported_variables(source_id),
+            credential_fields=(
+                (CredentialField("token", "Токен CDS", "password", max_length=8192),)
+                if source_id in ("era5", "carra2") else
+                (CredentialField("token", "Токен Earthdata или пароль .netrc", "password", max_length=8192),)
+            ),
+            credential_help=("Доступ CDS используется ERA5 и CARRA2." if source_id in ("era5", "carra2")
+                             else "Для MERRA-2 используется Earthdata."),
+            allowed_hosts=(("cds.climate.copernicus.eu",) if source_id in ("era5", "carra2")
+                           else ("urs.earthdata.nasa.gov", "goldsmr4.gesdisc.eosdis.nasa.gov")),
         ),
         planner=_builtin_planner(source_id),
         fetcher=_builtin_fetcher(transport_id),

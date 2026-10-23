@@ -318,6 +318,7 @@ selectScene = function(scene) {
   if(changed){clearRange();invalidateRoute();}
   if(!scene.composites?.some(c=>c.id===UI.compositeId))UI.compositeId=scene.composites?.[0]?.id||null;
   original.selectScene(scene);UI.selectedScene=scene.id;
+  $('#calibrationOpen').disabled=Boolean(S.product?.display_only);
   $('#dateCaption').textContent=readableDate(scene.time.slice(0,10));$('#timeCaption').textContent=scene.time.slice(11,16)+' UTC';
   timeStrip();drawChannelChips();renderCatalog();
   if(changed) {
@@ -444,6 +445,7 @@ setMap = async function(preset,width=1000,product) {
 };
 
 showProduct = async function(p) {
+  const revision=++PRODUCT_VIEW_REVISION;
   const epoch=UI.contextEpoch;
   if(UI.activeBuild&&UI.activeEpoch!==epoch)return;
   const current=buildRequest();
@@ -451,10 +453,10 @@ showProduct = async function(p) {
   const keepView=S.map?.grid.crs===p.grid.crs&&S.map?.grid.preset===p.grid.preset&&S.map?.grid.width===p.grid.width;
   const view=keepView&&S.view?[...S.view]:null;
   const oldPoint=keepView&&S.product?.scene_id===p.scene_id?UI.lastPoint:null;
-  const ctx=await setMap(p.grid.preset,p.grid.width,p.id);if(!ctx||epoch!==UI.contextEpoch)return;
+  const ctx=await setMap(p.grid.preset,p.grid.width,p.id);if(!ctx||epoch!==UI.contextEpoch||revision!==PRODUCT_VIEW_REVISION)return;
   if(S.scene?.id!==p.scene_id){S.scene=S.scenes.find(s=>s.id===p.scene_id)||null;$('#dateCaption').textContent=readableDate(p.time.slice(0,10));$('#timeCaption').textContent=p.time.slice(11,16)+' UTC';}
   api('/api/settings',{view_settings:{preset:p.grid.preset,product:p.product,channel:p.request.channel||9}}).catch(e=>toast(e.message));
-  S.product=p;$('#calibrationState').textContent=p.display_only?'RGB':displayCal[p.calibration_status]||'DN';$('#calibrationOpen').disabled=Boolean(p.display_only);if(p.display_only)UI.compositeId=p.request.composite;$('#preset').value=p.grid.preset;$('#product').value=p.product;$('#channel').value=p.request.channel||9;
+  S.product=p;$('#calibrationState').textContent=p.display_only?'RGB':displayCal[p.calibration_status]||'DN';$('#calibrationOpen').disabled=Boolean(p.display_only||!S.scene);if(p.display_only)UI.compositeId=p.request.composite;$('#preset').value=p.grid.preset;$('#product').value=p.product;$('#channel').value=p.request.channel||9;
   $('#mapTitle').textContent=p.title.replace('Круглосуточная микрофизика','Микрофизика · 24 ч').replace('Интегральная карта спектральных признаков','Спектральные признаки');
   $('#mapSubtitle').textContent=p.platform+' · '+p.time;
   $('#productTag').textContent=(p.platform==='ARCM1'?'Арктика-М1':'Арктика-М2')+' · '+p.time.slice(11,16)+' UTC'+(p.calibration_status==='assumed'?' · исследовательская шкала':'');
@@ -463,6 +465,7 @@ showProduct = async function(p) {
   $('#exportProduct').disabled=false;$('#scienceBanner').textContent='';
   $('#motionLayer').replaceChildren();S.route=null;$('#routeResult').replaceChildren();
   invalidatePoint();drawLegend(p.legend);productHint();
+  try{await loadProductStyle(p);if(revision!==PRODUCT_VIEW_REVISION||S.product?.id!==p.id)return;$('#productStyleOpen').disabled=!productStyleable(p);}catch(e){if(revision!==PRODUCT_VIEW_REVISION)return;$('#productStyleOpen').disabled=true;toast('Шкала этого продукта пока недоступна: '+e.message);}
   if(view){S.view=view;$('#map').setAttribute('viewBox',view.join(' '));}
   await redrawRouteDraft();
   if(oldPoint)await inspectAt(oldPoint.x,oldPoint.y);
@@ -519,7 +522,7 @@ drawLegend = function(l) {
     if(l.product==='channel')html+='<p class="hint">За пределами шкалы — крайние цвета. Исходные значения сохранены.</p><div class="row"><button id="legendAutoRange" class="text-button">Автоконтраст</button><button id="legendFullRange" class="text-button">Весь диапазон</button></div>';
   }
   const styleable=['absolute_temperature','temperature_difference','continuous','stored_value'].includes(l.quantity_kind)&&S.product?.files?.includes('values.tif');
-  if(styleable)html+=`<details class="legend-details"><summary>Оформление этого продукта</summary><p class="micro">Шкала сохраняется отдельно для данного продукта. Меняется только экранное отображение; values.tif и научные расчёты остаются прежними.</p><div class="row"><label>Минимум, ${escape(l.units)}<input id="productStyleMin" type="number" step="any" value="${l.display_min}"></label><label>Максимум, ${escape(l.units)}<input id="productStyleMax" type="number" step="any" value="${l.display_max}"></label></div><label>Палитра отображения<select id="productStylePalette"><option value="product-default">Исходная палитра</option><option value="ice">Холодная</option><option value="warm">Тёплая</option></select></label><button id="productStyleSave" class="tonal">Сохранить шкалу продукта</button><p id="productStyleStatus" class="micro" role="status"></p></details>`;
+  if(styleable)html+=`<details class="legend-details"><summary>Оформление этого продукта</summary><p class="micro">Шкала сохраняется отдельно для данного продукта. Меняется только экранное отображение; values.tif и научные расчёты остаются прежними.</p><div class="row"><label>Минимум, ${escape(l.units)}<input id="productInlineStyleMin" type="number" step="any" value="${l.display_min}"></label><label>Максимум, ${escape(l.units)}<input id="productInlineStyleMax" type="number" step="any" value="${l.display_max}"></label></div><label>Палитра отображения<select id="productInlineStylePalette"><option value="product-default">Исходная палитра</option><option value="ice">Холодная</option><option value="warm">Тёплая</option></select></label><button id="productInlineStyleSave" class="tonal">Сохранить шкалу продукта</button><p id="productInlineStyleStatus" class="micro" role="status"></p></details>`;
   if(l.stats)html+=`<details class="legend-details"><summary>Диапазон данных кадра: ${num(value(l.stats.min))}…${num(value(l.stats.max))} ${escape(unit)}</summary><p class="hint">Минимум и максимум валидных значений на расчётной сетке. Автоконтраст DN использует 2-й и 98-й процентили.</p></details>`;
 
   if(l.classes){
@@ -597,16 +600,16 @@ drawLegend = function(l) {
     $('#legendFullRange').disabled=!Number.isFinite(l.stats?.min)||!Number.isFinite(l.stats?.max);
     $('#legendFullRange').onclick=()=>{$('#displayMin').value=l.stats.min;$('#displayMax').value=Math.max(l.stats.max,l.stats.min+1);requestBuild();};
   }
-  if($('#productStylePalette'))$('#productStylePalette').value=S.product.display_style?.palette_id||'product-default';
-  if($('#productStyleSave'))$('#productStyleSave').onclick=async()=>{
-    const button=$('#productStyleSave'),status=$('#productStyleStatus');button.disabled=true;status.textContent='';
+  if($('#productInlineStylePalette'))$('#productInlineStylePalette').value=S.product.display_style?.palette_id||'product-default';
+  if($('#productInlineStyleSave'))$('#productInlineStyleSave').onclick=async()=>{
+    const button=$('#productInlineStyleSave'),status=$('#productInlineStyleStatus');button.disabled=true;status.textContent='';
     try{
       const current=(await api('/api/product/style?id='+encodeURIComponent(S.product.id))).style;
-      const paletteId=$('#productStylePalette').value;
+      const paletteId=$('#productInlineStylePalette').value;
       const palettes={ice:[[28,52,102],[56,128,174],[164,211,211],[248,250,238]],warm:[[35,41,79],[88,82,136],[198,104,91],[247,206,120]]};
       const original=S.product.display_style_default?.palette||S.product.legend.palette;
-      const style={...current,minimum:Number($('#productStyleMin').value),maximum:Number($('#productStyleMax').value),palette_id:paletteId,palette:palettes[paletteId]||(paletteId==='product-default'?original:current.palette)};
-      const result=await api('/api/product/style', {id:S.product.id,style});await showProduct(result.product);const nextStatus=$('#productStyleStatus');if(nextStatus)nextStatus.textContent='Шкала сохранена для этого продукта.';
+      const style={...current,minimum:Number($('#productInlineStyleMin').value),maximum:Number($('#productInlineStyleMax').value),palette_id:paletteId,palette:palettes[paletteId]||(paletteId==='product-default'?original:current.palette)};
+      const result=await api('/api/product/style', {id:S.product.id,style});await showProduct(result.product);const nextStatus=$('#productInlineStyleStatus');if(nextStatus)nextStatus.textContent='Шкала сохранена для этого продукта.';
     }catch(e){status.textContent=e.message;}
     finally{button.disabled=false;}
   };
@@ -1100,7 +1103,7 @@ poll = async function() {
     $('#status').textContent=r.busy?r.status:'Готово';$('#statusdot').classList.toggle('busy',r.busy);
     $('#cancel').hidden=!r.busy;$('#process').disabled=r.busy;
     const cal=S.product?.calibration_status||r.calibration?.mode;
-    $('#calibrationState').textContent=S.product?.display_only?'RGB':displayCal[cal]||'DN';$('#calibrationOpen').disabled=Boolean(S.product?.display_only);
+    $('#calibrationState').textContent=S.product?.display_only?'RGB':displayCal[cal]||'DN';$('#calibrationOpen').disabled=Boolean(S.product?.display_only||!S.scene);
     $('#calibrationOpen').dataset.tip=sourceCal[cal]||'Единицы каналов';
     $('#downloadPath').textContent=r.download_dir;
     const q=r.queue_counts||{},count=(q.queued||0)+(q.running||0);

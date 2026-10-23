@@ -6,8 +6,10 @@
 
 `AdapterImplementation` получает неизменяемый `AdapterMetadata`:
 
-- `source_id`, `name`, `transport_id` и `auth_provider` (`cds`, `earthdata` или `none`);
+- `source_id`, `name`, `transport_id` и `auth_provider` — безопасный ID провайдера доступа; для источника без реквизитов указывается `none`;
 - список `dataset_ids`, поддерживаемые ID полей, `adapter_version` и `maturity` (`implemented`, `experimental`, `planned`).
+
+Для собственного провайдера объявите неизменяемую `credential_fields` схему из `CredentialField(id, label, input_type, required, help, max_length)`, `credential_format="fields"`, `credential_help` и список доменных имён `allowed_hosts`. Разрешены только поля `text` и `password`; ID и размеры проверяются при регистрации. Интерфейс строит форму из этой схемы через DOM API. Значения принимаются `POST /api/sources/credentials` как `{provider, format: "fields", values: {<id>: <строка>}}`, остаются в памяти процесса и передаются исполнителю отдельным аргументом `credential`. Их нельзя записывать в план, кэш, журнал, localStorage или экспорт. Очистка выполняется запросом `{provider, clear: true}`. Идентификатор провайдера должен быть одинаковым для адаптеров, совместно использующих реквизиты; схемы их полей должны совпадать. `allowed_hosts` — проверяемая декларация метаданных, она сама по себе не ограничивает сетевые вызовы доверенного установленного кода.
 
 Реализация передаёт функции `planner(request)`, `fetcher(plan, credential, folder, progress)`, `normalizer(dataset, plan, area)` и `catalogue_builder()`. Удалённый `fetcher` возвращает список загруженных наборов и список provenance-записей; общий runtime вызывает `normalizer` на каждом наборе. Локальный импорт использует тот же нормализатор. Нормализатор обязан вернуть канонический xarray Dataset с двумерными `value`, `latitude`, `longitude`, CRS `EPSG:4326` и атрибутами `source`, `variable`, `unit`, `time`, `level`, `time_kind`, `resolution_km`, `area`. Поле, единицы, точный UTC-срок, уровень и геолокация сверяются с планом и каталогом до записи.
 

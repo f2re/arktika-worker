@@ -129,6 +129,8 @@ class SourceManagerMixin:
         with self.lock:
             if not hasattr(self, '_earthdata_credential'):
                 self._earthdata_credential = {}
+            if not hasattr(self, '_adapter_credentials'):
+                self._adapter_credentials = {}
 
     def source_credential(self, source):
         self._sources_init()
@@ -139,6 +141,73 @@ class SourceManagerMixin:
             if self._era5_credential.get('provider') == 'cds':
                 self._source_cds_credential = copy.deepcopy(self._era5_credential)
             return copy.deepcopy(getattr(self, '_source_cds_credential', {}))
+
+    def provider_credential(self, provider_id):
+        """Return credentials for trusted installed adapters; values stay process-local."""
+        self._sources_init()
+        with self.lock:
+            if provider_id == 'cds':
+                return copy.deepcopy(getattr(self, '_source_cds_credential', {}))
+            if provider_id == 'earthdata':
+                return copy.deepcopy(self._earthdata_credential)
+            return copy.deepcopy(self._adapter_credentials.get(provider_id, {}))
+
+    def provider_credential_status(self, provider_id):
+        credential = self.provider_credential(provider_id)
+        return {'present': bool(credential), 'provider': provider_id if credential else None,
+                'format': credential.get('format', 'fields') if credential else None,
+                'storage': 'memory'}
+
+    def set_provider_credential(self, provider_id, values, *, format='fields'):
+        """Validate against installed adapter metadata and retain values in memory only."""
+        if not isinstance(provider_id, str) or not re.fullmatch(r'[a-z][a-z0-9_-]{1,63}', provider_id):
+            raise ValueError('Идентификатор провайдера доступа некорректен.')
+        if provider_id in ('none', 'cds', 'earthdata'):
+            raise ValueError('Для встроенного провайдера используйте его штатный экран настройки.')
+        from .reanalysis.adapters import DEFAULT_REGISTRY, load_installed_adapters
+        load_installed_adapters()
+        adapters = [adapter for adapter in DEFAULT_REGISTRY.snapshot().values()
+                    if adapter.auth_provider == provider_id]
+        if not adapters:
+            raise ValueError('Неизвестный провайдер установленного адаптера.')
+        schema = adapters[0].metadata.credential_fields
+        if any(adapter.metadata.credential_fields != schema for adapter in adapters):
+            raise ValueError('Для провайдера установлены несовместимые схемы реквизитов.')
+        if format != 'fields' or not isinstance(values, dict):
+            raise ValueError('Реквизиты должны передаваться полями в формате fields.')
+        by_id = {field.id: field for field in schema}
+        if set(values) != set(by_id):
+            raise ValueError('Набор полей реквизитов не совпадает со схемой адаптера.')
+        clean = {'provider': provider_id, 'format': 'fields'}
+        for key, value in values.items():
+            field = by_id[key]
+            if not isinstance(value, str) or len(value) > field.max_length or '\x00' in value:
+                raise ValueError('Значение реквизита имеет неверный формат или превышает допустимый размер.')
+            if field.required and not value.strip():
+                raise ValueError('Заполните обязательное поле реквизитов: ' + field.label)
+            clean[key] = value
+        if not any(value for key, value in clean.items() if key not in ('provider', 'format')):
+            raise ValueError('Не заданы реквизиты доступа.')
+        self._sources_init()
+        with self.lock:
+            if self.busy:
+                raise ValueError('Дождитесь завершения операции перед изменением доступа.')
+            self._adapter_credentials[provider_id] = clean
+        for key, value in clean.items():
+            if key not in ('provider', 'format'):
+                from .network import SECRETS
+                if value:
+                    SECRETS.append(value)
+        return self.provider_credential_status(provider_id)
+
+    def clear_provider_credential(self, provider_id):
+        self._sources_init()
+        with self.lock:
+            if provider_id in ('cds', 'earthdata'):
+                raise ValueError('Для встроенного провайдера используйте штатную очистку доступа.')
+            if hasattr(self, '_adapter_credentials'):
+                self._adapter_credentials.pop(provider_id, None)
+        return self.provider_credential_status(provider_id)
 
     def source_state(self):
         self._sources_init()
@@ -187,7 +256,11 @@ class SourceManagerMixin:
             with self.lock: self._source_cds_credential = parsed
             return self.source_state()
         if provider != 'earthdata':
-            raise ValueError('Источник доступа должен быть cds или earthdata.')
+            if data.get('clear') is True:
+                return self.clear_provider_credential(provider)
+            return self.set_provider_credential(
+                provider, data.get('values'), format=data.get('format', 'fields')
+            )
 
         self._sources_init()
         with self.lock:

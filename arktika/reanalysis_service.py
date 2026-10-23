@@ -34,6 +34,10 @@ ID=re.compile(r'^[0-9a-f]{24}$')
 TASK_ID=re.compile(r'^[0-9a-f]{32}$')
 
 
+class RetryableFieldError(ValueError):
+    """A remote request failed transiently and can be retried with its saved plan."""
+
+
 class ReanalysisMixin:
     @staticmethod
     def _read_pmc_mask_raster(data, label):
@@ -222,11 +226,22 @@ class ReanalysisMixin:
 
     def _adapter_credential(self, source):
         """Use a registered adapter's shared provider without storing secrets in its state."""
-        provider=get_runtime_adapter(source).auth_provider
+        adapter=get_runtime_adapter(source);provider=adapter.auth_provider
         if provider=='cds': return self.source_credential('era5')
         if provider=='earthdata': return self.source_credential('merra2')
         if provider=='none': return {}
-        raise ValueError('Для этого адаптера не подключён провайдер реквизитов.')
+        return self.provider_credential(provider)
+
+    @staticmethod
+    def _credential_action(source, task_id=None):
+        adapter=get_runtime_adapter(source);provider=adapter.auth_provider
+        if provider=='none':
+            raise ValueError('Локальному адаптеру не требуются реквизиты доступа.')
+        action={'code':'credentials_required','provider':provider,'source':source}
+        if task_id is not None:action['id']=task_id
+        if provider not in ('cds','earthdata'):
+            action['credential_request']=adapter.credential_request()
+        return action
 
     def _fields_init(self):
         self._sources_init()
@@ -372,10 +387,44 @@ class ReanalysisMixin:
             pmc_utc_hour(job['plan']['start'],'Начало'),pmc_utc_hour(job['plan']['end'],'Конец'),source)]
             for source in job['plan']['sources']}
         records=self._pmc_archive_frame_records(job)
+        comparisons=[]
+        for row in records:
+            result=row.get('result') if isinstance(row,dict) else None
+            comparison=result.get('satellite_comparison') if isinstance(result,dict) else None
+            if (row.get('status')=='completed' and isinstance(result,dict)
+                    and isinstance(comparison,dict) and comparison.get('status')=='comparison_only'):
+                comparisons.append({'source':row.get('source'),'valid_time':row.get('valid_time'),
+                                    'grid':result.get('grid'),'comparison':comparison})
         return build_archive_report(task_id=identity,plan=job['plan'],expected_times=expected,
             interval_hours={source:SOURCES[source]['step_hours'] for source in job['plan']['sources']},
             frame_records=records,cached_fields=self.fields_state()['fields'],
-            target_grid=job.get('target_grid'))
+            target_grid=job.get('target_grid'),satellite_comparisons=comparisons)
+
+    def _pmc_observation_for_frame(self, valid_time, target_grid):
+        """Return one exact-time/grid manual observation; ambiguous or absent stays unknown."""
+        frame_time=pmc_utc_hour(valid_time,'Срок кадра').isoformat().replace('+00:00','Z')
+        candidates=[]
+        for item in self.pmc_observations_state().get('observations',[]):
+            if not isinstance(item,dict):
+                continue
+            try:
+                listed_time=pmc_utc_hour(item.get('valid_time'),'Срок наблюдения').isoformat().replace('+00:00','Z')
+                if listed_time!=frame_time:continue
+                labels,coverage,metadata=self.pmc_observation(item.get('observation_id'))
+                observation_time=pmc_utc_hour(metadata.get('valid_time'),'Срок наблюдения').isoformat().replace('+00:00','Z')
+                if (observation_time!=frame_time or metadata.get('status')!='imported_unverified'
+                        or validate_pmc_archive_grid(metadata.get('grid'))!=target_grid):
+                    continue
+                candidates.append((labels,coverage,metadata))
+            except (ValueError,OSError,TypeError):
+                continue
+        if len(candidates)!=1:
+            return None
+        labels,coverage,metadata=candidates[0]
+        return {'labels':labels,'coverage':coverage,'metadata':{
+            'source':metadata['source'],'product_id':metadata['product_id'],
+            'valid_time':metadata['valid_time'],'observation_id':metadata['observation_id'],
+            'grid':metadata['grid']}}
 
     def pmc_archive_state(self, data=None):
         self._fields_init()
@@ -408,8 +457,14 @@ class ReanalysisMixin:
                     self._pmc_archive_job.update(status='running',message=f"Срок {index} из {job['total']}: {meta.get('source')} · {meta.get('time')}",resume_available=False)
                     self._persist_pmc_archive_job()
                 try:
+                    observation=self._pmc_observation_for_frame(meta['time'],job['target_grid'])
+                    options={}
+                    if observation is not None:
+                        options={'satellite_observation_mask':observation['labels'],
+                                 'satellite_coverage_mask':observation['coverage'],
+                                 'satellite_observation_metadata':observation['metadata']}
                     result=self.experimental_pmc_candidates(field_id,target_grid=job['target_grid'],
-                                                           region_bounds=job['plan']['area'])
+                                                           region_bounds=job['plan']['area'],**options)
                     record={'field_id':field_id,'source':meta['source'],'valid_time':meta['time'],
                             'status':'completed','result':result}
                 except Cancelled:raise
@@ -538,20 +593,25 @@ class ReanalysisMixin:
             if spec:
                 result['pending']={'kind':'remote','spec':spec}
                 result['resume_available']=bool(job.get('resume_available',job.get('status') in ('needs_action','interrupted')))
+                result['retry_available']=bool(job.get('retry_available') is True and result.get('status')=='error')
         action=job.get('needs_action')
         if (not isinstance(action,dict) and result.get('status')=='interrupted'
                 and result.get('pending',{}).get('kind')=='remote'):
             source=result['pending']['spec']['source']
             try: provider=get_runtime_adapter(source).auth_provider
             except ValueError: provider=None
-            if provider in ('cds','earthdata'):
-                action={'code':'credentials_required','provider':provider,'source':source}
+            if provider not in (None,'none'):
+                action=ReanalysisMixin._credential_action(source)
         if result.get('status') in ('needs_action','interrupted') and isinstance(action,dict):
             source=action.get('source')
             try: provider=get_runtime_adapter(source).auth_provider
             except ValueError: provider=None
-            if action.get('code')=='credentials_required' and provider in ('cds','earthdata') and action.get('provider')==provider:
-                result['needs_action']={'code':'credentials_required','provider':provider,'source':source}
+            if action.get('code')=='credentials_required' and provider not in (None,'none') and action.get('provider')==provider:
+                safe_action=ReanalysisMixin._credential_action(source)
+                if (provider not in ('cds','earthdata') and isinstance(identity,str)
+                        and TASK_ID.fullmatch(identity)):
+                    safe_action['id']=identity
+                result['needs_action']=safe_action
         if 'status' not in result: result['status']='idle'
         return result
 
@@ -580,7 +640,11 @@ class ReanalysisMixin:
             if code: raise ValueError('Обработчик реанализа завершился с ошибкой; частичное поле не используется.')
             try: result=json.loads((work/'result.json').read_text(encoding='utf-8'))
             except (OSError,ValueError): raise ValueError('Обработчик не вернул проверяемый результат.') from None
-            if not result.get('ok'): raise ValueError(result.get('error','Поле не обработано.'))
+            if not result.get('ok'):
+                message=result.get('error','Поле не обработано.')
+                if result.get('retryable') is True and payload.get('path') is None:
+                    raise RetryableFieldError(message)
+                raise ValueError(message)
             return result['result']
 
     def _field_start(self,payload,task_id=None,pending=None):
@@ -609,7 +673,8 @@ class ReanalysisMixin:
                     with self.lock: self._field_job.update(status='cancelled',message='Получение поля остановлено. Ранее готовые поля сохранены.',resume_available=False)
                     raise
                 except Exception as exc:
-                    with self.lock: self._field_job.update(status='error',message=str(exc) if isinstance(exc,ValueError) else 'Не удалось подготовить поле.',resume_available=False)
+                    retryable=isinstance(exc,RetryableFieldError) and bool(pending and pending.get('kind')=='remote')
+                    with self.lock: self._field_job.update(status='error',message=str(exc) if isinstance(exc,ValueError) else 'Не удалось подготовить поле.',resume_available=retryable,retry_available=retryable)
                     raise ValueError(self._field_job['message']) from None
                 finally:
                     with self.lock: atomic_json(self.fields_root/'job.json',self._field_job)
@@ -638,12 +703,12 @@ class ReanalysisMixin:
                 with self.lock:
                     if self.busy: raise ValueError('Сначала завершите или отмените текущую операцию.')
                     task_id=uuid.uuid4().hex
-                    action={'code':'credentials_required','provider':provider,'source':plan['source']}
+                    action=self._credential_action(plan['source'],task_id)
                     pending={'kind':'remote','spec':self._safe_field_spec(plan)}
                     self._field_job={'id':task_id,'status':'needs_action','message':'Требуются данные доступа к источнику.',
                                      'needs_action':action,'pending':pending,'resume_available':True,'field_id':None}
                     atomic_json(self.fields_root/'job.json',self._sanitize_field_job(self._field_job))
-                return {'needs_action':dict(action,id=task_id)}
+                return {'needs_action':dict(action)}
         if sum(p.stat().st_size for p in self.field_cache.rglob('*') if p.is_file())>20*1024**3:
             raise ValueError('Кэш реанализа превысил 20 ГиБ. Удалите ненужные данные после резервирования.')
         pending={'kind':'remote','spec':self._safe_field_spec(plan)} if not local else {}
@@ -658,7 +723,9 @@ class ReanalysisMixin:
             job=self._field_job
             if not isinstance(identity,str) or not TASK_ID.fullmatch(identity) or identity!=job.get('id'):
                 raise ValueError('Задача реанализа не найдена или уже заменена.')
-            if job.get('status') not in ('needs_action','interrupted') or not job.get('resume_available'):
+            resumable=job.get('status') in ('needs_action','interrupted') and job.get('resume_available')
+            retryable=job.get('status')=='error' and job.get('retry_available') is True and job.get('resume_available')
+            if not (resumable or retryable):
                 raise ValueError('Эту задачу нельзя возобновить.')
             pending=job.get('pending',{})
             if pending.get('kind')!='remote': raise ValueError('Нет безопасно сохранённого плана удалённого запроса.')
@@ -670,13 +737,13 @@ class ReanalysisMixin:
         cache_id=plan['key']
         if adapter.auth_provider!='none' and not credential and not (self.field_cache/cache_id/'metadata.json').is_file():
             provider=adapter.auth_provider
-            action={'code':'credentials_required','provider':provider,'source':plan['source']}
+            action=self._credential_action(plan['source'],identity)
             with self.lock:
                 # Recheck scope before updating in case a different job replaced it.
                 if self._field_job.get('id')!=identity: raise ValueError('Задача уже заменена.')
                 self._field_job.update(status='needs_action',message='Требуются данные доступа к источнику.',needs_action=action,resume_available=True)
                 atomic_json(self.fields_root/'job.json',self._sanitize_field_job(self._field_job))
-            return {'needs_action':dict(action,id=identity)}
+            return {'needs_action':dict(action)}
         payload={'action':'prepare','plan':plan,'credential':credential,'path':None,'identity':cache_id,'cache':str(self.field_cache)}
         return self._field_start(payload,task_id=identity,pending={'kind':'remote','spec':spec})
 

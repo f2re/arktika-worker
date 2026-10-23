@@ -107,7 +107,8 @@ def build_archive_report(*, task_id: str, plan: dict[str, Any],
                          interval_hours: dict[str, int],
                          frame_records: list[dict[str, Any]],
                          cached_fields: list[dict[str, Any]],
-                         target_grid: dict[str, Any] | None = None) -> dict[str, Any]:
+                         target_grid: dict[str, Any] | None = None,
+                         satellite_comparisons: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     """Summarize completed cached frames and link only contiguous sequences."""
     successful = [row for row in frame_records if row.get("status") == "completed"
                   and isinstance(row.get("result"), dict)]
@@ -181,6 +182,97 @@ def build_archive_report(*, task_id: str, plan: dict[str, Any],
     if target_grid is None:
         target_grid = next((row["result"].get("grid") for row in successful
                             if isinstance(row["result"].get("grid"), dict)), None)
+    # The single-time detector performs the pixel comparison while the mask is
+    # available. Archive frames retain that compact result, never the raw mask.
+    # Accept it here only when its attributed UTC and complete target grid match
+    # the frame exactly; stale or malformed comparisons remain unknown.
+    satellite_frames: list[dict[str, Any]] = []
+    aggregate = {key: 0 for key in ("true_positive_pixels", "false_positive_pixels",
+                                    "false_negative_pixels", "true_negative_pixels")}
+    observed_count = 0
+    listed_pairs: set[tuple[str, str]] = set()
+    comparisons_by_frame: dict[tuple[str, str], dict[str, Any]] = {}
+    for entry in satellite_comparisons or []:
+        if not isinstance(entry, dict):
+            continue
+        source = entry.get("source")
+        try:
+            stamp = _utc(entry.get("valid_time")).isoformat().replace("+00:00", "Z")
+        except (TypeError, ValueError):
+            continue
+        if isinstance(source, str):
+            comparisons_by_frame[(source, stamp)] = entry
+    for row in frame_records:
+        if row.get("status") != "completed" or not isinstance(row.get("result"), dict):
+            continue
+        result = row["result"]
+        try:
+            stamp = _utc(row.get("valid_time") or result.get("valid_time")).isoformat().replace("+00:00", "Z")
+        except (TypeError, ValueError):
+            continue
+        entry = comparisons_by_frame.get((row.get("source"), stamp))
+        if entry is None:
+            continue
+        comparison = entry.get("comparison")
+        if not isinstance(comparison, dict) or comparison.get("status") == "not_supplied":
+            continue
+        listed_pairs.add((row.get("source"), stamp))
+        observation = comparison.get("observation")
+        valid_match = False
+        if isinstance(observation, dict):
+            try:
+                valid_match = (
+                    all(isinstance(observation.get(key), str) and observation[key].strip()
+                        for key in ("source", "product_id", "observation_id"))
+                    and _utc(observation.get("valid_time")).isoformat().replace("+00:00", "Z") == stamp
+                    and isinstance(target_grid, dict)
+                    and validate_grid(result.get("grid")) == validate_grid(target_grid)
+                    and validate_grid(entry.get("grid")) == validate_grid(target_grid)
+                    and validate_grid(observation.get("grid")) == validate_grid(entry.get("grid"))
+                )
+            except (TypeError, ValueError):
+                valid_match = False
+        metrics = comparison.get("metrics")
+        if not valid_match or comparison.get("status") != "comparison_only" or not isinstance(metrics, dict):
+            satellite_frames.append({"source": row.get("source"), "valid_time": row.get("valid_time"),
+                                     "status": "unknown_unmatched", "metrics": None})
+            continue
+        counts = {key: metrics.get(key) for key in aggregate}
+        if any(isinstance(value, bool) or not isinstance(value, int) or value < 0
+               for value in counts.values()):
+            satellite_frames.append({"source": row.get("source"), "valid_time": row.get("valid_time"),
+                                     "status": "unknown_unmatched", "metrics": None})
+            continue
+        for key, value in counts.items():
+            aggregate[key] += value
+        observed_count += 1
+        satellite_frames.append({"source": row.get("source"), "valid_time": row.get("valid_time"),
+                                 "status": "comparison_only", "observation": observation,
+                                 "metrics": dict(metrics), "coverage": comparison.get("coverage")})
+    for source, stamps in expected_times.items():
+        for expected_stamp in stamps:
+            try:
+                stamp = _utc(expected_stamp).isoformat().replace("+00:00", "Z")
+            except (TypeError, ValueError):
+                continue
+            pair = (source, stamp)
+            if pair not in listed_pairs:
+                satellite_frames.append({"source": source, "valid_time": stamp,
+                                         "status": "unknown_not_compared", "metrics": None})
+    expected_pair_count = sum(len(stamps) for stamps in expected_times.values())
+    if observed_count:
+        satellite_status = "comparison_only" if observed_count == expected_pair_count else "partial_comparison"
+        tp, fp, fn = (aggregate["true_positive_pixels"], aggregate["false_positive_pixels"],
+                      aggregate["false_negative_pixels"])
+        satellite_metrics = {
+            **aggregate,
+            "intersection_over_union": tp / (tp + fp + fn) if tp + fp + fn else None,
+            "probability_of_detection": tp / (tp + fn) if tp + fn else None,
+            "false_alarm_ratio": fp / (tp + fp) if tp + fp else None,
+        }
+    else:
+        satellite_status = "not_supplied"
+        satellite_metrics = None
     passport = None
     if isinstance(target_grid, dict):
         all_expected = [stamp for stamps in expected_times.values() for stamp in stamps]
@@ -275,7 +367,17 @@ def build_archive_report(*, task_id: str, plan: dict[str, Any],
         "coverage": coverage,
         "frames": frame_records,
         "tracks_by_source": track_rows,
-        "satellite_comparison": {"status": "not_supplied", "metrics": None},
+        "satellite_comparison": {
+            "status": satellite_status,
+            "comparison_basis": "пиксельное сравнение маски кандидатов и вручную импортированной спутниковой разметки",
+            "validation_status": "not_meteorological_validation",
+            "expected_frame_count": expected_pair_count,
+            "matched_frame_count": observed_count,
+            "unknown_frame_count": max(0, expected_pair_count - observed_count),
+            "unknown_means": "нет точной пары наблюдение–срок–сетка; это не означает отсутствие ПМЦ",
+            "metrics": satellite_metrics,
+            "frames": satellite_frames,
+        },
         "limitations": report_limitations,
     }
     if passport is not None:

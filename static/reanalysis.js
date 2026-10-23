@@ -1,6 +1,6 @@
 /* Пространственные поля: независимый от спутника стек, точные сроки, без CDN. */
 'use strict';
-const FIELDS={catalogue:[],fields:[],stack:[],epoch:0,probeEpoch:0,pending:null,timer:null,saveTail:Promise.resolve(),job:{status:'idle'},credentialRetry:null,accessReturn:null,accessSaving:false};
+const FIELDS={catalogue:[],fields:[],stack:[],epoch:0,probeEpoch:0,pending:null,timer:null,saveTail:Promise.resolve(),job:{status:'idle'},credentialRetry:null,accessReturn:null,accessSaving:false,credentialPromptOpen:false};
 const fieldDialog=document.createElement('dialog');fieldDialog.id='fieldDialog';fieldDialog.className='wide fixed-dialog';
 fieldDialog.innerHTML=`<div class="dialog-head"><div><h2>Добавить поле реанализа</h2><p>Один источник · один срок анализа · один уровень</p></div><button id="fieldClose" aria-label="Закрыть">✕</button></div>
 <div class="dialog-body"><div class="row"><label>Источник<select id="fieldSource"></select></label><label>Поле<select id="fieldVariable"></select></label></div>
@@ -11,7 +11,7 @@ fieldDialog.innerHTML=`<div class="dialog-head"><div><h2>Добавить пол
 <p id="fieldError" class="error-text" role="alert" hidden></p><p id="fieldJobMessage" role="status"></p>
 <details id="fieldCacheDetails"><summary>Уже загруженные поля</summary><div id="fieldCache"></div></details>
 <details id="fieldDifferenceDetails"><summary>Разность двух источников: A − B</summary><div class="row"><label>A<select id="fieldFirst"></select></label><label>B<select id="fieldSecond"></select></label></div><p class="micro">Одинаковые поле, уровень и срок. Расчёт на более грубой исходной сетке; вне совместной маски данных результата нет.</p><button id="fieldDifference" class="tonal">Рассчитать разность</button></details>
-</div><div class="dialog-footer"><a href="/docs/REANALYSIS.html" target="_blank" rel="noopener">Поля и ограничения</a><button id="fieldDialogCancel" class="text-button" hidden>Отменить сохранённый запрос</button><button id="fieldDownload" class="primary">Загрузить и добавить на карту</button></div>`;
+</div><div class="dialog-footer"><a href="/docs/REANALYSIS.html" target="_blank" rel="noopener">Поля и ограничения</a><button id="fieldDialogRetry" class="text-button" hidden>Повторить запрос</button><button id="fieldDialogCancel" class="text-button" hidden>Отменить сохранённый запрос</button><button id="fieldDownload" class="primary">Загрузить и добавить на карту</button></div>`;
 document.body.append(fieldDialog);
 function fieldError(message=''){const el=$('#fieldError');el.textContent=message;el.hidden=!message;}
 function fieldMeta(id){return FIELDS.fields.find(f=>f.id===id);}
@@ -41,12 +41,60 @@ function fieldBody(){
   const area=['#fieldNorth','#fieldWest','#fieldSouth','#fieldEast'].map(id=>{if($(id).value==='')throw Error('Заполните границы области.');return Number($(id).value);});
   return {source,variable,time:raw+(raw.length===16?':00Z':'Z'),level:$('#fieldLevelLabel').hidden?null:Number($('#fieldLevel').value),area};
 }
+function credentialDialog(action){
+  const spec=action.credential_request;
+  if(!spec||spec.provider!==action.provider||spec.format!=='fields'||!Array.isArray(spec.fields)||!spec.fields.length)
+    throw Error('Адаптер передал неполное описание реквизитов доступа.');
+  if(FIELDS.credentialPromptOpen&&document.querySelector('dialog[data-credential-provider]'))return;
+  FIELDS.credentialPromptOpen=true;
+  const dialog=document.createElement('dialog');dialog.className='wide fixed-dialog';
+  dialog.dataset.credentialProvider=spec.provider;
+  const head=document.createElement('div');head.className='dialog-head';
+  const title=document.createElement('h2');title.textContent=`Доступ: ${action.provider}`;
+  const close=document.createElement('button');close.type='button';close.textContent='✕';close.setAttribute('aria-label','Закрыть');
+  head.append(title,close);dialog.append(head);
+  if(spec.help){const help=document.createElement('p');help.className='hint';help.textContent=spec.help;dialog.append(help);}
+  const form=document.createElement('form');form.method='dialog';
+  const values={};
+  for(const field of spec.fields){
+    if(!field||typeof field.id!=='string'||!/^[a-z][a-z0-9_]{0,39}$/.test(field.id)||
+       !['text','password'].includes(field.type)||typeof field.label!=='string'||
+       !Number.isInteger(field.max_length)||field.max_length<1||field.max_length>8192||typeof field.required!=='boolean')
+      throw Error('Адаптер передал небезопасную схему ввода реквизитов.');
+    const label=document.createElement('label');label.textContent=field.label;
+    const input=document.createElement('input');input.type=field.type;input.autocomplete='off';input.maxLength=field.max_length;input.required=field.required;
+    label.append(input);form.append(label);values[field.id]=input;
+    if(field.help){const hint=document.createElement('p');hint.className='micro';hint.textContent=field.help;form.append(hint);}
+  }
+  const error=document.createElement('p');error.className='error-text';error.setAttribute('role','alert');error.hidden=true;form.append(error);
+  const save=document.createElement('button');save.type='submit';save.className='primary';save.textContent='Сохранить в памяти и продолжить';form.append(save);
+  const clear=document.createElement('button');clear.type='button';clear.className='text-button';clear.textContent='Удалить сохранённый доступ';form.append(clear);
+  const cancel=document.createElement('button');cancel.type='button';cancel.className='text-button';cancel.textContent='Отмена';form.append(cancel);
+  dialog.append(form);document.body.append(dialog);
+  const cleanup=()=>{if(dialog.open)dialog.close();dialog.remove();};
+  dialog.addEventListener('close',()=>{dialog.remove();FIELDS.credentialPromptOpen=false;});
+  close.onclick=cancel.onclick=cleanup;
+  clear.onclick=async()=>{error.hidden=true;clear.disabled=true;try{await api('/api/sources/credentials',{provider:spec.provider,clear:true});error.textContent='Сохранённый доступ удалён из памяти процесса.';error.hidden=false;}catch(e){error.textContent=e.message;error.hidden=false;}finally{clear.disabled=false;}};
+  form.onsubmit=async event=>{
+    event.preventDefault();error.hidden=true;save.disabled=true;
+    try{
+      const payload={};for(const [id,input] of Object.entries(values))payload[id]=input.value;
+      await api('/api/sources/credentials',{provider:spec.provider,format:spec.format,values:payload});
+      const result=await api('/api/reanalysis/resume',{id:action.id});
+      FIELDS.job={...FIELDS.job,...result,id:action.id,status:result.started?'running':'needs_action',message:'Продолжается сохранённый запрос'};
+      FIELDS.pending=action.id;cleanup();await openFieldDialog(action.source);fieldsJob();await pollFields();
+    }catch(e){error.textContent=e.message;error.hidden=false;save.disabled=false;}
+  };
+  dialog.showModal();
+}
 function fieldsJob(){
   const j=FIELDS.job,busy=j.status==='running',pendingAction=j.status==='needs_action'||(j.status==='interrupted'&&j.resume_available);
   $('#fieldJobMessage').textContent=busy?(j.message||''):j.status==='needs_action'?'Запрос сохранён. Настройте доступ к источнику; после сохранения запрос продолжится с теми же параметрами.':(j.status==='interrupted'&&j.resume_available?'Запрос прерван остановкой сервера. Его можно продолжить после настройки доступа.':'');
   if($('#fieldStatus'))$('#fieldStatus').textContent=j.message||'';
   if($('#fieldCancel')){$('#fieldCancel').hidden=!(busy||j.status==='needs_action'||(j.status==='interrupted'&&j.resume_available));$('#fieldCancel').disabled=false;}
   if($('#fieldDialogCancel'))$('#fieldDialogCancel').hidden=!(busy||j.status==='needs_action'||(j.status==='interrupted'&&j.resume_available));
+  if($('#fieldRetry'))$('#fieldRetry').hidden=!(j.status==='error'&&j.retry_available===true&&j.resume_available===true);
+  if($('#fieldDialogRetry'))$('#fieldDialogRetry').hidden=!(j.status==='error'&&j.retry_available===true&&j.resume_available===true);
   for(const id of ['#fieldDownload','#fieldImport','#fieldDifference'])$(id).disabled=busy||pendingAction;
   $('#fieldConfigure').disabled=busy;
   if(j.status==='error'||(j.status==='interrupted'&&!j.resume_available))fieldError(j.message);
@@ -73,6 +121,11 @@ async function openFieldDialog(source){
   if(!$('#fieldTime').value)$('#fieldTime').value=(S.product?.time||S.scene?.time||S.day+'T00:00:00Z').slice(0,16);
   if($('#sourcesDialog').open)$('#sourcesDialog').close();
   if(!fieldDialog.open)fieldDialog.showModal();
+  const action=FIELDS.job.needs_action;
+  if(!FIELDS.credentialPromptOpen&&FIELDS.job.status==='needs_action'&&action?.code==='credentials_required'&&
+     action.provider!=='cds'&&action.provider!=='earthdata'&&action.credential_request){
+    FIELDS.credentialPromptOpen=true;credentialDialog(action);
+  }
 }
 function drawFieldCache(){
   $('#fieldCache').innerHTML=FIELDS.fields.length?FIELDS.fields.map(f=>`<article class="field-cache-row"><span>${escape(fieldLabel(f))}</span><button class="tonal" data-field-add="${f.id}" ${FIELDS.stack.some(s=>s.id===f.id)?'disabled':''}>Добавить</button></article>`).join(''):'<p class="hint">Пока нет сохранённых полей.</p>';
@@ -87,10 +140,13 @@ async function startField(local=false,frozenBody=null){
     const result=await api('/api/reanalysis/'+(local?'import':'add'),body);
     if(result.needs_action?.code==='credentials_required'){
       const action=result.needs_action;
-      if(!['cds','earthdata'].includes(action.provider)||!['era5','carra2','merra2'].includes(action.source))throw Error('Источник вернул неизвестный запрос доступа.');
+      if(!/^[a-z][a-z0-9_-]{1,63}$/.test(action.provider)||typeof action.source!=='string'||typeof action.id!=='string')throw Error('Источник вернул неизвестный запрос доступа.');
       FIELDS.credentialRetry={id:action.id,source:action.source,provider:action.provider,body:{...body,area:[...body.area]}};
       FIELDS.job={id:action.id,status:'needs_action',resume_available:true,needs_action:{source:action.source,provider:action.provider}};fieldsJob();
-      fieldDialog.close();await openSourceAccess(action.source);return;
+      fieldDialog.close();
+      if(['cds','earthdata'].includes(action.provider))await openSourceAccess(action.source);
+      else credentialDialog(action);
+      return;
     }
     FIELDS.pending=result.id;FIELDS.job={id:result.id,status:'running',message:'Проверка и подготовка поля'};fieldsJob();
     clearTimeout(FIELDS.timer);await pollFields();
@@ -170,11 +226,13 @@ const baseFieldInvalidate=invalidatePoint;
 invalidatePoint=function(){FIELDS.probeEpoch++;$('#fieldProbe')?.replaceChildren();return baseFieldInvalidate();};
 function initFieldUI(){
   if(!$('#taskGrid button')){setTimeout(initFieldUI,100);return;}
-  const block=document.createElement('section');block.id='fieldLayerPanel';block.innerHTML='<div class="section-heading"><h3>Поля реанализа</h3><button id="fieldAddOpen" class="tonal" aria-label="Добавить поле реанализа">＋</button></div><div id="fieldLayerRows"></div><p id="fieldLegacyNotice" class="notice" hidden></p><p id="fieldStatus" class="micro" role="status"></p><button id="fieldCancel" class="text-button" hidden>Отменить сохранённый запрос</button><hr>';
+  const block=document.createElement('section');block.id='fieldLayerPanel';block.innerHTML='<div class="section-heading"><h3>Поля реанализа</h3><button id="fieldAddOpen" class="tonal" aria-label="Добавить поле реанализа">＋</button></div><div id="fieldLayerRows"></div><p id="fieldLegacyNotice" class="notice" hidden></p><p id="fieldStatus" class="micro" role="status"></p><button id="fieldRetry" class="text-button" hidden>Повторить запрос</button><button id="fieldCancel" class="text-button" hidden>Отменить сохранённый запрос</button><hr>';
   $('#productPanel').prepend(block);$('#productRail span').textContent='Слои';$('#productRail').setAttribute('aria-label','Слои и продукты');
-  $('#fieldAddOpen').onclick=()=>openFieldDialog().catch(e=>toast(e.message));
+  $('#fieldAddOpen').onclick=()=>{FIELDS.credentialPromptOpen=false;openFieldDialog().catch(e=>toast(e.message));};
 const cancelFieldJob=async()=>{try{await api('/api/reanalysis/cancel',{id:FIELDS.job.id});await refreshFields();}catch(e){toast(e.message);}};
 $('#fieldCancel').onclick=cancelFieldJob;$('#fieldDialogCancel').onclick=cancelFieldJob;
+const retryFieldJob=async()=>{try{const result=await api('/api/reanalysis/resume',{id:FIELDS.job.id});FIELDS.job={...FIELDS.job,...result,status:'running',message:'Повторяется сохранённый запрос'};FIELDS.pending=FIELDS.job.id;fieldsJob();await pollFields();}catch(e){fieldError(e.message);}};
+$('#fieldRetry').onclick=retryFieldJob;$('#fieldDialogRetry').onclick=retryFieldJob;
   refreshFields().then(data=>{FIELDS.stack=data.stack.filter(s=>fieldMeta(s.id));drawFieldStack();renderFieldMaps();if(FIELDS.job.status==='running')pollFields();}).catch(e=>toast(e.message));
 }
 const baseFieldSaveAccess=saveSourceAccess;

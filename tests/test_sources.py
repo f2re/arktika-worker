@@ -4,7 +4,9 @@ import unittest
 from pathlib import Path
 
 from arktika.sources import earthdata_credentials_from_text, public_earthdata
+from arktika.reanalysis.adapters import DEFAULT_REGISTRY, register_adapter, unregister_adapter
 from test_era5_workflow import workflow_fixture
+from test_adapter_credentials import adapter
 
 
 class EarthdataCredentials(unittest.TestCase):
@@ -79,6 +81,33 @@ class SourceFlow(unittest.TestCase):
 
     def test_local_source_is_ready_without_credentials(self):
         self.assertEqual(self.sources()['local']['status'],'ready')
+
+    def test_custom_provider_credentials_are_transient_and_redacted(self):
+        register_adapter(adapter())
+        try:
+            saved=self.app.set_provider_credential('research_auth',
+                {'username':'operator','token':'SYNTHETIC-SECRET'},format='fields')
+            self.assertEqual(saved,{'present':True,'provider':'research_auth','format':'fields','storage':'memory'})
+            credential=self.app.provider_credential('research_auth')
+            self.assertEqual(credential['username'],'operator')
+            self.assertEqual(credential['token'],'SYNTHETIC-SECRET')
+            self.assertNotIn('SYNTHETIC-SECRET',str(self.app.provider_credential_status('research_auth')))
+            self.assertNotIn('SYNTHETIC-SECRET',str(self.app.source_state()))
+            self.app.clear_provider_credential('research_auth')
+            self.assertFalse(self.app.provider_credential_status('research_auth')['present'])
+        finally:
+            unregister_adapter('custom_reanalysis')
+
+    def test_custom_provider_rejects_unknown_fields_and_providers(self):
+        register_adapter(adapter())
+        try:
+            with self.assertRaisesRegex(ValueError,'Неизвестный'):
+                self.app.set_provider_credential('not_installed',{'token':'secret'})
+            with self.assertRaisesRegex(ValueError,'не совпадает'):
+                self.app.set_provider_credential('research_auth',
+                    {'username':'operator','token':'secret','extra':'secret'})
+        finally:
+            unregister_adapter('custom_reanalysis')
 
 
 if __name__=='__main__':

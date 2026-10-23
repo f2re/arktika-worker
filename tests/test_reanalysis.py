@@ -316,6 +316,31 @@ class ServiceIntegration(unittest.TestCase):
         self.assertEqual(self.app.fields_state()['job']['id'],task_id)
         self.assertEqual(self.app.fields_state()['job']['status'],'done')
         self.assertEqual(seen[0]['credential']['token'],'SYNTHETIC-PRIVATE-TOKEN')
+    def test_transient_remote_failure_can_retry_same_saved_request(self):
+        from arktika.reanalysis_service import RetryableFieldError
+        self.app.source_credentials({'provider':'cds','text':'SYNTHETIC-PRIVATE-TOKEN','format':'token'})
+        with patch.object(self.app,'_field_process',side_effect=RetryableFieldError('Сбой сети')):
+            started=self.app.fields_add(plan());task_id=started['id']
+            self.app.task.join(10)
+        failed=self.app.fields_state()['job']
+        self.assertEqual(failed['status'],'error');self.assertTrue(failed['resume_available'])
+        self.assertTrue(failed['retry_available'])
+        seen=[]
+        def fake_process(payload,**kwargs):
+            seen.append(payload);return {'field':{'id':'a'*24},'cached':False}
+        with patch.object(self.app,'_field_process',side_effect=fake_process):
+            result=self.app.fields_resume({'id':task_id});self.app.task.join(10)
+        self.assertEqual(result,{'started':True,'id':task_id})
+        self.assertEqual(self.app.fields_state()['job']['status'],'done')
+        self.assertEqual(seen[0]['plan'],request_plan({'source':'era5','variable':'t','time':'2024-01-01T00:00:00Z','level':850,'area':[75,20,65,40]}))
+    def test_permanent_field_errors_do_not_become_retryable(self):
+        self.app.source_credentials({'provider':'cds','text':'SYNTHETIC-PRIVATE-TOKEN','format':'token'})
+        with patch.object(self.app,'_field_process',side_effect=ValueError('Некорректный запрос')):
+            started=self.app.fields_add(plan())
+            self.app.task.join(10)
+        failed=self.app.fields_state()['job']
+        self.assertEqual(failed['status'],'error');self.assertFalse(failed['resume_available'])
+        with self.assertRaises(ValueError):self.app.fields_resume({'id':started['id']})
     def test_pending_plan_never_persists_credential_path_or_uri(self):
         self.app.source_credentials({'provider':'cds','clear':True})
         result=self.app.fields_add(plan())

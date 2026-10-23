@@ -1,6 +1,7 @@
 """Контракт локальных производных адаптеров; сетевые данные не запрашиваются."""
 import unittest
 from dataclasses import replace
+import requests
 
 import numpy as np
 
@@ -78,6 +79,7 @@ class AdapterTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "один точный срок UTC"):
             self.registry.run("wind_speed", bad)
 
+
     def test_rejects_wrong_wind_units_and_secret_provenance(self):
         bad = dict(self.inputs)
         item = self.inputs["u"]
@@ -104,6 +106,20 @@ class AdapterTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "major.minor.patch"):
             self.registry.register(InvalidAdapter())
+
+
+class RemoteRetryClassificationTests(unittest.TestCase):
+    def test_only_temporary_transport_failures_are_retryable(self):
+        from arktika.reanalysis.worker import _retryable_network_error
+        self.assertTrue(_retryable_network_error(requests.Timeout()))
+        self.assertTrue(_retryable_network_error(requests.ConnectionError()))
+        self.assertFalse(_retryable_network_error(requests.exceptions.SSLError()))
+        for status in (408,425,429,500,502,503,504):
+            response=requests.Response();response.status_code=status
+            self.assertTrue(_retryable_network_error(requests.HTTPError(response=response)))
+        for status in (400,401,403,404):
+            response=requests.Response();response.status_code=status
+            self.assertFalse(_retryable_network_error(requests.HTTPError(response=response)))
 
 
 if __name__ == "__main__":

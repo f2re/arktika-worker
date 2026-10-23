@@ -227,6 +227,22 @@ def run(payload,*,registry: AdapterRegistry = DEFAULT_REGISTRY):
     raise ValueError('Неизвестная операция реанализа.')
 
 
+def _retryable_network_error(exc):
+    """Only transport failures and selected temporary HTTP responses may be retried."""
+    try:
+        import requests
+    except ImportError:
+        return False
+    if isinstance(exc,requests.exceptions.SSLError):
+        return False
+    if isinstance(exc,(requests.exceptions.Timeout,requests.exceptions.ConnectionError)):
+        return True
+    if isinstance(exc,requests.exceptions.HTTPError):
+        response=getattr(exc,'response',None)
+        return response is not None and response.status_code in (408,425,429,500,502,503,504)
+    return False
+
+
 def main():
     logging.disable(logging.CRITICAL)
     load_installed_adapters()
@@ -249,7 +265,8 @@ def main():
         atomic_json(folder/'result.json',{'ok':False,'error':message})
     except ImportError:
         atomic_json(folder/'result.json',{'ok':False,'error':'Нет библиотеки для этого формата. Повторите install; для GRIB дополнительно установите requirements-grib.txt.'})
-    except Exception:
-        atomic_json(folder/'result.json',{'ok':False,'error':'Не удалось получить или обработать поле. Проверьте подключение, права на набор данных и формат файла. Непроверенный результат не сохранён.'})
+    except Exception as exc:
+        retryable=payload.get('action')=='prepare' and not payload.get('path') and _retryable_network_error(exc)
+        atomic_json(folder/'result.json',{'ok':False,'retryable':retryable,'error':'Временная ошибка сети. Повторите сохранённый запрос.' if retryable else 'Не удалось получить или обработать поле. Проверьте подключение, права на набор данных и формат файла. Непроверенный результат не сохранён.'})
 
 if __name__=='__main__': main()
