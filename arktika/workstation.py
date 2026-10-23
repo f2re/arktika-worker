@@ -125,7 +125,7 @@ class Workstation(ReanalysisMixin, SourceManagerMixin, AutoCalibrationMixin, Pro
                                       target_grid=target_grid,source_passport=passport)
   return result
  def experimental_pmc_candidates(self,identity,*,target_grid,satellite_observation_mask=None,
-                                 satellite_observation_metadata=None):
+                                 satellite_observation_metadata=None,region_bounds=None):
   """Run the explicitly experimental single-time detector on a chosen metric grid."""
   from .pmc_detection import detect_candidates
   from .pmc_projection import MAX_DETECTOR_PROJECTION_SCALE_ERROR
@@ -136,10 +136,27 @@ class Workstation(ReanalysisMixin, SourceManagerMixin, AutoCalibrationMixin, Pro
   coverage=passport['input_coverage']
   if coverage['valid_pixels']==0:
    raise ValueError('В целевой сетке нет валидного покрытия исходного поля; кандидаты не рассчитаны.')
+  domain_mask=None
+  if region_bounds is not None:
+   from .reanalysis.catalog import validate_area
+   north,west,south,east=validate_area(region_bounds)
+   if west>=east:raise ValueError('Регион должен пересекать долготу от запада к востоку без антимеридиана.')
+   height,width=field['values'].shape
+   affine=Affine(*field['grid']['transform'])
+   columns,rows=np.meshgrid(np.arange(width,dtype=float)+.5,np.arange(height,dtype=float)+.5)
+   x=affine.a*columns+affine.b*rows+affine.c
+   y=affine.d*columns+affine.e*rows+affine.f
+   lon,lat=Transformer.from_crs(field['grid']['crs'],'EPSG:4326',always_xy=True).transform(x,y)
+   domain_mask=(np.asarray(lat)>=south)&(np.asarray(lat)<=north)&(np.asarray(lon)>=west)&(np.asarray(lon)<=east)
+   if not domain_mask.any():raise ValueError('Целевая сетка не содержит ячеек выбранного региона.')
   result=detect_candidates(field['values'],grid=field['grid'],valid_time=passport['valid_time'],
                            source=passport['source'],source_field_metadata=passport,
                            satellite_observation_mask=satellite_observation_mask,
-                           satellite_observation_metadata=satellite_observation_metadata)
+                           satellite_observation_metadata=satellite_observation_metadata,
+                           domain_mask=domain_mask)
+  if region_bounds is not None:
+   result['domain']={'geographic_bounds_north_west_south_east':list(region_bounds),
+                     'mask':'pixel-centre lon/lat within selected rectangle'}
   result['field_passport']=passport
   result['input_coverage']=coverage
   result['projection_scale_tolerance_relative']=MAX_DETECTOR_PROJECTION_SCALE_ERROR

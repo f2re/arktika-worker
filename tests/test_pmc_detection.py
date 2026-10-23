@@ -61,6 +61,17 @@ class PmcDetectionTests(unittest.TestCase):
         self.assertEqual("not_supplied", result["satellite_comparison"]["status"])
         self.assertIsNone(result["satellite_comparison"]["metrics"])
 
+    def test_archive_domain_mask_excludes_candidate_pixels_outside_region(self):
+        domain = np.zeros((15, 15), dtype=bool)
+        domain[4:8, 4:8] = True
+        result = self.run_detector(domain_mask=domain)
+        self.assertGreater(result["candidate_count"], 0)
+        self.assertTrue(all(4 <= c["peak_pixel_rc"][0] < 8 and
+                            4 <= c["peak_pixel_rc"][1] < 8
+                            for c in result["candidates"]))
+        with self.assertRaisesRegex(ValueError, "domain mask"):
+            self.run_detector(domain_mask=np.zeros((14, 15), dtype=bool))
+
     def test_satellite_metrics_only_when_observation_mask_provided(self):
         observations = np.zeros((15, 15), dtype=bool)
         with self.assertRaisesRegex(ValueError, "provenance"):

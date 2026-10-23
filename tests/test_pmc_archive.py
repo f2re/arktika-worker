@@ -1,10 +1,14 @@
 """Archive planning validates inputs without submitting requests or inventing results."""
 from __future__ import annotations
 
+import json
 import unittest
 from pathlib import Path
 import tempfile
+import time
+from unittest.mock import patch
 
+from arktika.download import atomic_json
 from arktika.pmc_archive import build_plan
 from arktika.workstation import Workstation
 
@@ -63,6 +67,82 @@ class PmcArchivePlanTests(unittest.TestCase):
                 self.assertEqual(app.products(), [])
             finally:
                 app.close()
+
+    def test_cached_archive_run_persists_partial_report_and_separates_time_segments(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);app=Workstation(root/'state',download_dir=root/'downloads')
+            ids=['a'*24,'b'*24]
+            fields=[{'id':ids[0],'source':'era5','variable':'wind','level':850,
+                     'time_kind':'instantaneous_analysis','time':'2024-01-01T00:00:00Z'},
+                    {'id':ids[1],'source':'era5','variable':'wind','level':850,
+                     'time_kind':'instantaneous_analysis','time':'2024-01-01T02:00:00Z'}]
+            grid={'crs':'EPSG:3413','width':20,'height':20,
+                  'transform':[10000,0,-100000,0,-10000,100000],
+                  'resolution_x_m':10000,'resolution_y_m':10000}
+            plan=request(sources=['era5'],end='2024-01-01T02:00:00Z',access_token='must-not-persist',
+                         private_uri='https://example.invalid/private?signature=secret')
+            def result_for(identity,**kwargs):
+                meta=next(field for field in fields if field['id']==identity)
+                return {'algorithm_id':'arktika.experimental_pmc_candidates','algorithm_version':'0.2.0',
+                        'maturity':'experimental','source':meta['source'],'valid_time':meta['time'],
+                        'grid':dict(grid),'candidate_count':1,
+                        'candidates':[{'candidate_id':'candidate-'+meta['time'][11:13],
+                            'centroid_pixel_rc':[10.0,10.0],'classification':'candidate',
+                            'confirmation_status':'not_confirmed'}]}
+            try:
+                with patch.object(app,'fields_state',return_value={'fields':fields}), \
+                     patch.object(app,'field',side_effect=lambda identity:next(f for f in fields if f['id']==identity)), \
+                     patch.object(app,'experimental_pmc_candidates',side_effect=result_for):
+                    started=app.pmc_archive_start({'plan':plan,'field_ids':ids,'target_grid':grid})
+                    persisted=(root/'state'/'reanalysis'/'pmc_archive_job.json').read_text(encoding='utf-8')
+                    self.assertNotIn('must-not-persist',persisted)
+                    self.assertNotIn('signature=secret',persisted)
+                    self.assertEqual({'sources','start','end','area','step_count'},set(json.loads(persisted)['plan']))
+                    deadline=time.monotonic()+5
+                    while time.monotonic()<deadline:
+                        state=app.pmc_archive_state()
+                        if state['status']!='running':break
+                        time.sleep(.01)
+                    self.assertEqual('partial',state['status'],state)
+                    report=__import__('json').loads(app.pmc_archive_report(started['id']))
+                    self.assertEqual('candidate_only',report['output_status'])
+                    self.assertEqual(3,report['coverage'][0]['expected_steps'])
+                    self.assertEqual(2,report['coverage'][0]['processed_steps'])
+                    self.assertEqual(1,report['coverage'][0]['unprocessed_steps'])
+                    self.assertEqual(2,report['tracks_by_source'][0]['track_count'])
+                    self.assertTrue(all(track['left_censored'] for track in report['tracks_by_source'][0]['tracks']))
+            finally:
+                app.close()
+
+            reopened=Workstation(root/'state',download_dir=root/'downloads')
+            try:
+                with patch.object(reopened,'fields_state',return_value={'fields':fields}):
+                    state=reopened.pmc_archive_state()
+                self.assertEqual('partial',state['status'])
+                self.assertEqual(2,state['completed'])
+            finally:
+                reopened.close()
+
+            job_path=root/'state'/'reanalysis'/'pmc_archive_job.json'
+            persisted=json.loads(job_path.read_text(encoding='utf-8'))
+            persisted.update(status='running',resume_available=False)
+            atomic_json(job_path,persisted)
+            resumed=Workstation(root/'state',download_dir=root/'downloads')
+            try:
+                self.assertEqual('interrupted',resumed.pmc_archive_state()['status'])
+                with patch.object(resumed,'field',side_effect=lambda identity:next(f for f in fields if f['id']==identity)), \
+                     patch.object(resumed,'fields_state',return_value={'fields':fields}):
+                    response=resumed.pmc_archive_resume({'id':started['id']})
+                    self.assertTrue(response['started'])
+                    deadline=time.monotonic()+5
+                    while time.monotonic()<deadline:
+                        state=resumed.pmc_archive_state()
+                        if state['status']!='running':break
+                        time.sleep(.01)
+                    self.assertEqual('partial',state['status'])
+                    self.assertEqual(2,state['completed'])
+            finally:
+                resumed.close()
 
 
 if __name__ == "__main__":

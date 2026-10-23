@@ -25,6 +25,7 @@ from arktika import __version__
 from arktika.products import registry
 from arktika.interpretation import GUIDES
 from arktika.profiles import integrate,cloud_top
+from arktika.pmc_archive_run import target_grid_for_area
 
 ROOT=Path(__file__).resolve().parent
 
@@ -113,6 +114,11 @@ class Handler(BaseHTTPRequestHandler):
             elif path=='/api/era5/report':result=app.era5_report(q.get('id'))
             elif path=='/api/sources':result=app.source_state()
             elif path=='/api/reanalysis/state':result=app.fields_state()
+            elif path=='/api/pmc/archive/state':result=app.pmc_archive_state()
+            elif path=='/api/pmc/archive/report':
+                identity=q.get('id','')
+                self.send(200,app.pmc_archive_report(identity),'application/json; charset=utf-8',
+                          {'Content-Disposition':'attachment; filename="pmc-archive-'+identity+'.json"'});return
             elif path=='/api/derived-adapters':result=app.derived_adapter_catalogue()
             elif path.startswith('/field-render/'):
                 bits=path.split('/')
@@ -190,6 +196,12 @@ class Handler(BaseHTTPRequestHandler):
             elif path=='/api/sources/credentials':result=app.source_credentials(data)
             elif path=='/api/reanalysis/add':result=app.fields_add(data)
             elif path=='/api/pmc/archive/plan':result=app.pmc_archive_plan(data)
+            elif path=='/api/pmc/archive/grid':
+                if set(data)!={'preset','width','area'}:raise ValueError('Нужны preset, width и выбранный регион area.')
+                result={'target_grid':target_grid_for_area(preset=data['preset'],width=int(data['width']),area=data['area'])}
+            elif path=='/api/pmc/archive/run':result=app.pmc_archive_start(data)
+            elif path=='/api/pmc/archive/resume':result=app.pmc_archive_resume(data)
+            elif path=='/api/pmc/archive/cancel':result=app.pmc_archive_cancel(data)
             elif path=='/api/pmc/run':
                 # Single cached field only. This route never fetches data and
                 # intentionally does not accept client-supplied scientific arrays.

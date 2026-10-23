@@ -22,7 +22,7 @@ class PmcArchiveUiContractTests(unittest.TestCase):
     def test_plan_is_a_plan_request_not_a_download_or_detector_run(self):
         source = (ROOT / "static/app.js").read_text(encoding="utf-8")
         start = source.index("async function planPmcArchive()")
-        end = source.index("function registerEvents()", start)
+        end = source.index("function pmcRenderArchiveFields(", start)
         handler = source[start:end]
         self.assertIn("api('/api/pmc/archive/plan',body)", handler)
         self.assertNotIn("/api/queue", handler)
@@ -34,6 +34,13 @@ class PmcArchiveUiContractTests(unittest.TestCase):
         self.assertIn("state.catalogue?.sources||[]", source)
         self.assertIn("адаптер зарегистрирован", source)
         self.assertIn("проверяются отдельно", source)
+
+    def test_merra_cadence_advances_to_absolute_utc_cycle(self):
+        source = (ROOT / "static/app.js").read_text(encoding="utf-8")
+        self.assertIn("new Date(time).getUTCHours()%step!==0", source)
+        self.assertIn("time+=step*3600000)expected[source].add", source)
+        self.assertIn("api('/api/pmc/archive/grid'", source)
+        self.assertIn("area:plan.area", source)
 
     def test_plan_displays_server_reported_source_and_maturity_status(self):
         source = (ROOT / "static/app.js").read_text(encoding="utf-8")
