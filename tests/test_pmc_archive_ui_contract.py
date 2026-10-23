@@ -42,6 +42,34 @@ class PmcArchiveUiContractTests(unittest.TestCase):
         self.assertIn("api('/api/pmc/archive/grid'", source)
         self.assertIn("area:plan.area", source)
 
+    def test_selected_region_is_bound_to_plan_grid_and_detector_request(self):
+        source = (ROOT / "static/app.js").read_text(encoding="utf-8")
+        planning = source[source.index("async function planPmcArchive()"):source.index("function pmcRenderArchiveFields(")]
+        starting = source[source.index("async function pmcStartArchive()"):source.index("async function pmcRefreshArchiveTask(")]
+        self.assertIn("plan.area.some((value,index)=>!Number.isFinite(Number(value))||Number(value)!==body.area[index])", planning)
+        self.assertIn("area:plan.area", starting)
+        self.assertIn("if(revision!==S.pmcArchivePlanRevision||S.pmcArchivePlan!==plan)throw Error", starting)
+        self.assertIn("api('/api/pmc/archive/run',{plan,field_ids,target_grid})", starting)
+        # The selected region is part of the plan passed to run; the backend
+        # uses that same plan area as the detector's geographic domain mask.
+        service = (ROOT / "arktika/reanalysis_service.py").read_text(encoding="utf-8")
+        self.assertIn("region_bounds=job['plan']['area']", service)
+
+    def test_replanning_invalidates_old_controls_and_ignores_stale_responses(self):
+        source = (ROOT / "static/app.js").read_text(encoding="utf-8")
+        invalidation = source[source.index("function pmcInvalidateArchivePlan("):source.index("async function planPmcArchive(")]
+        planning = source[source.index("async function planPmcArchive()"):source.index("function pmcRenderArchiveFields(")]
+        events = source[source.index("$('#pmcArchiveDialog').addEventListener('change'"):source.index("\n}", source.index("$('#pmcArchiveDialog').addEventListener('change'"))]
+        self.assertIn("S.pmcArchivePlan=null", invalidation)
+        self.assertIn("runner.hidden=true", invalidation)
+        self.assertIn("$('#pmcArchiveFields').replaceChildren()", invalidation)
+        self.assertIn("$('#pmcArchiveRun').disabled=true", invalidation)
+        self.assertIn("if(revision!==S.pmcArchivePlanRevision)return", planning)
+        self.assertIn("if(revision===S.pmcArchivePlanRevision)", planning)
+        self.assertIn("pmcInvalidateArchivePlan('Параметры изменились. Составьте план заново.')", events)
+        self.assertIn("$('#pmcArchiveRunner').hidden=true", planning)
+        self.assertIn("$('#pmcArchiveFields').replaceChildren()", planning)
+
     def test_plan_displays_server_reported_source_and_maturity_status(self):
         source = (ROOT / "static/app.js").read_text(encoding="utf-8")
         start = source.index("async function planPmcArchive()")
@@ -54,6 +82,14 @@ class PmcArchiveUiContractTests(unittest.TestCase):
         ):
             with self.subTest(contract_field=contract_field):
                 self.assertIn(contract_field, handler)
+
+    def test_single_field_experiment_offers_carra_without_enabling_archive_runs(self):
+        source = (ROOT / "static/app.js").read_text(encoding="utf-8")
+        self.assertIn("['era5','carra2','merra2'].includes(f.source)", source)
+        self.assertIn("реальные метаданные и метеорологическая точность отдельно не валидированы", source)
+        self.assertIn("['era5','merra2'].includes(field.source)", source)
+        self.assertIn("input.disabled=source.id==='carra2'", source)
+        self.assertIn("архив пока отключён; одиночный эксперимент доступен", source)
 
 
 if __name__ == "__main__":

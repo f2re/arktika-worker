@@ -101,14 +101,30 @@ class PmcProjectionTests(unittest.TestCase):
         self.assertGreater(result["passport"]["source_grid"]["transform"][0], 0)
         self.assertAlmostEqual(result["passport"]["source_grid"]["transform"][2], 177.8)
 
-    def test_rejects_irregular_and_curvilinear_sources(self):
+    def test_rejects_irregular_rectilinear_sources(self):
         irregular = self.lon.copy(); irregular[20] += 0.01
         with self.assertRaisesRegex(ValueError, "uniform spacing"):
             reproject_vorticity_to_grid(np.ones((51, 51)), self.lat, irregular, target_grid=self.grid)
-        lat2, lon2 = np.meshgrid(self.lat, self.lon, indexing="ij")
-        lon2 += np.arange(self.lat.size)[:, None] * 1e-3
-        with self.assertRaisesRegex(ValueError, "curvilinear"):
-            reproject_vorticity_to_grid(np.ones((51, 51)), lat2, lon2, target_grid=self.grid)
+
+    def test_reprojects_structured_curvilinear_mesh_from_geolocation_arrays(self):
+        lat, lon = np.meshgrid(np.linspace(68, 73, 51), np.linspace(20, 25, 51), indexing="ij")
+        lon = lon + 0.02 * np.sin(np.deg2rad(lat - 68))
+        lat = lat + 0.015 * np.sin(np.deg2rad(lon - 20))
+        grid = target_grid(lat, lon, crs="EPSG:3413", size=64)
+        source = np.ones_like(lat, dtype=np.float32)
+        source_passport = {"source": "carra2", "valid_time": "2024-01-01T00:00:00Z",
+                           "algorithm_id": "test-vorticity", "algorithm_version": "test-v2",
+                           "grid": {"crs": "EPSG:4326", "transform": [1, 0, 0, 0, -1, 0]}}
+        result = reproject_vorticity_to_grid(source, lat, lon, target_grid=grid,
+                                             source_passport=source_passport)
+        self.assertEqual(result["passport"]["source_grid"]["grid_type"],
+                         "curvilinear_latitude_longitude")
+        self.assertEqual(result["passport"]["source_grid"]["geolocation"],
+                         "latitude_longitude_arrays")
+        self.assertNotIn("transform", result["passport"]["source_grid"])
+        self.assertEqual(result["passport"]["reprojection"]["source_georeferencing"],
+                         "2d_latitude_longitude_geolocation_arrays")
+        np.testing.assert_allclose(result["values"][np.isfinite(result["values"])], 1.0, atol=1e-5)
 
     def test_rejects_nonprojected_crs_and_rotated_or_singular_affines(self):
         bad = dict(self.grid, crs="EPSG:4326")

@@ -48,8 +48,8 @@ class Workstation(ReanalysisMixin, SourceManagerMixin, AutoCalibrationMixin, Pro
   import xarray as xr
   from .pmc_vorticity import derive_relative_vorticity_850
   meta=self.field(identity)
-  if meta.get('source') not in ('era5','merra2'):
-   raise ValueError('Экспериментальная вихревость поддерживает только ERA5 и MERRA-2.')
+  if meta.get('source') not in ('era5','carra2','merra2'):
+   raise ValueError('Экспериментальная вихревость поддерживает только ERA5, CARRA2 и MERRA-2.')
   if meta.get('variable')!='wind' or meta.get('unit')!='m s-1':
    raise ValueError('Нужно кэшированное поле ветра в м/с.')
   if meta.get('level')!=850 or meta.get('time_kind')!='instantaneous_analysis':
@@ -119,6 +119,8 @@ class Workstation(ReanalysisMixin, SourceManagerMixin, AutoCalibrationMixin, Pro
   passport['source_file_digest_attestation']='verified against cached field.nc digest before and after loading'
   passport['source_normalizer_version']=meta.get('version')
   passport['limitations'].append('Ревизия исходного набора данных не сохранена в кэше; версия нормализатора не выдаётся за ревизию источника.')
+  if meta.get('source')=='carra2':
+   passport['limitations'].append('CARRA2 использует ERA5 в граничных условиях; сравнение с ERA5 не является независимой проверкой.')
   if target_grid is not None:
    from .pmc_projection import reproject_vorticity_to_grid
    result=reproject_vorticity_to_grid(result['values'],latitude,longitude,
