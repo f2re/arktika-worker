@@ -23,7 +23,7 @@ from .product_schema import product_passport
 
 
 ALGORITHM_ID = "arktika.experimental_pmc_archive_run"
-ALGORITHM_VERSION = "0.2.0"
+ALGORITHM_VERSION = "0.3.0"
 MAX_FIELDS = 128
 MAX_GRID_PIXELS = 1_048_576
 
@@ -103,6 +103,141 @@ def _utc(value: str) -> datetime:
     return parsed.astimezone(timezone.utc)
 
 
+def _candidate_emergence_evidence(
+    track: dict[str, Any],
+    *,
+    source: str,
+    expected_times: list[str],
+    frame_records: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Describe the archive evidence around a track's first model detection.
+
+    This records an observed candidate-screen transition only. It cannot infer
+    physical genesis, and a missing or failed previous expected frame remains
+    unknown rather than a clear analysis.
+    """
+    points = track.get("points")
+    if not isinstance(points, list) or not points or not isinstance(points[0], dict):
+        raise ValueError("candidate track must contain a first observed point")
+    first_point = points[0]
+    onset = _utc(first_point.get("valid_time"))
+    onset_stamp = onset.isoformat().replace("+00:00", "Z")
+    normalized_expected = [_utc(stamp) for stamp in expected_times]
+    schedule_has_duplicates = len(normalized_expected) != len(set(normalized_expected))
+    expected = sorted(set(normalized_expected))
+    prior_stamps = [stamp for stamp in expected if stamp < onset]
+    previous_expected = prior_stamps[-1] if prior_stamps else None
+    onset_is_scheduled = onset in expected
+
+    completed: dict[datetime, dict[str, Any]] = {}
+    failed: set[datetime] = set()
+    ambiguous: set[datetime] = set()
+    invalid: set[datetime] = set()
+    seen_records: set[datetime] = set()
+    for row in frame_records:
+        if row.get("source") != source:
+            continue
+        stamp_value = row.get("valid_time")
+        try:
+            stamp = _utc(stamp_value)
+        except (TypeError, ValueError):
+            continue
+        if stamp in seen_records:
+            completed.pop(stamp, None)
+            failed.discard(stamp)
+            invalid.discard(stamp)
+            ambiguous.add(stamp)
+            continue
+        seen_records.add(stamp)
+        result = row.get("result")
+        if row.get("status") == "completed" and isinstance(result, dict):
+            completed[stamp] = result
+        elif row.get("status") == "error":
+            failed.add(stamp)
+        else:
+            invalid.add(stamp)
+
+    if schedule_has_duplicates:
+        prior_frame = {
+            "status": "unknown_duplicate_expected_schedule_time",
+            "valid_time": None,
+            "candidate_count": None,
+        }
+    elif not expected:
+        prior_frame = {
+            "status": "unknown_expected_schedule_unavailable",
+            "valid_time": None,
+            "candidate_count": None,
+        }
+    elif not onset_is_scheduled:
+        prior_frame = {
+            "status": "unknown_onset_outside_declared_schedule",
+            "valid_time": (previous_expected.isoformat().replace("+00:00", "Z")
+                           if previous_expected else None),
+            "candidate_count": None,
+        }
+    elif previous_expected is None:
+        prior_frame = {
+            "status": "left_censored_at_archive_window_start",
+            "valid_time": None,
+            "candidate_count": None,
+        }
+    else:
+        prior_stamp = previous_expected.isoformat().replace("+00:00", "Z")
+        previous = completed.get(previous_expected)
+        if previous_expected in ambiguous:
+            prior_frame = {"status": "unknown_ambiguous_previous_expected_frame",
+                           "valid_time": prior_stamp, "candidate_count": None}
+        elif previous_expected in invalid:
+            prior_frame = {"status": "unknown_invalid_previous_expected_frame_record",
+                           "valid_time": prior_stamp, "candidate_count": None}
+        elif previous is not None:
+            prior_candidates = previous.get("candidates")
+            if not isinstance(prior_candidates, list):
+                status = "unknown_previous_processed_frame_invalid_candidates"
+                candidate_count = None
+            else:
+                status = ("previous_processed_frame_had_no_model_candidates"
+                          if not prior_candidates else "previous_processed_frame_had_candidates")
+                candidate_count = len(prior_candidates)
+            prior_frame = {"status": status, "valid_time": prior_stamp,
+                           "candidate_count": candidate_count}
+        else:
+            status = ("unknown_previous_expected_frame_failed"
+                      if previous_expected in failed
+                      else "unknown_previous_expected_frame_missing")
+            prior_frame = {"status": status, "valid_time": prior_stamp,
+                           "candidate_count": None}
+
+    current_result = completed.get(onset, {})
+    satellite = current_result.get("satellite_comparison")
+    satellite_status = (satellite.get("status") if isinstance(satellite, dict)
+                        else "not_supplied")
+    if onset in ambiguous:
+        satellite_status = "unknown_ambiguous_frame_records"
+    elif onset in invalid:
+        satellite_status = "unknown_invalid_frame_record"
+    if not isinstance(satellite_status, str):
+        satellite_status = "unknown_invalid_comparison_status"
+
+    return {
+        "source": source,
+        "track_id": track.get("track_id"),
+        "candidate_id": first_point.get("candidate_id"),
+        "first_detected_time": onset_stamp,
+        "onset_in_expected_schedule": onset_is_scheduled if expected else None,
+        "left_censored": bool(track.get("left_censored")),
+        "prior_expected_steps_in_study_window": len(prior_stamps),
+        "prior_frame": prior_frame,
+        "satellite_comparison_status_at_first_detection": satellite_status,
+        "genesis_assessment": "not_assessed",
+        "interpretation": (
+            "Первая фиксация кандидата модельным экраном не является физическим "
+            "зарождением ПМЦ; спутниковое подтверждение и genesis здесь не оцениваются."
+        ),
+    }
+
+
 def build_archive_report(*, task_id: str, plan: dict[str, Any],
                          expected_times: dict[str, list[str]],
                          interval_hours: dict[str, int],
@@ -147,7 +282,8 @@ def build_archive_report(*, task_id: str, plan: dict[str, Any],
 
         if not source_frames:
             track_rows.append({"source": source, "track_count": 0, "tracks": [],
-                               "unresolved_associations": []})
+                               "unresolved_associations": [],
+                               "candidate_emergence_evidence": []})
             continue
         cadence_hours = interval_hours[source]
         cadence_seconds = float(cadence_hours) * 3600
@@ -175,8 +311,16 @@ def build_archive_report(*, task_id: str, plan: dict[str, Any],
                 next_track += 1
                 tracks.append(track)
             associations.extend(linked["unresolved_associations"])
+        emergence_evidence = [
+            _candidate_emergence_evidence(
+                track, source=source, expected_times=expected,
+                frame_records=frame_records,
+            )
+            for track in tracks
+        ]
         track_rows.append({"source": source, "track_count": len(tracks), "tracks": tracks,
                            "unresolved_associations": associations,
+                           "candidate_emergence_evidence": emergence_evidence,
                            "limitations": linked["limitations"] if segments else []})
 
     incomplete = any(item["unprocessed_steps"] or item["failed_steps"] for item in coverage)
@@ -370,7 +514,7 @@ def build_archive_report(*, task_id: str, plan: dict[str, Any],
         report_limitations = [
             "Отсутствующие, неполные и ошибочные сроки не трактуются как отсутствие ПМЦ.",
             "Треки строятся только внутри непрерывных последовательностей наблюдавшихся модельных кандидатов.",
-            "Начало трека — первый наблюдавшийся срок данного сегмента; место и время зарождения не оцениваются.",
+            "Журнал появления описывает только первый вывод модельного экрана и предшествующие кадры; физическое время и место genesis не оцениваются.",
             "Кандидаты CARRA2 не являются независимой проверкой ERA5 из-за общих граничных условий; спутниковая морфология, steering flow, split/merge и полный QC IMPMCT не входят в этот процесс.",
             "Результат не является независимой метеорологической валидацией или прогнозом.",
         ]
@@ -404,7 +548,7 @@ def build_archive_report(*, task_id: str, plan: dict[str, Any],
         report_limitations = [
             "Отсутствующие, неполные и ошибочные сроки не трактуются как отсутствие ПМЦ.",
             "Треки строятся только внутри непрерывных последовательностей наблюдавшихся модельных кандидатов.",
-            "Начало трека — первый наблюдавшийся срок данного сегмента; место и время зарождения не оцениваются.",
+            "Журнал появления описывает только первый вывод модельного экрана и предшествующие кадры; физическое время и место genesis не оцениваются.",
             "Кандидаты CARRA2 не являются независимой проверкой ERA5 из-за общих граничных условий; спутниковая морфология, steering flow, split/merge и полный QC IMPMCT не входят в этот процесс.",
             "Результат не является независимой метеорологической валидацией или прогнозом.",
         ]
