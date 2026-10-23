@@ -12,6 +12,7 @@ import io
 import json
 import math
 import re
+import random
 import ssl
 import threading
 import time
@@ -245,11 +246,35 @@ class Client:
                 if attempt==2:raise
                 r=None
             if r and (r.status not in (429,502,503,504) or attempt==2):return r
+            retry_after = r.headers.get('retry-after') if r else None
             if r:r.close()
+            delay = self._retry_delay(attempt, retry_after)
             if cancel:
-                if cancel.wait(0.5*2**attempt):raise Cancelled()
-            else:time.sleep(0.5*2**attempt)
+                if cancel.wait(delay):raise Cancelled()
+            else:time.sleep(delay)
         raise NetworkError('Сетевая ошибка.')
+    @staticmethod
+    def _retry_delay(attempt, retry_after=None):
+        """Return a bounded delay; honor valid Retry-After seconds or HTTP dates."""
+        maximum = 30.0
+        if retry_after is not None:
+            try:
+                delay = float(retry_after.strip())
+                if not math.isfinite(delay) or delay < 0:
+                    raise ValueError()
+            except (ValueError, AttributeError):
+                try:
+                    retry_at = parsedate_to_datetime(retry_after)
+                    if retry_at.tzinfo is None:
+                        retry_at = retry_at.replace(tzinfo=dt.timezone.utc)
+                    delay = max(0.0, (retry_at - dt.datetime.now(dt.timezone.utc)).total_seconds())
+                except (TypeError, ValueError, OverflowError):
+                    delay = None
+            if delay is not None:
+                return min(maximum, delay)
+        # Bounded exponential backoff with jitter avoids synchronized retries.
+        ceiling = min(maximum, 0.5 * (2 ** attempt))
+        return random.uniform(ceiling * 0.5, ceiling)
     def api_json(self,url,method='GET',body=None,cancel=None):
         for _ in range(4):
             self.validate(url,api=True)
