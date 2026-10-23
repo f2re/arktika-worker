@@ -4,6 +4,7 @@ import numpy as np
 
 from arktika.pmc_detection import (
     ALGORITHM_VERSION,
+    _smooth_uniform_radius,
     detect_candidates,
 )
 
@@ -33,6 +34,22 @@ class PmcDetectionTests(unittest.TestCase):
                 "grid": dict(self.grid),
             }, **kwargs
         )
+
+    def test_uniform_radius_filter_uses_circular_metric_footprint_and_renormalizes_nodata(self):
+        values = np.full((5, 5), np.nan)
+        values[2, 2] = 5.0
+        smoothed = _smooth_uniform_radius(values, radius_km=60.0,
+                                          resolution_x_m=60000, resolution_y_m=60000)
+        # At this deliberately coarse synthetic grid only the center cell is valid;
+        # normalized convolution must preserve it rather than dilute it with nodata.
+        self.assertEqual(5.0, smoothed[2, 2])
+
+        values = np.zeros((5, 5), dtype=float)
+        values[2, 2] = 5.0
+        smoothed = _smooth_uniform_radius(values, radius_km=60.0,
+                                          resolution_x_m=60000, resolution_y_m=60000)
+        self.assertAlmostEqual(1.0, smoothed[2, 2])
+        self.assertEqual(0.0, smoothed[1, 1])  # diagonal lies outside the 60-km disk
 
     def test_detects_only_unconfirmed_experimental_candidates(self):
         result = self.run_detector()
