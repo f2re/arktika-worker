@@ -5,11 +5,12 @@ CARRA2: контракт /api/retrieve/v1/processes/reanalysis-pan-carra,
 MERRA-2: только instantaneous ASM, не усреднённые tavg-коллекции.
 """
 from __future__ import annotations
-from dataclasses import dataclass
+
 import datetime as dt
 import hashlib
 import json
 import math
+from dataclasses import dataclass
 
 VERSION = 'reanalysis-fields-1'
 SOURCES = {
@@ -68,6 +69,15 @@ def catalogue() -> dict:
                                    levels=LEVELS[source] if v.vertical=='pressure' else [],
                                    styles=['fill','contours','fill_contours'] if not key.startswith('wind') else ['fill','arrows','fill_arrows']))
         rows.append(dict(id=source,**spec,variables=fields))
+    from .adapters import DEFAULT_REGISTRY, load_installed_adapters
+    load_installed_adapters()
+    existing={row['id'] for row in rows}
+    for source,adapter in DEFAULT_REGISTRY.snapshot().items():
+        if source in existing:
+            continue
+        entry=adapter.catalogue_entry()
+        if entry is not None:
+            rows.append(entry)
     return {'sources':rows,'version':VERSION,'time_policy':'exact_analysis_only'}
 
 
@@ -97,8 +107,18 @@ def validate_area(value) -> list[float]:
 
 
 def request_plan(data: dict) -> dict:
+    """Resolve source-specific planning through its registered local adapter."""
+    source = data.get('source') if isinstance(data, dict) else None
+    from .adapters import get_runtime_adapter
+    return get_runtime_adapter(source).plan(data)
+
+
+def _build_request_plan(data: dict, *, expected_source: str | None = None) -> dict:
+    """Legacy provider planner used by the built-in adapters during migration."""
     source = str(data.get('source',''))
     key = str(data.get('variable',''))
+    if expected_source is not None and source != expected_source:
+        raise ValueError('План запроса не совпадает с адаптером источника.')
     if source not in SOURCES or key not in VARIABLES or not supports(source,key):
         raise ValueError('Такого поля нет в каталоге выбранного источника.')
     t = stamp(data.get('time',''))
