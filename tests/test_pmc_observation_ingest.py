@@ -1,5 +1,6 @@
 """Software contract tests for attributed satellite mask import; no accuracy claims."""
 import hashlib
+from pathlib import Path
 import tempfile
 import unittest
 
@@ -69,6 +70,41 @@ class PmcObservationIngest(unittest.TestCase):
         state=self.app.pmc_observations_state()
         self.assertEqual([item['observation_id'] for item in state['observations']],[result['observation_id']])
         self.assertNotIn('path',state['observations'][0])
+
+    def test_preview_reports_coverage_counts_without_creating_storage(self):
+        result=self.app.preview_pmc_observation(
+            self.labels_bytes,self.coverage_bytes,self.metadata)
+        self.assertEqual(result['status'],'preview_only')
+        self.assertEqual(result['ingestion_status'],'not_ingested')
+        self.assertNotIn('status',result['observation'])
+        summary=result['structural_summary']
+        self.assertEqual(summary['total_pixels'],6)
+        self.assertEqual(summary['covered_pixels'],4)
+        self.assertEqual(summary['unknown_pixels'],2)
+        self.assertEqual(summary['positive_label_pixels_within_coverage'],2)
+        self.assertEqual(summary['coverage_fraction'],4/6)
+        self.assertRegex(result['source_package_sha256'],r'^[0-9a-f]{64}$')
+        self.assertFalse((Path(self.tmp.name)/'reanalysis'/'pmc-observations').exists())
+        self.assertIn('метеорологической оценкой',result['meaning'])
+
+    def test_preview_package_hash_includes_exact_sidecar_bytes(self):
+        first=self.app.preview_pmc_observation(
+            self.labels_bytes,self.coverage_bytes,self.metadata,
+            metadata_source_bytes=b'{"source":"satellite-provider"}')
+        second=self.app.preview_pmc_observation(
+            self.labels_bytes,self.coverage_bytes,self.metadata,
+            metadata_source_bytes=b'{ "source" : "satellite-provider" }')
+        self.assertNotEqual(first['source_package_sha256'],second['source_package_sha256'])
+
+    def test_preview_rejects_invalid_inputs_with_same_validation_as_import(self):
+        with self.assertRaisesRegex(ValueError,'GeoTIFF'):
+            self.app.preview_pmc_observation(b'<html>denied</html>',
+                self.coverage_bytes,self.metadata)
+        bad={**self.metadata,'label_convention':'1=ice'}
+        with self.assertRaisesRegex(ValueError,'Соглашение меток'):
+            self.app.preview_pmc_observation(self.labels_bytes,
+                self.coverage_bytes,bad)
+        self.assertFalse((Path(self.tmp.name)/'reanalysis'/'pmc-observations').exists())
 
     def test_exact_time_observation_is_reprojected_for_archive_grid(self):
         self.register()

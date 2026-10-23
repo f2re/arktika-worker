@@ -99,6 +99,9 @@
 | Метод и путь | Входные параметры | Описание / результат |
 |---|---|---|
 | `GET /api/reanalysis/state` | — | Каталог доступных переменных, кэшированные поля на диске, активный стек слоёв, статус фоновой задачи |
+| `POST /api/pmc/observations/preview` | multipart: `labels.tif`, `coverage.tif`, `metadata.json` | Проверяет локальный пакет без сохранения; возвращает паспорт, сетку, хеш и структурную сводку покрытия. Не подтверждает метеорологическую корректность меток |
+| `POST /api/pmc/observations/import` | multipart: `labels.tif`, `coverage.tif`, `metadata.json` | Повторно проверяет и сохраняет бинарные метки с отдельным покрытием; статус данных остаётся `imported_unverified` |
+| `GET /api/pmc/observations` | — | Список целостных локально сохранённых масок наблюдений без путей и секретов |
 | `POST /api/reanalysis/add` | `{source: "era5" \| "carra2" \| "merra2", variable, time, level?, area: [N, W, S, E]}` | Постановка задачи скачивания и извлечения поля реанализа в фоновом воркере. Сохраняет `field.nc` и `metadata.json` |
 | `POST /api/reanalysis/import` | `{source, variable, time, level?, area, path}` | Импорт локального NetCDF/GRIB файла пользователя в качестве поля реанализа |
 | `POST /api/reanalysis/stack` | `{stack: [{id, opacity, style, visible}, ...]}` | Обновление конфигурации рабочего стека карты (до 8 слоёв; стили: `fill`, `arrows`, `fill_arrows`, `contours`, `fill_contours`) |

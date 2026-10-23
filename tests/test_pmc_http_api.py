@@ -35,14 +35,14 @@ class PmcRunHttpTests(unittest.TestCase):
                      'X-Arktika-Request':'1'},data=json.dumps(data).encode())
         return self.opener.open(req,timeout=5)
 
-    def multipart(self,parts):
+    def multipart(self,parts,endpoint='/api/pmc/observations/import'):
         boundary='arktika-test-boundary'
         chunks=[]
         for name,filename,payload in parts:
             chunks.extend((f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"; filename="{filename}"\r\n'.encode(),
                            b'Content-Type: application/octet-stream\r\n\r\n',payload,b'\r\n'))
         chunks.append(f'--{boundary}--\r\n'.encode());body=b''.join(chunks)
-        req=urllib.request.Request(self.url+'/api/pmc/observations/import',data=body,
+        req=urllib.request.Request(self.url+endpoint,data=body,
             headers={'Cookie':'arktika_session=pmc-test','Content-Type':f'multipart/form-data; boundary={boundary}',
                      'X-Arktika-Request':'1'})
         return self.opener.open(req,timeout=5)
@@ -135,13 +135,27 @@ class PmcRunHttpTests(unittest.TestCase):
         returned={'observation_id':'a'*24,'observation':{'source':'test'},'status':'imported_unverified'}
         with patch.object(self.app,'register_pmc_observation',return_value=returned) as register:
             with self.multipart(parts) as response:result=json.loads(response.read())
-        register.assert_called_once_with(b'labels',b'coverage',metadata)
+        register.assert_called_once_with(b'labels',b'coverage',metadata,
+                                         metadata_source_bytes=json.dumps(metadata).encode())
         self.assertEqual(result,returned)
         bad=[('labels','wrong.tif',b'labels'),*parts[1:]]
         with patch.object(self.app,'register_pmc_observation',return_value=returned) as register:
             with self.assertRaises(urllib.error.HTTPError) as cm:self.multipart(bad)
             self.assertEqual(cm.exception.code,400)
             register.assert_not_called()
+
+    def test_multipart_preview_validates_without_registering_observation(self):
+        metadata={'schema_version':'arktika.pmc_satellite_observation.v1'}
+        parts=[('labels','labels.tif',b'labels'),('coverage','coverage.tif',b'coverage'),
+               ('metadata','metadata.json',json.dumps(metadata).encode())]
+        preview={'status':'preview_only','ingestion_status':'not_ingested'}
+        with patch.object(self.app,'preview_pmc_observation',return_value=preview) as check, \
+             patch.object(self.app,'register_pmc_observation') as register:
+            with self.multipart(parts,'/api/pmc/observations/preview') as response:
+                self.assertEqual(json.loads(response.read()),preview)
+        check.assert_called_once_with(b'labels',b'coverage',metadata,
+                                      metadata_source_bytes=json.dumps(metadata).encode())
+        register.assert_not_called()
 
 
 if __name__=='__main__':
