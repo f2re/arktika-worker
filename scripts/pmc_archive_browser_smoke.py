@@ -178,6 +178,21 @@ def main():
                     assert not any("/api/queue" in url or "/api/pmc/archive/run" in url for _, url in requests)
                     report["checks"].append({"name": "План не запускает загрузки или детектор", "passed": True})
 
+                    page.evaluate("""() => {
+                      api = async () => ({tracks_by_source:[{source:'era5',candidate_emergence_evidence:[{
+                        source:'era5',first_detected_time:'2024-01-01T01:00:00Z',candidate_id:'e1',
+                        prior_frame:{status:'previous_processed_frame_had_no_model_candidates'},
+                        cross_source_evidence_at_first_detection:{status:'compared_exact_utc',pairs:[{other_source:'merra2',status:'matched_candidate',matches:[{candidate_id:'m1'}]}]},
+                        satellite_evidence_at_first_detection:{status:'comparison_only',observation:{source:'manual',product_id:'labels-v1',observation_id:'o'.repeat(24)},coverage:{observed_pixels:20}}
+                      }]}]});
+                      pmcShowArchiveEvidence('synthetic-task',document.querySelector('#pmcArchiveTask'));
+                    }""")
+                    page.locator("#pmcArchiveTask button").click()
+                    check(
+                        "Отчёт показывает первые появления, точные сравнения и оговорку о genesis",
+                        '()=>{const t=document.querySelector("#pmcArchiveTask").textContent;return t.includes("2024-01-01T01:00:00Z")&&t.includes("merra2: совпадение m1")&&t.includes("manual / labels-v1")&&t.includes("не является физическим зарождением")}',
+                    )
+
                     for width in (1024, 390):
                         page.set_viewport_size({"width": width, "height": 844})
                         check(

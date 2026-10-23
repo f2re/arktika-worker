@@ -23,7 +23,7 @@ from .product_schema import product_passport
 
 
 ALGORITHM_ID = "arktika.experimental_pmc_archive_run"
-ALGORITHM_VERSION = "0.3.0"
+ALGORITHM_VERSION = "0.4.0"
 MAX_FIELDS = 128
 MAX_GRID_PIXELS = 1_048_576
 
@@ -238,6 +238,86 @@ def _candidate_emergence_evidence(
     }
 
 
+def _onset_cross_source_evidence(
+    emergence: dict[str, Any], agreement: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Link exact-time source matches to a model candidate's first detection."""
+    if agreement is None:
+        return {"status": "not_applicable_single_source", "pairs": []}
+    stamp = emergence.get("first_detected_time")
+    source = emergence.get("source")
+    candidate_id = emergence.get("candidate_id")
+    if not isinstance(candidate_id, str) or not candidate_id.strip():
+        return {"status": "unknown_onset_candidate_id_missing", "pairs": []}
+    frames = agreement.get("frames")
+    if not isinstance(frames, list):
+        return {"status": "unknown_comparison_unavailable", "pairs": []}
+    exact = [row for row in frames if isinstance(row, dict)
+             and row.get("valid_time") == stamp]
+    if len(exact) != 1:
+        return {"status": "unknown_exact_time_frame_missing_or_ambiguous", "pairs": []}
+    frame = exact[0]
+    if frame.get("status") != "comparable":
+        return {"status": frame.get("status", "unknown_invalid_comparison_frame"),
+                "missing_sources": frame.get("missing_sources", []), "pairs": []}
+    pair_rows = frame.get("pairs")
+    if not isinstance(pair_rows, list):
+        return {"status": "unknown_invalid_pair_list", "pairs": []}
+    relevant = []
+    for pair in pair_rows:
+        if not isinstance(pair, dict) or source not in pair.get("sources", []):
+            continue
+        sources = pair.get("sources", [])
+        matches = pair.get("matches")
+        if not isinstance(matches, list):
+            continue
+        source_is_left = sources[0] == source
+        matched = []
+        for item in matches:
+            if not isinstance(item, dict):
+                continue
+            own_key = "left_candidate_id" if source_is_left else "right_candidate_id"
+            other_key = "right_candidate_id" if source_is_left else "left_candidate_id"
+            if item.get(own_key) == candidate_id:
+                matched.append({"candidate_id": item.get(other_key),
+                                "distance_m": item.get("distance_m")})
+        other_source = sources[1] if source_is_left else sources[0]
+        relevant.append({"other_source": other_source,
+                         "status": "matched_candidate" if matched else "no_spatial_match_within_radius",
+                         "matches": matched})
+    if not relevant:
+        return {"status": "unknown_source_pair_not_comparable", "pairs": []}
+    return {"status": "compared_exact_utc", "pairs": relevant}
+
+
+def _onset_satellite_evidence(
+    emergence: dict[str, Any], satellite_frames: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Attach only the exact source/time observation comparison, if available."""
+    source = emergence.get("source")
+    stamp = emergence.get("first_detected_time")
+    exact = []
+    for row in satellite_frames:
+        if not isinstance(row, dict) or row.get("source") != source:
+            continue
+        try:
+            row_stamp = _utc(row.get("valid_time")).isoformat().replace("+00:00", "Z")
+        except (TypeError, ValueError):
+            continue
+        if row_stamp == stamp:
+            exact.append(row)
+    if len(exact) != 1:
+        return {"status": "unknown_exact_time_comparison_missing_or_ambiguous"}
+    row = exact[0]
+    result = {"status": row.get("status", "unknown_invalid_comparison_status")}
+    if row.get("status") == "comparison_only":
+        result.update({key: row[key] for key in ("observation", "coverage", "metrics")
+                       if key in row})
+    elif isinstance(row.get("reason_code"), str):
+        result["reason_code"] = row["reason_code"]
+    return result
+
+
 def build_archive_report(*, task_id: str, plan: dict[str, Any],
                          expected_times: dict[str, list[str]],
                          interval_hours: dict[str, int],
@@ -448,6 +528,12 @@ def build_archive_report(*, task_id: str, plan: dict[str, Any],
     else:
         satellite_status = "not_supplied"
         satellite_metrics = None
+    for row in track_rows:
+        for evidence in row["candidate_emergence_evidence"]:
+            evidence["cross_source_evidence_at_first_detection"] = (
+                _onset_cross_source_evidence(evidence, source_agreement))
+            evidence["satellite_evidence_at_first_detection"] = (
+                _onset_satellite_evidence(evidence, satellite_frames))
     passport = None
     if isinstance(target_grid, dict):
         # The product passport describes only successfully processed frames.

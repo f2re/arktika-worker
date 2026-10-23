@@ -319,6 +319,63 @@ class PmcArchiveRunTests(unittest.TestCase):
         self.assertEqual("comparable", agreement["frames"][0]["status"])
         self.assertEqual(1, len(agreement["frames"][0]["pairs"][0]["matches"]))
 
+    def test_candidate_emergence_links_exact_time_cross_source_and_satellite_evidence(self):
+        stamp = "2024-01-01T01:00:00Z"
+        records = [
+            {"field_id": "a" * 24, "source": "era5", "valid_time": stamp,
+             "status": "completed", "result": frame(1, "era5", "e1")},
+            {"field_id": "b" * 24, "source": "merra2", "valid_time": stamp,
+             "status": "completed", "result": frame(1, "merra2", "m1")},
+        ]
+        comparison = {
+            "status": "comparison_only",
+            "observation": {"source": "manual_satellite", "product_id": "mask-v1",
+                            "observation_id": "o" * 24, "valid_time": stamp,
+                            "grid": dict(GRID)},
+            "metrics": {"true_positive_pixels": 1, "false_positive_pixels": 0,
+                        "false_negative_pixels": 0, "true_negative_pixels": 399},
+            "coverage": {"observed_pixels": 400, "unknown_pixels": 0},
+        }
+        report = build_archive_report(
+            task_id="t" * 32, plan={"sources": ["era5", "merra2"]},
+            expected_times={"era5": [stamp], "merra2": [stamp]},
+            interval_hours={"era5": 1, "merra2": 1}, frame_records=records,
+            cached_fields=[], target_grid=GRID,
+            satellite_comparisons=[{"source": "era5", "valid_time": stamp,
+                                    "grid": dict(GRID), "comparison": comparison}],
+        )
+        evidence = report["tracks_by_source"][0]["candidate_emergence_evidence"][0]
+        cross = evidence["cross_source_evidence_at_first_detection"]
+        self.assertEqual("compared_exact_utc", cross["status"])
+        self.assertEqual("merra2", cross["pairs"][0]["other_source"])
+        self.assertEqual("matched_candidate", cross["pairs"][0]["status"])
+        satellite = evidence["satellite_evidence_at_first_detection"]
+        self.assertEqual("comparison_only", satellite["status"])
+        self.assertEqual("o" * 24, satellite["observation"]["observation_id"])
+        self.assertEqual(400, satellite["coverage"]["observed_pixels"])
+        self.assertEqual("not_assessed", evidence["genesis_assessment"])
+
+    def test_candidate_emergence_does_not_use_nearest_cross_source_time(self):
+        onset = "2024-01-01T01:00:00Z"
+        other = "2024-01-01T02:00:00Z"
+        records = [
+            {"field_id": "a" * 24, "source": "era5", "valid_time": onset,
+             "status": "completed", "result": frame(1, "era5", "e1")},
+            {"field_id": "b" * 24, "source": "merra2", "valid_time": other,
+             "status": "completed", "result": frame(2, "merra2", "m1")},
+        ]
+        report = build_archive_report(
+            task_id="t" * 32, plan={"sources": ["era5", "merra2"]},
+            expected_times={"era5": [onset], "merra2": [other]},
+            interval_hours={"era5": 1, "merra2": 1}, frame_records=records,
+            cached_fields=[], target_grid=GRID,
+        )
+        evidence = report["tracks_by_source"][0]["candidate_emergence_evidence"][0]
+        self.assertEqual("not_common_expected_time",
+                         evidence["cross_source_evidence_at_first_detection"]["status"])
+        self.assertEqual("unknown_not_compared",
+                         evidence["satellite_evidence_at_first_detection"]["status"])
+
     def test_satellite_reprojection_failure_reason_is_reported_as_unknown(self):
         stamp = "2024-01-01T00:00:00Z"
         report = build_archive_report(

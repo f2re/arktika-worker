@@ -310,11 +310,37 @@ async function pmcStartArchive(){
   if(revision!==S.pmcArchivePlanRevision||S.pmcArchivePlan!==plan)throw Error('Параметры изменились при подготовке сетки. Составьте план заново.');
   await api('/api/pmc/archive/run',{plan,field_ids,target_grid});await pmcRefreshArchiveTask();
 }
+function pmcRenderArchiveEvidence(report,root){
+  const rows=[];for(const group of Array.isArray(report?.tracks_by_source)?report.tracks_by_source:[]){
+    for(const evidence of Array.isArray(group?.candidate_emergence_evidence)?group.candidate_emergence_evidence:[])rows.push(evidence);
+  }
+  const panel=document.createElement('details');panel.className='pmc-onset-evidence';
+  const summary=document.createElement('summary');summary.textContent=`Первые появления модельных кандидатов · ${rows.length}`;panel.append(summary);
+  const disclaimer=document.createElement('p');disclaimer.className='micro';disclaimer.textContent='Первая фиксация модельного кандидата не является физическим зарождением ПМЦ. Совпадения ниже показывают только точные сравнения кандидатов и спутниковых масок.';panel.append(disclaimer);
+  if(rows.length){
+    const wrap=document.createElement('div');wrap.className='pmc-run-table';wrap.tabIndex=0;wrap.setAttribute('role','region');wrap.setAttribute('aria-label','Свидетельства первых появлений кандидатов');
+    const table=document.createElement('table');table.innerHTML='<thead><tr><th>Источник</th><th>Первый срок UTC</th><th>Кандидат</th><th>Предыдущий кадр</th><th>Сравнение источников</th><th>Спутниковая маска</th></tr></thead>';
+    const body=document.createElement('tbody');for(const e of rows){
+      const pairs=e.cross_source_evidence_at_first_detection?.pairs||[];
+      const cross=pairs.length?pairs.map(p=>`${p.other_source||'?'}: ${p.status==='matched_candidate'?'совпадение '+(p.matches||[]).map(m=>m.candidate_id||'?').join(', '):p.status||'неизвестно'}`).join('; '):(e.cross_source_evidence_at_first_detection?.status||'не сравнивалось');
+      const satellite=e.satellite_evidence_at_first_detection||{},observation=satellite.observation||{},coverage=satellite.coverage||{};
+      const sat=satellite.status==='comparison_only'?`${observation.source||'?'} / ${observation.product_id||'?'} · ${observation.observation_id||'?'} · покрыто ${coverage.observed_pixels??'?'} px`:(satellite.reason_code||satellite.status||'неизвестно');
+      const tr=document.createElement('tr');for(const value of [e.source,e.first_detected_time,e.candidate_id,e.prior_frame?.status,cross,sat]){const td=document.createElement('td');td.textContent=value===undefined||value===null?'—':String(value);tr.append(td);}body.append(tr);
+    }
+    table.append(body);wrap.append(table);panel.append(wrap);
+  }else{const empty=document.createElement('p');empty.className='empty';empty.textContent='Для этого отчёта нет записей о первых появлениях.';panel.append(empty);}
+  root.append(panel);
+}
+async function pmcShowArchiveEvidence(id,root){
+  const button=document.createElement('button');button.type='button';button.className='tonal';button.textContent='Показать первые появления и сравнения';
+  button.onclick=async()=>{button.disabled=true;try{const report=await api('/api/pmc/archive/report?id='+encodeURIComponent(id));pmcRenderArchiveEvidence(report,root);button.remove();}catch(e){button.disabled=false;pmcFeedback('Отчёт о первых появлениях недоступен: '+e.message,'error-text');}};
+  root.append(button);
+}
 async function pmcRefreshArchiveTask(){
   const root=$('#pmcArchiveTask');if(!root)return;try{const task=await api('/api/pmc/archive/state');root.replaceChildren();
     if(task.status==='idle'){root.textContent='Архивная задача ещё не запускалась.';$('#pmcArchiveResume').hidden=true;$('#pmcArchiveCancel').hidden=true;return;}
     const p=document.createElement('p');p.textContent=`${task.message||task.status} · обработано ${task.completed||0} из ${task.total||0}${task.failed?` · ошибок ${task.failed}`:''}`;root.append(p);
-    if(task.id){const report=document.createElement('a');report.className='text-button';report.href='/api/pmc/archive/report?id='+encodeURIComponent(task.id);report.download=`pmc-archive-${task.id}.json`;report.textContent='Скачать текущий отчёт JSON';root.append(report);}
+    if(task.id){const report=document.createElement('a');report.className='text-button';report.href='/api/pmc/archive/report?id='+encodeURIComponent(task.id);report.download=`pmc-archive-${task.id}.json`;report.textContent='Скачать текущий отчёт JSON';root.append(report);if(task.status!=='running')pmcShowArchiveEvidence(task.id,root);}
     $('#pmcArchiveCancel').hidden=task.status!=='running';$('#pmcArchiveResume').hidden=!(task.resume_available&&['interrupted','cancelled','error','partial'].includes(task.status));
     if(task.status==='running'){if(S.pmcArchiveTimer)clearTimeout(S.pmcArchiveTimer);S.pmcArchiveTimer=setTimeout(()=>pmcRefreshArchiveTask().catch(()=>{}),1300);}
   }catch(e){root.textContent='Состояние архивной задачи недоступно: '+e.message;}
