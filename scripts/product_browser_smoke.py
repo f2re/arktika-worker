@@ -71,7 +71,11 @@ def main():
                     page.locator('#productsDialog').wait_for(state='visible')
                     page.locator(f'#savedProducts button[data-id="{identity}"]').click()
                     wait(f'()=>S.product?.id==={json.dumps(identity)}&&!S.busy&&!UI.activeBuild')
-                    wait(f'()=>S.product?.id==={json.dumps(identity)}&&document.querySelector("#productStyleOpen")&&!document.querySelector("#productStyleOpen").disabled')
+                    try:
+                        wait(f'()=>S.product?.id==={json.dumps(identity)}&&document.querySelector("#productStyleOpen")&&!document.querySelector("#productStyleOpen").disabled')
+                    except AssertionError as error:
+                        state=page.evaluate('()=>({id:S.product?.id,styleable:productStyleable(S.product),disabled:document.querySelector("#productStyleOpen")?.disabled,disableTrace:window.__styleDisableTrace,toast:document.querySelector("#toast")?.textContent})')
+                        raise AssertionError(f'Открытие сохранённого продукта не подготовило шкалу: {state}') from error
                     style_state=page.evaluate('async()=>{const id=S.product?.id;let profile;try{const r=await fetch("/api/product/style?id="+encodeURIComponent(id));profile={status:r.status,body:await r.json()};}catch(e){profile={error:String(e)}}return {id,files:S.product?.files,quantity_kind:S.product?.legend?.quantity_kind,version:S.product?.passport?.algorithm?.version,styleable:productStyleable(S.product),button:!!document.querySelector("#productStyleOpen"),disabled:document.querySelector("#productStyleOpen")?.disabled,disableTrace:window.__styleDisableTrace,toast:document.querySelector("#toast")?.textContent,profile}}')
                     assert style_state['button'] and not style_state['disabled'], f'Продукт открылся, но шкала недоступна: {style_state}'
                 def export_product_json(identity):
