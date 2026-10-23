@@ -7,9 +7,11 @@ optional comparison and never upgrades a candidate to a confirmed PMC.
 The vorticity thresholds and circular uniform-radius smoothing are based on
 the low-threshold Nordic Seas IMPMCT settings (Fang et al., 2025). This
 prototype retains connected areas above 1.0e-4 s-1 whose peak reaches
-1.2e-4 s-1. It does not implement the paper's peak partitioning, temporal
-tracking/steering, satellite morphology model, or complete quality controls.
-Consequently its output is not a reproduction or validation of IMPMCT.
+1.2e-4 s-1. It adds a discrete contour-core plus nearest-projected-grid
+remainder approximation, not interpolated valley lines or the complete
+published peak-partition method. Temporal tracking/steering, satellite
+morphology, and complete quality controls are absent. Its output is not a
+reproduction or validation of IMPMCT.
 """
 from __future__ import annotations
 
@@ -22,20 +24,23 @@ from pyproj import CRS
 from scipy import ndimage
 
 from .product_schema import product_passport
+from .pmc_partition import partition_component
 
 ALGORITHM_ID = "arktika.experimental_pmc_candidates"
-ALGORITHM_VERSION = "0.4.0"
+ALGORITHM_VERSION = "0.5.0"
 METHOD_REFERENCE = "Fang et al. (2025), IMPMCT, doi:10.5194/essd-17-6049-2025"
 PARAMETERS = {
     "uniform_radius_km": 60.0,
     "smoothing_operator": "circular uniform mean; nodata-renormalized",
     "minimum_vorticity_s-1": 1.0e-4,
     "peak_vorticity_s-1": 1.2e-4,
-    "peak_diagnostic": "8-neighbour local maxima; maximin saddle isolation diagnostic",
+    "peak_diagnostic": "8-neighbour local maxima with discrete max-tree saddles and experimental contour partition",
     "peak_isolation_gamma": 0.15,
-    "peak_isolation_method": "discrete 8-neighbour maximum-bottleneck path; global peak uses component threshold reference",
+    "peak_isolation_method": "discrete 8-neighbour max-tree; global peak uses component threshold reference",
     "peak_isolation_max_component_cells": 16384,
     "peak_isolation_max_local_maxima": 128,
+    "partition_contour_interval_s-1": 1.0e-6,
+    "partition_rule": "isolated contour core plus nearest projected-grid remainder; candidate-only",
     "connectivity": 8,
     "quantity": "850-hPa relative vorticity",
 }
@@ -99,7 +104,7 @@ def _components(mask: np.ndarray) -> list[list[tuple[int, int]]]:
     return found
 
 
-def _local_peak_diagnostics(field: np.ndarray, component: np.ndarray) -> list[dict[str, Any]]:
+def _local_peak_diagnostics(field: np.ndarray, component: np.ndarray) -> tuple[list[dict[str, Any]], int]:
     """Describe local peaks without partitioning or changing a candidate area.
 
     This is a discrete diagnostic only. It does not reproduce the published
@@ -109,25 +114,43 @@ def _local_peak_diagnostics(field: np.ndarray, component: np.ndarray) -> list[di
     neighborhood_max = ndimage.maximum_filter(field, size=3, mode="constant", cval=-np.inf)
     peak_cells = component & np.isfinite(field) & (field >= PARAMETERS["peak_vorticity_s-1"])
     peak_cells &= field == neighborhood_max
-    peaks = []
-    for plateau in _components(peak_cells):
-        rows = np.fromiter((cell[0] for cell in plateau), dtype=int)
-        cols = np.fromiter((cell[1] for cell in plateau), dtype=int)
-        values = field[rows, cols]
-        peak = float(np.max(values))
-        peaks.append({
-            "peak_vorticity_s-1": peak,
-            "peak_pixel_rc": [float(np.mean(rows)), float(np.mean(cols))],
-            "_seed_rc": [int(rows[0]), int(cols[0])],
-            "plateau_pixel_count": int(len(plateau)),
+    labels, total = ndimage.label(peak_cells, structure=np.ones((3, 3), dtype=np.uint8))
+    if total == 0:
+        return [], 0
+    # Aggregate by raster label with fixed-size arrays; never materialize a Python
+    # object per maximum. The preview is deterministic and bounded by the cap.
+    flat_labels = labels.ravel()
+    occupied = np.flatnonzero(flat_labels)
+    ids = flat_labels[occupied]
+    rows, cols = np.unravel_index(occupied, labels.shape)
+    values = field.ravel()[occupied]
+    counts = np.bincount(ids, minlength=total + 1)
+    row_sums = np.bincount(ids, weights=rows, minlength=total + 1)
+    col_sums = np.bincount(ids, weights=cols, minlength=total + 1)
+    maxima = np.full(total + 1, -np.inf)
+    np.maximum.at(maxima, ids, values)
+    first_positions = np.full(total + 1, flat_labels.size, dtype=np.int64)
+    np.minimum.at(first_positions, ids, occupied)
+    peak_ids = np.arange(1, total + 1)
+    order = np.lexsort((col_sums[peak_ids] / counts[peak_ids],
+                        row_sums[peak_ids] / counts[peak_ids], -maxima[peak_ids]))
+    cap = int(PARAMETERS["peak_isolation_max_local_maxima"])
+    preview = []
+    for label in peak_ids[order[:cap]]:
+        preview.append({
+            "peak_vorticity_s-1": float(maxima[label]),
+            "peak_pixel_rc": [float(row_sums[label] / counts[label]),
+                              float(col_sums[label] / counts[label])],
+            "_seed_rc": [int(first_positions[label] // labels.shape[1]),
+                         int(first_positions[label] % labels.shape[1])],
+            "plateau_pixel_count": int(counts[label]),
         })
-    return sorted(peaks, key=lambda item: (
-        -item["peak_vorticity_s-1"], item["peak_pixel_rc"][0], item["peak_pixel_rc"][1]))
+    return preview, int(total)
 
 
 def _peak_saddle_diagnostics(field: np.ndarray, component: np.ndarray,
                              peaks: list[dict[str, Any]],
-                             threshold: float) -> list[dict[str, Any]]:
+                             threshold: float) -> list[dict[str, Any]] | None:
     """Estimate peak isolation by maximin connectivity on the discrete grid.
 
     A descending-value union-find sweep records the merge level of each peak
@@ -205,6 +228,7 @@ def _peak_saddle_diagnostics(field: np.ndarray, component: np.ndarray,
         diagnostics.append({
             "peak_vorticity_s-1": peak_value,
             "peak_pixel_rc": peak["peak_pixel_rc"],
+            "peak_seed_pixel_rc": peak["_seed_rc"],
             "saddle_vorticity_s-1": saddle,
             "relative_isolation_contrast": contrast,
             "isolated_by_experimental_gamma": contrast > PARAMETERS["peak_isolation_gamma"],
@@ -389,41 +413,74 @@ def detect_candidates(vorticity_850: np.ndarray, *, grid: dict[str, Any],
             continue
         component = np.zeros(array.shape, dtype=bool)
         component[ys, xs] = True
-        local_peaks = _local_peak_diagnostics(smoothed, component)
-        saddle_peaks = _peak_saddle_diagnostics(
+        component_too_large = len(cells) > PARAMETERS["peak_isolation_max_component_cells"]
+        if component_too_large:
+            local_peaks, local_peak_count = [], None
+        else:
+            local_peaks, local_peak_count = _local_peak_diagnostics(smoothed, component)
+        over_peak_limit = (local_peak_count is not None
+                           and local_peak_count > PARAMETERS["peak_isolation_max_local_maxima"])
+        saddle_peaks = None if (component_too_large or over_peak_limit) else _peak_saddle_diagnostics(
             smoothed, component, local_peaks, threshold)
+        candidate_mask[ys, xs] = True
         if saddle_peaks is None:
             saddle_peaks = [{
-                "peak_vorticity_s-1": peak["peak_vorticity_s-1"],
-                "peak_pixel_rc": peak["peak_pixel_rc"],
+                "peak_vorticity_s-1": local_peak["peak_vorticity_s-1"],
+                "peak_pixel_rc": local_peak["peak_pixel_rc"],
+                "peak_seed_pixel_rc": local_peak["_seed_rc"],
                 "saddle_vorticity_s-1": None,
                 "relative_isolation_contrast": None,
                 "isolated_by_experimental_gamma": None,
                 "isolation_status": "not_computed_component_complexity_limit",
-                "plateau_pixel_count": peak["plateau_pixel_count"],
-            } for peak in local_peaks]
-        candidate_mask[ys, xs] = True
-        candidates.append({
-            "candidate_id": f"pmc-candidate-{len(candidates) + 1:04d}",
-            "classification": "candidate",
-            "confirmation_status": "not_confirmed",
-            "pixel_count": int(len(cells)),
-            "peak_850hpa_relative_vorticity_s-1": peak,
-            "peak_pixel_rc": [int(ys[peak_index]), int(xs[peak_index])],
-            "centroid_pixel_rc": [float(np.mean(ys)), float(np.mean(xs))],
-            "peak_structure": {
-                "status": ("experimental_saddle_diagnostic_only_not_partitioned"
-                           if all(peak["saddle_vorticity_s-1"] is not None for peak in saddle_peaks)
-                           else "diagnostic_skipped_component_complexity_limit"),
-                "method": PARAMETERS["peak_isolation_method"],
-                "gamma": PARAMETERS["peak_isolation_gamma"],
-                "local_maximum_count": len(saddle_peaks),
-                "local_maxima": saddle_peaks,
-            },
-        })
+                "plateau_pixel_count": local_peak["plateau_pixel_count"],
+            } for local_peak in local_peaks]
+            partition = {"status": "component_complexity_limit_unpartitioned",
+                         "labels": component.astype(np.int16),
+                         "regions": [{"label": 1, "pixel_count": int(len(cells)),
+                                      "centroid_pixel_rc": [float(np.mean(ys)), float(np.mean(xs))],
+                                      "classification": "candidate",
+                                      "confirmation_status": "not_confirmed"}],
+                         "coverage_conserved": True}
+        else:
+            expanded = ndimage.binary_dilation(component, structure=np.ones((3, 3), dtype=bool))
+            invalid = ~np.isfinite(smoothed) | ~domain
+            boundary_censored = bool(
+                component[0, :].any() or component[-1, :].any()
+                or component[:, 0].any() or component[:, -1].any()
+                or np.any(expanded & invalid))
+            partition = partition_component(
+                smoothed, component, saddle_peaks, threshold=threshold,
+                grid=grid, boundary_censored=boundary_censored)
+        if not partition["coverage_conserved"]:
+            raise RuntimeError("experimental PMC partition did not conserve candidate pixels")
+        peak_structure = {
+            "status": partition["status"],
+            "method": "discrete_superlevel_contours_above_max_tree_saddles",
+            "contour_interval_s-1": PARAMETERS["partition_contour_interval_s-1"],
+            "gamma": PARAMETERS["peak_isolation_gamma"],
+            "local_maximum_count": local_peak_count,
+            "local_maxima_preview_truncated": over_peak_limit,
+            "local_maxima": [{key: value for key, value in item.items() if not key.startswith("_")}
+                             for item in saddle_peaks],
+            "coverage_conserved": partition["coverage_conserved"],
+            "regions": partition["regions"],
+        }
+        for region in partition["regions"]:
+            candidates.append({
+                "candidate_id": f"pmc-candidate-{len(candidates) + 1:04d}",
+                "classification": "candidate",
+                "confirmation_status": "not_confirmed",
+                "pixel_count": region["pixel_count"],
+                "peak_850hpa_relative_vorticity_s-1": region.get(
+                    "peak_vorticity_s-1", peak),
+                "peak_pixel_rc": region.get("peak_pixel_rc", [int(ys[peak_index]), int(xs[peak_index])]),
+                "centroid_pixel_rc": region["centroid_pixel_rc"],
+                "partition_status": partition["status"],
+                "peak_structure": peak_structure,
+            })
     limitations = [
         "Кандидаты не являются подтверждёнными ПМЦ или прогнозом зарождения.",
-        "Изоляция максимумов оценивается по дискретному maximin-седлу; это не contour/valley-line алгоритм и не меняет маску кандидата.",
+        "Разделение на субкандидаты использует дискретные уровни выше max-tree седла и ближайшее расстояние в целевой проекции; это не интерполяция contour/valley-line и требует чувствительности/метеорологической проверки.",
         "Архивный трекер использует соседство центроидов; steering flow, split/merge и опубликованные QC-процедуры отсутствуют.",
         "Спутниковое сравнение описывает только пиксельное перекрытие заданных масок и не является независимой метеорологической верификацией.",
         "Искажение масштаба конкретной проекции не оценивается; пригодность сетки для заданной широты требует отдельной проверки.",
