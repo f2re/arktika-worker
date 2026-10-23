@@ -73,8 +73,19 @@ def main():
                         '()=>document.querySelector("#pmcArchiveDialog").open&&document.querySelectorAll("[name=pmcArchiveSource]").length===3&&document.querySelector("#pmcArchiveDialog").textContent.includes("не прогноз")',
                     )
                     check(
-                        "CARRA2 явно выключен для архива, одиночный эксперимент обозначен отдельно",
-                        '()=>{const e=document.querySelector("[name=pmcArchiveSource][value=carra2]");return e.disabled&&!e.checked&&e.parentElement.textContent.includes("одиночный эксперимент доступен")}',
+                        "CARRA2 доступен для архивного запуска",
+                        '()=>{const e=document.querySelector("[name=pmcArchiveSource][value=carra2]");return !e.disabled&&e.checked}',
+                    )
+                    check(
+                        "Панель импорта показывает обе маски и sidecar",
+                        '()=>["pmcObsLabels","pmcObsCoverage","pmcObsMetadata","pmcObservation"].every(id=>document.getElementById(id))',
+                    )
+                    page.locator("#pmcArchiveDialog").evaluate("el=>el.scrollTop=el.scrollHeight")
+                    page.locator("#pmcRunPanel details summary").click()
+                    page.locator("#pmcObsImport").click()
+                    check(
+                        "Пустой импорт показывает понятную ошибку без запроса",
+                        '()=>document.querySelector("#pmcObsStatus").textContent.includes("Выберите labels.tif")',
                     )
                     check(
                         "Требования спутниковой разметки объяснены",
@@ -106,7 +117,7 @@ def main():
 
                     page.locator("#pmcArchiveStart").fill("1979-01-01T00:00:00Z")
                     page.locator("#pmcArchiveEnd").fill("1979-01-01T03:00:00Z")
-                    for source in ("era5", "merra2"):
+                    for source in ("era5", "carra2", "merra2"):
                         page.locator(f'[name="pmcArchiveSource"][value="{source}"]').uncheck()
                     page.locator('[name="pmcArchiveSource"][value="merra2"]').check()
                     page.locator("#pmcArchivePlan").click()
@@ -117,7 +128,7 @@ def main():
 
                     page.locator("#pmcArchiveStart").fill("2024-01-01T00:00:00Z")
                     page.locator("#pmcArchiveEnd").fill("2024-01-01T06:00:00Z")
-                    for source in ("era5", "merra2"):
+                    for source in ("era5", "carra2", "merra2"):
                         page.locator(f'[name="pmcArchiveSource"][value="{source}"]').uncheck()
                     page.locator('[name="pmcArchiveSource"][value="era5"]').check()
                     page.locator("#pmcArchivePlan").click()

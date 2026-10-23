@@ -4,6 +4,8 @@ import sys
 if sys.version_info < (3,10):
     raise SystemExit('Требуется Python 3.10 или новее.')
 import argparse
+from email.parser import BytesParser
+from email.policy import default as email_policy
 import hmac
 import json
 import mimetypes
@@ -114,6 +116,7 @@ class Handler(BaseHTTPRequestHandler):
             elif path=='/api/era5/report':result=app.era5_report(q.get('id'))
             elif path=='/api/sources':result=app.source_state()
             elif path=='/api/reanalysis/state':result=app.fields_state()
+            elif path=='/api/pmc/observations':result=app.pmc_observations_state()
             elif path=='/api/pmc/archive/state':result=app.pmc_archive_state()
             elif path=='/api/pmc/archive/report':
                 identity=q.get('id','')
@@ -179,6 +182,8 @@ class Handler(BaseHTTPRequestHandler):
         if not self.gate(path!='/api/bootstrap'):return
         if self.headers.get('X-Arktika-Request')!='1':
             self.send(403,{'error':'Нет заголовка защиты локального запроса.'});return
+        if path=='/api/pmc/observations/import':
+            self.do_pmc_observation_import();return
         if self.headers.get('Content-Type','').split(';')[0]!='application/json':
             self.send(415,{'error':'Ожидается application/json.'});return
         try:
@@ -205,8 +210,8 @@ class Handler(BaseHTTPRequestHandler):
             elif path=='/api/pmc/run':
                 # Single cached field only. This route never fetches data and
                 # intentionally does not accept client-supplied scientific arrays.
-                if set(data)!={'field_id','target_grid'}:
-                    raise ValueError('Нужны только field_id выбранного кэшированного поля и явная target_grid.')
+                if set(data)-{'field_id','target_grid','observation_id'} or not {'field_id','target_grid'}<=set(data):
+                    raise ValueError('Нужны field_id выбранного кэшированного поля и явная target_grid; observation_id необязателен.')
                 identity=data.get('field_id')
                 grid=data.get('target_grid')
                 if not isinstance(identity,str) or not identity.strip():
@@ -221,7 +226,13 @@ class Handler(BaseHTTPRequestHandler):
                         raise ValueError
                 except (TypeError,ValueError):
                     raise ValueError('Размер целевой сетки должен быть целым и не превышать 1 048 576 пикселей.') from None
-                field=app.experimental_pmc_candidates(identity,target_grid=grid)
+                detector_options={}
+                if 'observation_id' in data:
+                    observed,coverage,metadata=app.pmc_observation(data['observation_id'])
+                    detector_options={'satellite_observation_mask':observed,
+                                      'satellite_coverage_mask':coverage,
+                                      'satellite_observation_metadata':metadata}
+                field=app.experimental_pmc_candidates(identity,target_grid=grid,**detector_options)
                 # Return useful projected coordinates while retaining source
                 # pixel coordinates and full provenance from the detector.
                 transform=grid['transform']
@@ -332,6 +343,43 @@ class Handler(BaseHTTPRequestHandler):
                 app.queue.pause();app.cancel.set()
                 threading.Thread(target=self.server.shutdown,daemon=True).start()
             else:self.send(404,{'error':'Маршрут не найден.'});return
+            self.send(200,result)
+        except Exception as e:self.error(e)
+    def do_pmc_observation_import(self):
+        """Accept one bounded local multipart package without logging its payload."""
+        if self.headers.get('Transfer-Encoding'):
+            self.send(411,{'error':'Для загрузки требуется ограниченный Content-Length.'});return
+        try:n=int(self.headers.get('Content-Length',''))
+        except (TypeError,ValueError):
+            self.send(411,{'error':'Для загрузки требуется Content-Length.'});return
+        if n<1 or n>16*1024*1024:
+            self.close_connection=True;self.send(413,{'error':'Пакет должен быть меньше 16 МиБ.'});return
+        content_type=self.headers.get('Content-Type','')
+        if not content_type.lower().startswith('multipart/form-data;'):
+            self.send(415,{'error':'Ожидается multipart/form-data.'});return
+        try:
+            raw=self.rfile.read(n)
+            if len(raw)!=n:raise ValueError('Загрузка оборвалась до получения всего пакета.')
+            message=BytesParser(policy=email_policy).parsebytes(
+                b'Content-Type: '+content_type.encode('ascii','strict')+b'\r\nMIME-Version: 1.0\r\n\r\n'+raw)
+            if not message.is_multipart():raise ValueError('Неверный формат multipart-пакета.')
+            expected={'labels':'labels.tif','coverage':'coverage.tif','metadata':'metadata.json'}
+            parts={}
+            for part in message.iter_parts():
+                if part.is_multipart():raise ValueError('Вложенные multipart-части не поддерживаются.')
+                disposition=part.get_content_disposition()
+                name=part.get_param('name',header='content-disposition')
+                filename=part.get_filename()
+                if disposition!='form-data' or name not in expected or name in parts or filename!=expected[name]:
+                    raise ValueError('Нужны ровно labels.tif, coverage.tif и metadata.json с указанными именами полей.')
+                payload=part.get_payload(decode=True)
+                if not isinstance(payload,bytes) or not payload:raise ValueError('Одна из частей загрузки пуста.')
+                parts[name]=payload
+            if set(parts)!=set(expected):raise ValueError('Загрузите маски labels.tif, coverage.tif и metadata.json.')
+            metadata=json.loads(parts['metadata'].decode('utf-8'))
+            if not isinstance(metadata,dict):raise ValueError('metadata.json должен содержать JSON-объект.')
+            result=self.server.app.register_pmc_observation(
+                parts['labels'],parts['coverage'],metadata)
             self.send(200,result)
         except Exception as e:self.error(e)
     def error(self,e):

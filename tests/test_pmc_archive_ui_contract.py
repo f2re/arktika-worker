@@ -83,13 +83,14 @@ class PmcArchiveUiContractTests(unittest.TestCase):
             with self.subTest(contract_field=contract_field):
                 self.assertIn(contract_field, handler)
 
-    def test_single_field_experiment_offers_carra_without_enabling_archive_runs(self):
+    def test_carra_is_supported_for_single_field_and_archive_runs(self):
         source = (ROOT / "static/app.js").read_text(encoding="utf-8")
         self.assertIn("['era5','carra2','merra2'].includes(f.source)", source)
         self.assertIn("реальные метаданные и метеорологическая точность отдельно не валидированы", source)
-        self.assertIn("['era5','merra2'].includes(field.source)", source)
-        self.assertIn("input.disabled=source.id==='carra2'", source)
-        self.assertIn("архив пока отключён; одиночный эксперимент доступен", source)
+        self.assertIn("input.checked=true;const text=document.createElement('span');text.textContent=`${PMC_SOURCE_LABELS[source.id]}", source)
+        self.assertIn("['era5','carra2','merra2'].includes(f.source)", source[source.index("async function pmcStartArchive()"):source.index("async function pmcRefreshArchiveTask(")])
+        self.assertNotIn("input.disabled=source.id==='carra2'", source)
+        self.assertNotIn("['era5','merra2'].includes(field.source)", source)
 
 
 if __name__ == "__main__":

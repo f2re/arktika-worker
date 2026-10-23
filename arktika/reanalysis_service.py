@@ -33,6 +33,191 @@ TASK_ID=re.compile(r'^[0-9a-f]{32}$')
 
 
 class ReanalysisMixin:
+    @staticmethod
+    def _read_pmc_mask_raster(data, label):
+        """Read one bounded, single-band categorical GeoTIFF mask."""
+        import numpy as np
+        from rasterio.io import MemoryFile
+        from pyproj import CRS
+
+        if not isinstance(data,bytes) or not data or len(data)>32*1024*1024:
+            raise ValueError(f'{label}: нужен непустой GeoTIFF размером не более 32 МиБ.')
+        try:
+            with MemoryFile(data) as mem, mem.open() as ds:
+                if ds.driver!='GTiff' or ds.count!=1:
+                    raise ValueError(f'{label}: ожидается одноканальный GeoTIFF.')
+                if ds.width<1 or ds.height<1 or ds.width*ds.height>16_000_000:
+                    raise ValueError(f'{label}: размер растра вне допустимых пределов.')
+                if ds.crs is None or not all(math.isfinite(v) for v in ds.transform[:6]):
+                    raise ValueError(f'{label}: в растре отсутствует корректная сетка или CRS.')
+                crs=CRS.from_user_input(ds.crs)
+                if (not crs.is_projected or not crs.axis_info
+                        or any(abs(float(axis.unit_conversion_factor or 0)-1.0)>1e-9
+                               for axis in crs.axis_info[:2])):
+                    raise ValueError(f'{label}: требуется проецированная сетка с осями в метрах.')
+                if abs(ds.transform.a*ds.transform.e-ds.transform.b*ds.transform.d)<1e-15:
+                    raise ValueError(f'{label}: преобразование геосетки вырождено.')
+                if ds.nodata is not None:
+                    raise ValueError(f'{label}: nodata должен задаваться отдельной маской покрытия.')
+                if not np.all(ds.read_masks(1)==255):
+                    raise ValueError(f'{label}: внутренние маски/alpha с пропусками запрещены; неизвестные ячейки задаются coverage.tif.')
+                if ds.dtypes[0] not in ('uint8','uint16','int8','int16','uint32','int32'):
+                    raise ValueError(f'{label}: метки должны быть целочисленными.')
+                values=ds.read(1)
+                if not np.isin(values,(0,1)).all():
+                    raise ValueError(f'{label}: допустимы только значения 0 и 1.')
+                grid={'crs':ds.crs.to_string(),'width':int(ds.width),'height':int(ds.height),
+                      'transform':[float(v) for v in ds.transform[:6]],
+                      'resolution_x_m':float(math.hypot(ds.transform.a,ds.transform.d)),
+                      'resolution_y_m':float(math.hypot(ds.transform.b,ds.transform.e))}
+                return values.astype(np.uint8,copy=False),grid
+        except ValueError:
+            raise
+        except Exception as exc:
+            # Rasterio rejects HTML/XML error pages and malformed uploads here.
+            raise ValueError(f'{label}: файл не является читаемым GeoTIFF.') from exc
+
+    def register_pmc_observation(self, labels_bytes: bytes, coverage_bytes: bytes, metadata: dict) -> dict:
+        """Validate and persist an explicitly attributed satellite label/coverage pair.
+
+        This stores masks only. It does not assess meteorological correctness or
+        calculate a detection score.
+        """
+        import numpy as np
+        from datetime import datetime,timezone
+
+        allowed={'schema_version','observation_ref','source','product','product_version',
+                 'valid_time','label_convention','qc_status','grid','nodata'}
+        if not isinstance(metadata,dict) or set(metadata)!=allowed:
+            raise ValueError('Метаданные наблюдения должны содержать ровно определённые поля sidecar.')
+        if metadata.get('schema_version')!='arktika.pmc_satellite_observation.v1':
+            raise ValueError('Неизвестная версия sidecar наблюдения.')
+        id_pattern=re.compile(r'^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$')
+        for key in ('observation_ref','source','product','product_version'):
+            value=metadata.get(key)
+            if not isinstance(value,str) or not id_pattern.fullmatch(value):
+                raise ValueError(f'Некорректное поле метаданных {key}.')
+        if metadata.get('label_convention')!='0=no_pmc,1=pmc_candidate':
+            raise ValueError('Соглашение меток должно явно задавать 0=no_pmc,1=pmc_candidate.')
+        if metadata.get('qc_status') not in ('not_assessed','user_reviewed'):
+            raise ValueError('qc_status может быть только not_assessed или user_reviewed.')
+        if metadata.get('nodata') is not None:
+            raise ValueError('Для раздельной маски покрытия nodata в GeoTIFF и sidecar должен быть null.')
+        raw_time=metadata.get('valid_time')
+        if not isinstance(raw_time,str) or not re.search(r'(?:Z|\+00:00)$',raw_time):
+            raise ValueError('valid_time должен содержать явное смещение UTC.')
+        try:
+            stamp=datetime.fromisoformat(raw_time.replace('Z','+00:00'))
+            if stamp.utcoffset()!=timezone.utc.utcoffset(stamp):raise ValueError()
+            valid_time=stamp.astimezone(timezone.utc).isoformat().replace('+00:00','Z')
+        except (ValueError,OverflowError):
+            raise ValueError('Некорректный срок UTC наблюдения.') from None
+        labels,label_grid=self._read_pmc_mask_raster(labels_bytes,'Маска меток')
+        coverage,coverage_grid=self._read_pmc_mask_raster(coverage_bytes,'Маска покрытия')
+        if label_grid!=coverage_grid:
+            raise ValueError('Маски меток и покрытия должны иметь одинаковые сетку и CRS.')
+        if np.any((labels==1)&(coverage==0)):
+            raise ValueError('Положительные метки не могут находиться вне маски покрытия.')
+        declared=metadata.get('grid')
+        if not isinstance(declared,dict) or set(declared)!={'crs','width','height','transform','resolution_x_m','resolution_y_m'}:
+            raise ValueError('В sidecar требуется полное описание сетки.')
+        try:
+            if (isinstance(declared.get('width'),bool) or not isinstance(declared.get('width'),int)
+                    or isinstance(declared.get('height'),bool) or not isinstance(declared.get('height'),int)
+                    or not isinstance(declared.get('transform'),list)):
+                raise ValueError()
+            checked={'crs':str(declared['crs']),'width':declared['width'],
+                     'height':declared['height'],'transform':[float(x) for x in declared['transform']],
+                     'resolution_x_m':float(declared['resolution_x_m']),
+                     'resolution_y_m':float(declared['resolution_y_m'])}
+        except (TypeError,ValueError):
+            raise ValueError('Некорректное описание сетки в sidecar.') from None
+        if (isinstance(declared['width'],bool) or isinstance(declared['height'],bool)
+                or len(checked['transform'])!=6
+                or any(not math.isfinite(v) for v in checked['transform']+[checked['resolution_x_m'],checked['resolution_y_m']])
+                or checked!=label_grid):
+            raise ValueError('Сетка sidecar должна точно совпадать с обеими масками.')
+        safe={key:metadata[key] for key in allowed if key not in ('grid','valid_time')}
+        safe.update(valid_time=valid_time,grid=label_grid,units='1',algorithm_id='arktika.pmc_satellite_observation_import',
+                    algorithm_version='0.1.0',status='imported_unverified')
+        source_digest=hashlib.sha256(labels_bytes+coverage_bytes).hexdigest()
+        safe['source_files_sha256']=source_digest
+        payload=io.BytesIO()
+        np.savez_compressed(payload,labels=labels,coverage=coverage,
+                            metadata=np.frombuffer(json.dumps(safe,ensure_ascii=False,separators=(',',':')).encode('utf-8'),dtype=np.uint8))
+        data=payload.getvalue();checksum=hashlib.sha256(data).hexdigest()
+        self._fields_init()
+        with self.lock:
+            root=self.fields_root/'pmc-observations';root.mkdir(mode=0o700,exist_ok=True)
+            try:root.chmod(0o700)
+            except OSError:pass
+            identity=uuid.uuid4().hex[:24]
+            target=root/(identity+'.npz');tmp=root/(identity+'.tmp');hash_target=root/(identity+'.sha256');hash_tmp=root/(identity+'.sha256.tmp')
+            try:
+                with hash_tmp.open('x',encoding='ascii') as stream:
+                    stream.write(checksum+'\n');stream.flush()
+                try:hash_tmp.chmod(0o600)
+                except OSError:pass
+                hash_tmp.replace(hash_target)
+                with tmp.open('xb') as stream:
+                    stream.write(data);stream.flush()
+                try:tmp.chmod(0o600)
+                except OSError:pass
+                tmp.replace(target)
+            finally:
+                try:tmp.unlink()
+                except FileNotFoundError:pass
+                try:hash_tmp.unlink()
+                except FileNotFoundError:pass
+        observation=dict(safe,observation_id=identity,sha256=checksum)
+        return {'observation_id':identity,'observation':observation,'sha256':checksum,'status':'imported_unverified'}
+
+    def pmc_observation(self, identity):
+        """Load a previously registered mask pair after checking its archive hash."""
+        import numpy as np
+
+        if not isinstance(identity,str) or not ID.fullmatch(identity):
+            raise ValueError('Неверный идентификатор спутникового наблюдения.')
+        self._fields_init();path=self.fields_root/'pmc-observations'/(identity+'.npz')
+        try:
+            data=path.read_bytes()
+            expected=(path.with_suffix('.sha256')).read_text(encoding='ascii').strip()
+        except OSError:raise ValueError('Спутниковое наблюдение не найдено в локальном хранилище.') from None
+        checksum=hashlib.sha256(data).hexdigest()
+        if not re.fullmatch(r'[0-9a-f]{64}',expected) or checksum!=expected:
+            raise ValueError('Контрольная сумма спутникового наблюдения не совпадает.')
+        try:
+            with np.load(io.BytesIO(data),allow_pickle=False) as archive:
+                if set(archive.files)!= {'labels','coverage','metadata'}:raise ValueError()
+                labels=archive['labels'];coverage=archive['coverage']
+                metadata=json.loads(archive['metadata'].tobytes().decode('utf-8'))
+        except Exception:
+            raise ValueError('Сохранённая маска повреждена.') from None
+        if (labels.ndim!=2 or labels.shape!=coverage.shape or labels.dtype!=np.uint8
+                or coverage.dtype!=np.uint8 or not np.isin(labels,(0,1)).all()
+                or not np.isin(coverage,(0,1)).all()
+                or not isinstance(metadata,dict) or metadata.get('status')!='imported_unverified'):
+            raise ValueError('Сохранённая маска не прошла проверку целостности.')
+        if not isinstance(metadata.get('product'),str):
+            raise ValueError('Сохранённый паспорт наблюдения не содержит идентификатор продукта.')
+        return labels,coverage,dict(metadata,observation_id=identity,
+                                    product_id=metadata['product'],sha256=checksum)
+
+    def pmc_observations_state(self):
+        """List only verified local observation summaries; never expose paths or arrays."""
+        self._fields_init();root=self.fields_root/'pmc-observations';items=[]
+        for path in root.glob('*.npz') if root.is_dir() else ():
+            identity=path.stem
+            if not ID.fullmatch(identity):continue
+            try:
+                _,_,metadata=self.pmc_observation(identity)
+                items.append({key:metadata[key] for key in
+                              ('observation_id','source','product','product_id','valid_time','status')})
+            except (OSError,ValueError,KeyError):
+                continue
+        items.sort(key=lambda item:(item['valid_time'],item['observation_id']))
+        return {'observations':items}
+
     def _adapter_credential(self, source):
         """Use a registered adapter's shared provider without storing secrets in its state."""
         provider=get_runtime_adapter(source).auth_provider
