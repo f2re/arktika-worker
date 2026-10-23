@@ -4,7 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Security: 100% Local](https://img.shields.io/badge/Security-100%25%20Localhost-success.svg)](docs/AUTH.md)
 [![Zero External Services](https://img.shields.io/badge/Zero%20External%20GIS-Offline%20Ready-orange.svg)](docs/INSTALL.md)
-[![Version: 0.4.0](https://img.shields.io/badge/Release-0.4.0-blueviolet.svg)](RELEASE_NOTES.md)
+[![Version: 0.4.1](https://img.shields.io/badge/Release-0.4.1-blueviolet.svg)](RELEASE_NOTES.md)
 
 **Локальный программный комплекс для оперативной работы метеоролога** со спутниковыми данными космических аппаратов **«Арктика-М»** (прибор МСУ-ГС), атмосферными реанализами (**ERA5**, **CARRA2**, **MERRA-2**), вертикальными профилями радиозондирования и авиационными маршрутами.
 

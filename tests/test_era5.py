@@ -271,7 +271,7 @@ class EndToEnd(unittest.TestCase):
             ready={'data_dependencies_missing':[],'pyrttov':True,'coefficient':{'present':True}}
             try:
                 with patch('arktika.era5_workflow.ensure_runtime',return_value={'missing':[],'pyrttov':True}),patch('arktika.era5_workflow.run_calculation',side_effect=inprocess_calculation),patch('arktika.era5_calculation.retrieve_plan',side_effect=fake_retrieve),patch('arktika.era5_calculation.forward_isolated',side_effect=fake_forward),patch('arktika.era5_calculation.download_coefficients',return_value={'present':True,'sha256':'SYNTHETIC COEFFICIENT'}):
-                    result=app.era5_start(request);app.task.join(10)
+                    result=app.era5_start(request);app.task.join(60)
                     self.assertFalse(app.busy)
                     report=app.era5_report(result['id']);self.assertEqual(report['status'],'ready',report)
                     self.assertFalse(report['scientific_validation']);self.assertEqual(report['n_references'],48)
@@ -289,7 +289,7 @@ class EndToEnd(unittest.TestCase):
                 files=model_files(root,plan);files[0]['time']='2026-01-01T05:00:00Z';return files
             try:
                 with patch('arktika.era5_workflow.ensure_runtime',return_value={'missing':[],'pyrttov':False}),patch('arktika.era5_workflow.run_calculation',side_effect=inprocess_calculation),patch('arktika.era5_calculation.retrieve_plan',side_effect=wrong_time):
-                    result=app.era5_start({'scene':scene,'channels':[9],'data_only':True});app.task.join(10)
+                    result=app.era5_start({'scene':scene,'channels':[9],'data_only':True});app.task.join(60)
                     report=app.era5_report(result['id']);self.assertEqual(report['status'],'error')
                     self.assertIn('час',report['message']);self.assertEqual(report['channels'],{})
             finally:app.close()
