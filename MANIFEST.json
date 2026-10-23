@@ -118,7 +118,7 @@
     "scripts/era5_worker.py": "412151c790ca39ae440ff01f028781383895273b5fae0238e86a523433fa1486",
     "scripts/manifest.py": "966f6ac187ee8966218380a80673e7a527bf891a37a847b04dd46d3f6bec2cf7",
     "scripts/pmc_archive_browser_smoke.py": "82233f55ff35004a2916e0adfc70cafd2b7278ddb2628a42a34ae995fc4fa475",
-    "scripts/product_browser_smoke.py": "a32b19dae820c1a56a074b2545e01c2d6745fbee778b0e1946e80e2ca0f37b44",
+    "scripts/product_browser_smoke.py": "5398bf5e211dd52d5b96be762c1bcd750b7f17d00fedb6786fcebb5f6fb6fc59",
     "scripts/publish.py": "61357a10f32f8589a5b3be29a78e368afc2e5bc3e883e76dd646a5b99acd9e23",
     "scripts/reanalysis_browser_smoke.py": "34c9b1877d4e242fc11a8b1fdf85383ca364977c05e77ebba495a22a03f8e104",
     "scripts/reanalysis_worker.py": "96b37fb422e24f3456518f2abfe07349fc03a851ba3b7775b5afd3edb287779e",

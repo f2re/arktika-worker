@@ -50,9 +50,11 @@ def main():
         base='http://127.0.0.1:'+str(server.server_port)
         try:
             with sync_playwright() as pw:
+                page_script='''(()=>{const descriptor=Object.getOwnPropertyDescriptor(HTMLButtonElement.prototype,"disabled");window.__styleDisableTrace=[];Object.defineProperty(HTMLButtonElement.prototype,"disabled",{get:descriptor.get,set(value){if(this.id==="productStyleOpen"&&value)window.__styleDisableTrace.push(new Error().stack);return descriptor.set.call(this,value);}});})()'''
                 launch={'headless':True}
                 if args.executable:launch['executable_path']=args.executable
                 browser=pw.chromium.launch(**launch);context=browser.new_context(viewport=dict(width=1440,height=960));page=context.new_page()
+                page.add_init_script(page_script)
                 page.on('pageerror',lambda e:report['browser_errors'].append(str(e)))
                 def wait(expression,timeout=45):
                     end=time.monotonic()+timeout
@@ -70,7 +72,7 @@ def main():
                     page.locator(f'#savedProducts button[data-id="{identity}"]').click()
                     wait(f'()=>S.product?.id==={json.dumps(identity)}&&!S.busy&&!UI.activeBuild')
                     wait(f'()=>S.product?.id==={json.dumps(identity)}&&document.querySelector("#productStyleOpen")&&!document.querySelector("#productStyleOpen").disabled')
-                    style_state=page.evaluate('async()=>{const id=S.product?.id;let profile;try{const r=await fetch("/api/product/style?id="+encodeURIComponent(id));profile={status:r.status,body:await r.json()};}catch(e){profile={error:String(e)}}return {id,files:S.product?.files,quantity_kind:S.product?.legend?.quantity_kind,version:S.product?.passport?.algorithm?.version,styleable:productStyleable(S.product),button:!!document.querySelector("#productStyleOpen"),disabled:document.querySelector("#productStyleOpen")?.disabled,toast:document.querySelector("#toast")?.textContent,profile}}')
+                    style_state=page.evaluate('async()=>{const id=S.product?.id;let profile;try{const r=await fetch("/api/product/style?id="+encodeURIComponent(id));profile={status:r.status,body:await r.json()};}catch(e){profile={error:String(e)}}return {id,files:S.product?.files,quantity_kind:S.product?.legend?.quantity_kind,version:S.product?.passport?.algorithm?.version,styleable:productStyleable(S.product),button:!!document.querySelector("#productStyleOpen"),disabled:document.querySelector("#productStyleOpen")?.disabled,disableTrace:window.__styleDisableTrace,toast:document.querySelector("#toast")?.textContent,profile}}')
                     assert style_state['button'] and not style_state['disabled'], f'Продукт открылся, но шкала недоступна: {style_state}'
                 def export_product_json(identity):
                     encoded=page.evaluate('''async id=>{const r=await fetch('/artifact/'+encodeURIComponent(id)+'/export.zip');if(!r.ok)throw Error('ZIP HTTP '+r.status);const bytes=new Uint8Array(await r.arrayBuffer());let binary='';for(let i=0;i<bytes.length;i+=8192)binary+=String.fromCharCode(...bytes.subarray(i,i+8192));return btoa(binary)}''',identity)
