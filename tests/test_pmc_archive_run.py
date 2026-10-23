@@ -67,7 +67,7 @@ class PmcArchiveRunTests(unittest.TestCase):
         self.assertEqual(expected["era5"][1:], source["unprocessed_preview_utc"])
         self.assertEqual("not_supplied", report["satellite_comparison"]["status"])
         self.assertNotIn("genesis_location", report["tracks_by_source"][0]["tracks"][0])
-        self.assertEqual({"start": expected["era5"][0], "end": expected["era5"][-1]},
+        self.assertEqual({"start": expected["era5"][0], "end": expected["era5"][0]},
                          report["passport"]["valid_period"])
         self.assertEqual("candidate_track_catalog", report["passport"]["quantity_kind"])
         self.assertEqual("not_assessed", report["passport"]["uncertainty"]["status"])

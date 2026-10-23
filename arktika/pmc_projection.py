@@ -212,6 +212,9 @@ def reproject_vorticity_to_grid(values: Any, latitude: Any, longitude: Any, *,
         sources = [{"source_id": str(source_passport["source"])}]
     if not sources:
         raise ValueError("source passport must identify at least one source")
+    source_limitations = source_passport.get("limitations", [])
+    if not isinstance(source_limitations, list) or any(not isinstance(item, str) for item in source_limitations):
+        source_limitations = []
     source_name = str(source_passport["source"])
     source_algorithm = source_passport.get("algorithm", {})
     if not isinstance(source_algorithm, dict):
@@ -237,7 +240,8 @@ def reproject_vorticity_to_grid(values: Any, latitude: Any, longitude: Any, *,
         sources=sources,
         calibration_version="not_applicable",
         calibration_status="not_applicable",
-        limitations=["Проекция и её пригодность для детектора не прошли метеорологическую проверку."],
+        limitations=(list(source_limitations)
+                     + ["Проекция и её пригодность для детектора не прошли метеорологическую проверку."]),
     )
     passport.update({"algorithm_id": "arktika.experimental_vorticity_reprojection",
                      "algorithm_version": "0.1.0", "maturity": "experimental",
