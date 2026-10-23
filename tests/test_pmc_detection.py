@@ -226,6 +226,29 @@ class PmcDetectionTests(unittest.TestCase):
         self.assertEqual(0.0, comparison["metrics"]["intersection_over_union"])
         self.assertEqual(225, comparison["coverage"]["observed_pixels"])
 
+    def test_satellite_comparison_retains_validated_rotated_source_grid_provenance(self):
+        source_grid = {
+            "crs": "EPSG:3413", "width": 15, "height": 15,
+            "transform": [60000, 1000, -450000, 500, -60000, 450000],
+            "resolution_x_m": float(np.hypot(60000, 500)),
+            "resolution_y_m": float(np.hypot(1000, 60000)),
+        }
+        result = self.run_detector(
+            satellite_observation_mask=np.zeros((15, 15), dtype=np.uint8),
+            satellite_coverage_mask=np.ones((15, 15), dtype=np.uint8),
+            satellite_observation_metadata={
+                "source": "fixture satellite archive", "product_id": "test-visible-mask",
+                "valid_time": "2025-01-02T06:00:00Z", "observation_id": "fixture-rotated",
+                "grid": dict(self.grid),
+                "regridding": {"method": "nearest_neighbor", "source_grid": source_grid,
+                               "target_grid": dict(self.grid)},
+            },
+        )
+        comparison = result["satellite_comparison"]
+        self.assertEqual("nearest_neighbor", comparison["observation"]["regridding"]["method"])
+        self.assertEqual(source_grid["transform"],
+                         comparison["observation"]["regridding"]["source_grid"]["transform"])
+
     def test_satellite_comparison_excludes_uncovered_candidates_from_metrics(self):
         coverage = np.zeros((15, 15), dtype=bool)
         coverage[:3, :3] = True

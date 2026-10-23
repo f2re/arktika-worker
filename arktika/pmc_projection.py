@@ -21,6 +21,95 @@ from .product_schema import product_passport
 MAX_DETECTOR_PROJECTION_SCALE_ERROR = 0.05
 
 
+def reproject_observation_masks(labels: Any, coverage: Any, *,
+                               source_grid: dict[str, Any],
+                               target_grid: dict[str, Any]) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
+    """Reproject binary observation labels and coverage with nearest-neighbour.
+
+    Coverage is reprojected independently so cells outside the observation
+    footprint stay unknown. This only harmonizes grids for a pixel comparison;
+    it does not assess the observation's meteorological validity.
+    """
+    from math import isfinite
+    from .pmc_archive_run import MAX_GRID_PIXELS, validate_grid
+
+    source = _validate_observation_source_grid(source_grid, MAX_GRID_PIXELS)
+    target = validate_grid(target_grid)
+    label_array = np.asarray(labels)
+    coverage_array = np.asarray(coverage)
+    for name, array in (("labels", label_array), ("coverage", coverage_array)):
+        if (array.ndim != 2 or array.shape != (source["height"], source["width"])
+                or array.dtype.kind not in "biu" or not np.isin(array, (0, 1)).all()):
+            raise ValueError(f"observation {name} must be a binary raster matching its declared source grid")
+    if np.any((label_array == 1) & (coverage_array == 0)):
+        raise ValueError("positive observation labels cannot fall outside the coverage mask")
+
+    labels_out = np.zeros((target["height"], target["width"]), dtype=np.uint8)
+    coverage_out = np.zeros_like(labels_out)
+    if source == target:
+        labels_out[:] = label_array
+        coverage_out[:] = coverage_array
+        method = "identity"
+    else:
+        for source_array, destination in ((label_array, labels_out),
+                                          (coverage_array, coverage_out)):
+            reproject(
+                source=source_array.astype(np.uint8, copy=False),
+                destination=destination,
+                src_transform=Affine(*source["transform"]),
+                src_crs=source["crs"],
+                dst_transform=Affine(*target["transform"]),
+                dst_crs=target["crs"],
+                resampling=Resampling.nearest,
+                init_dest_nodata=False,
+                num_threads=1,
+            )
+        method = "nearest_neighbor"
+    labels_out[coverage_out == 0] = 0
+    provenance = {"method": method, "source_grid": source, "target_grid": target}
+    return labels_out, coverage_out, provenance
+
+
+def _validate_observation_source_grid(value: Any, max_pixels: int) -> dict[str, Any]:
+    """Validate an imported projected-metre raster without forbidding rotation."""
+    from math import isfinite
+    from pyproj.exceptions import CRSError
+
+    keys = {"crs", "width", "height", "transform", "resolution_x_m", "resolution_y_m"}
+    if not isinstance(value, dict) or set(value) != keys:
+        raise ValueError("observation source grid metadata is invalid")
+    width, height = value["width"], value["height"]
+    if (isinstance(width, bool) or not isinstance(width, int) or width < 1
+            or isinstance(height, bool) or not isinstance(height, int) or height < 1
+            or width * height > max_pixels):
+        raise ValueError("observation source grid dimensions are invalid")
+    try:
+        crs = CRS.from_user_input(value["crs"])
+        transform = [float(item) for item in value["transform"]]
+        resolution_x = float(value["resolution_x_m"])
+        resolution_y = float(value["resolution_y_m"])
+    except (CRSError, TypeError, ValueError, OverflowError):
+        raise ValueError("observation source grid CRS or affine transform is invalid") from None
+    if (not crs.is_projected or not crs.axis_info
+            or any(abs(float(axis.unit_conversion_factor or 0) - 1.0) > 1e-9
+                   for axis in crs.axis_info[:2])):
+        raise ValueError("observation source grid must use projected metre axes")
+    if (len(transform) != 6 or not all(isfinite(item) for item in transform)
+            or not isfinite(resolution_x) or not isfinite(resolution_y)
+            or resolution_x <= 0 or resolution_y <= 0):
+        raise ValueError("observation source grid affine transform or resolution is invalid")
+    affine = Affine(*transform)
+    actual_x = float(np.hypot(affine.a, affine.d))
+    actual_y = float(np.hypot(affine.b, affine.e))
+    if (abs(affine.determinant) < 1e-15
+            or abs(actual_x - resolution_x) > max(actual_x, 1.0) * 1e-9
+            or abs(actual_y - resolution_y) > max(actual_y, 1.0) * 1e-9):
+        raise ValueError("observation source affine transform and resolutions disagree")
+    return {"crs": crs.to_string(), "width": width, "height": height,
+            "transform": transform, "resolution_x_m": resolution_x,
+            "resolution_y_m": resolution_y}
+
+
 def _axis(values: Any, name: str, expected: int) -> np.ndarray:
     arr = np.asarray(values, dtype=np.float64)
     if arr.ndim == 1:

@@ -26,6 +26,7 @@ from .pmc_archive_run import build_archive_report
 from .pmc_archive_run import validate_grid as validate_pmc_archive_grid
 from .pmc_detection import ALGORITHM_ID as PMC_DETECTOR_ID
 from .pmc_detection import ALGORITHM_VERSION as PMC_DETECTOR_VERSION
+from .pmc_projection import reproject_observation_masks
 from .reanalysis.adapters import get_runtime_adapter
 from .reanalysis.catalog import SOURCES, VERSION, catalogue, request_plan
 
@@ -401,30 +402,41 @@ class ReanalysisMixin:
             target_grid=job.get('target_grid'),satellite_comparisons=comparisons)
 
     def _pmc_observation_for_frame(self, valid_time, target_grid):
-        """Return one exact-time/grid manual observation; ambiguous or absent stays unknown."""
+        """Return one exact-time observation harmonized to the target grid.
+
+        Duplicate observations for one UTC remain ambiguous. Grid changes use
+        nearest-neighbour for labels and coverage separately; this is technical
+        alignment only, not meteorological validation.
+        """
         frame_time=pmc_utc_hour(valid_time,'Срок кадра').isoformat().replace('+00:00','Z')
-        candidates=[]
+        matching=[]
         for item in self.pmc_observations_state().get('observations',[]):
             if not isinstance(item,dict):
                 continue
             try:
                 listed_time=pmc_utc_hour(item.get('valid_time'),'Срок наблюдения').isoformat().replace('+00:00','Z')
-                if listed_time!=frame_time:continue
-                labels,coverage,metadata=self.pmc_observation(item.get('observation_id'))
-                observation_time=pmc_utc_hour(metadata.get('valid_time'),'Срок наблюдения').isoformat().replace('+00:00','Z')
-                if (observation_time!=frame_time or metadata.get('status')!='imported_unverified'
-                        or validate_pmc_archive_grid(metadata.get('grid'))!=target_grid):
-                    continue
-                candidates.append((labels,coverage,metadata))
-            except (ValueError,OSError,TypeError):
+                if listed_time==frame_time:
+                    matching.append(item)
+            except (ValueError,TypeError):
                 continue
-        if len(candidates)!=1:
+        if not matching:
             return None
-        labels,coverage,metadata=candidates[0]
+        if len(matching)!=1:
+            return {'unavailable_reason':'duplicate_exact_time_observations'}
+        try:
+            labels,coverage,metadata=self.pmc_observation(matching[0].get('observation_id'))
+            observation_time=pmc_utc_hour(metadata.get('valid_time'),'Срок наблюдения').isoformat().replace('+00:00','Z')
+            if observation_time!=frame_time or metadata.get('status')!='imported_unverified':
+                return None
+            source_grid=metadata.get('grid')
+            labels,coverage,regridding=reproject_observation_masks(
+                labels,coverage,source_grid=source_grid,target_grid=target_grid)
+        except (ValueError,OSError,TypeError):
+            return {'unavailable_reason':'observation_grid_unavailable'}
         return {'labels':labels,'coverage':coverage,'metadata':{
             'source':metadata['source'],'product_id':metadata['product_id'],
             'valid_time':metadata['valid_time'],'observation_id':metadata['observation_id'],
-            'grid':metadata['grid']}}
+            'grid':target_grid,'regridding':regridding}}
 
     def pmc_archive_state(self, data=None):
         self._fields_init()
@@ -460,11 +472,16 @@ class ReanalysisMixin:
                     observation=self._pmc_observation_for_frame(meta['time'],job['target_grid'])
                     options={}
                     if observation is not None:
-                        options={'satellite_observation_mask':observation['labels'],
-                                 'satellite_coverage_mask':observation['coverage'],
-                                 'satellite_observation_metadata':observation['metadata']}
+                        if 'unavailable_reason' not in observation:
+                            options={'satellite_observation_mask':observation['labels'],
+                                     'satellite_coverage_mask':observation['coverage'],
+                                     'satellite_observation_metadata':observation['metadata']}
                     result=self.experimental_pmc_candidates(field_id,target_grid=job['target_grid'],
                                                            region_bounds=job['plan']['area'],**options)
+                    if observation is not None and 'unavailable_reason' in observation:
+                        result['satellite_comparison']={
+                            'status':'unknown_unmatched','metrics':None,
+                            'reason_code':observation['unavailable_reason']}
                     record={'field_id':field_id,'source':meta['source'],'valid_time':meta['time'],
                             'status':'completed','result':result}
                 except Cancelled:raise
