@@ -7,9 +7,10 @@ optional comparison and never upgrades a candidate to a confirmed PMC.
 The vorticity thresholds and circular uniform-radius smoothing are based on
 the low-threshold Nordic Seas IMPMCT settings (Fang et al., 2025). This
 prototype retains connected areas above 1.0e-4 s-1 whose peak reaches
-1.2e-4 s-1. It adds a discrete contour-core plus nearest-projected-grid
-remainder approximation, not interpolated valley lines or the complete
-published peak-partition method. Temporal tracking/steering, satellite
+1.2e-4 s-1. It adds bilinearly interpolated marching-squares contour cores
+plus nearest-projected-grid remainder, but saddle isolation is still a
+discrete approximation and this is not the complete published
+valley-line partition method. Temporal tracking/steering, satellite
 morphology, and complete quality controls are absent. Its output is not a
 reproduction or validation of IMPMCT.
 """
@@ -27,7 +28,7 @@ from .product_schema import product_passport
 from .pmc_partition import partition_component
 
 ALGORITHM_ID = "arktika.experimental_pmc_candidates"
-ALGORITHM_VERSION = "0.5.0"
+ALGORITHM_VERSION = "0.5.1"
 METHOD_REFERENCE = "Fang et al. (2025), IMPMCT, doi:10.5194/essd-17-6049-2025"
 PARAMETERS = {
     "uniform_radius_km": 60.0,
@@ -39,8 +40,9 @@ PARAMETERS = {
     "peak_isolation_method": "discrete 8-neighbour max-tree; global peak uses component threshold reference",
     "peak_isolation_max_component_cells": 16384,
     "peak_isolation_max_local_maxima": 128,
+    "equal_height_peak_policy": "fail_closed_component_diagnostic_unresolved",
     "partition_contour_interval_s-1": 1.0e-6,
-    "partition_rule": "isolated contour core plus nearest projected-grid remainder; candidate-only",
+    "partition_rule": "bilinear marching-squares core at first 1e-6 level above discrete max-tree saddle plus nearest projected-grid remainder; candidate-only",
     "connectivity": 8,
     "quantity": "850-hPa relative vorticity",
 }
@@ -163,6 +165,21 @@ def _peak_saddle_diagnostics(field: np.ndarray, component: np.ndarray,
     if (len(rows) > PARAMETERS["peak_isolation_max_component_cells"]
             or len(peaks) > PARAMETERS["peak_isolation_max_local_maxima"]):
         return None
+    peak_values = np.asarray([float(peak["peak_vorticity_s-1"]) for peak in peaks])
+    if np.unique(peak_values).size != len(peak_values):
+        # Equal-height maxima form an unresolved competition group for this
+        # discrete max-tree diagnostic. Do not let scan order select an
+        # arbitrary elder peak and assign unequal isolation labels.
+        return [{
+            "peak_vorticity_s-1": float(peak["peak_vorticity_s-1"]),
+            "peak_pixel_rc": peak["peak_pixel_rc"],
+            "peak_seed_pixel_rc": peak["_seed_rc"],
+            "saddle_vorticity_s-1": None,
+            "relative_isolation_contrast": None,
+            "isolated_by_experimental_gamma": None,
+            "isolation_status": "unresolved_equal_height_peak_tie",
+            "plateau_pixel_count": peak["plateau_pixel_count"],
+        } for peak in peaks]
     y0, y1 = int(rows.min()), int(rows.max()) + 1
     x0, x1 = int(cols.min()), int(cols.max()) + 1
     local_component = component[y0:y1, x0:x1]
@@ -455,7 +472,7 @@ def detect_candidates(vorticity_850: np.ndarray, *, grid: dict[str, Any],
             raise RuntimeError("experimental PMC partition did not conserve candidate pixels")
         peak_structure = {
             "status": partition["status"],
-            "method": "discrete_superlevel_contours_above_max_tree_saddles",
+            "method": "bilinear_marching_squares_cores_above_discrete_max_tree_saddles",
             "contour_interval_s-1": PARAMETERS["partition_contour_interval_s-1"],
             "gamma": PARAMETERS["peak_isolation_gamma"],
             "local_maximum_count": local_peak_count,
@@ -480,7 +497,8 @@ def detect_candidates(vorticity_850: np.ndarray, *, grid: dict[str, Any],
             })
     limitations = [
         "Кандидаты не являются подтверждёнными ПМЦ или прогнозом зарождения.",
-        "Разделение на субкандидаты использует дискретные уровни выше max-tree седла и ближайшее расстояние в целевой проекции; это не интерполяция contour/valley-line и требует чувствительности/метеорологической проверки.",
+        "Границы ядер интерполируются билинейным marching-squares, но уровни седла остаются дискретной max-tree оценкой, а остаток назначается ближайшему seed в проецированной сетке; это не полное contour/valley-line разделение IMPMCT и требует анализа чувствительности и метеорологической проверки.",
+        "Равные по высоте пики в одной связной области оставляют диагностическое разделение неразрешённым; это не означает одинаковую физическую структуру вихрей.",
         "Архивный трекер использует соседство центроидов; steering flow, split/merge и опубликованные QC-процедуры отсутствуют.",
         "Спутниковое сравнение описывает только пиксельное перекрытие заданных масок и не является независимой метеорологической верификацией.",
         "Искажение масштаба конкретной проекции не оценивается; пригодность сетки для заданной широты требует отдельной проверки.",
