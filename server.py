@@ -190,6 +190,49 @@ class Handler(BaseHTTPRequestHandler):
             elif path=='/api/sources/credentials':result=app.source_credentials(data)
             elif path=='/api/reanalysis/add':result=app.fields_add(data)
             elif path=='/api/pmc/archive/plan':result=app.pmc_archive_plan(data)
+            elif path=='/api/pmc/run':
+                # Single cached field only. This route never fetches data and
+                # intentionally does not accept client-supplied scientific arrays.
+                if set(data)!={'field_id','target_grid'}:
+                    raise ValueError('Нужны только field_id выбранного кэшированного поля и явная target_grid.')
+                identity=data.get('field_id')
+                grid=data.get('target_grid')
+                if not isinstance(identity,str) or not identity.strip():
+                    raise ValueError('Выберите одно поле из локального кэша.')
+                if not isinstance(grid,dict):
+                    raise ValueError('Задайте явную целевую проецированную сетку в метрах.')
+                try:
+                    width,height=grid.get('width'),grid.get('height')
+                    if (isinstance(width,bool) or isinstance(height,bool)
+                            or not isinstance(width,int) or not isinstance(height,int)
+                            or width<1 or height<1 or width*height>1_048_576):
+                        raise ValueError
+                except (TypeError,ValueError):
+                    raise ValueError('Размер целевой сетки должен быть целым и не превышать 1 048 576 пикселей.') from None
+                field=app.experimental_pmc_candidates(identity,target_grid=grid)
+                # Return useful projected coordinates while retaining source
+                # pixel coordinates and full provenance from the detector.
+                transform=grid['transform']
+                if len(transform)!=6:
+                    raise ValueError('Affine-преобразование целевой сетки должно содержать 6 чисел.')
+                a,b,c,d,e,f=(float(value) for value in transform)
+                candidates=[]
+                for candidate in field['candidates']:
+                    row,col=candidate['peak_pixel_rc']
+                    cy,cx=candidate['centroid_pixel_rc']
+                    item=dict(candidate)
+                    item['peak_xy_m']=[c+a*(col+0.5)+b*(row+0.5),f+d*(col+0.5)+e*(row+0.5)]
+                    item['centroid_xy_m']=[c+a*(cx+0.5)+b*(cy+0.5),
+                                           f+d*(cx+0.5)+e*(cy+0.5)]
+                    candidates.append(item)
+                result={'status':'completed','field_id':identity,
+                        'algorithm_id':field['algorithm_id'],'algorithm_version':field['algorithm_version'],
+                        'maturity':field['maturity'],'source':field['source'],'valid_time':field['valid_time'],
+                        'candidate_count':field['candidate_count'],'candidates':candidates,
+                        'grid':field['grid'],'field_passport':field['field_passport'],
+                        'input_coverage':field['input_coverage'],
+                        'satellite_comparison':field['satellite_comparison'],
+                        'parameters':field['parameters'],'limitations':field['limitations']}
             elif path=='/api/reanalysis/resume':result=app.fields_resume(data)
             elif path=='/api/reanalysis/import':result=app.fields_add(data,local=True)
             elif path=='/api/reanalysis/stack':result=app.fields_stack(data)

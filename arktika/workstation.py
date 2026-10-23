@@ -43,6 +43,107 @@ class Workstation(ReanalysisMixin, SourceManagerMixin, AutoCalibrationMixin, Pro
   self.sync_downloads()
   result=super().state();result.update(view_settings=self.store.setting('view_settings',{}),version=__version__,calibration=self.cal,oauth=dict(client_id=self.client.oauth.get('client_id',''),redirect_uri=self.client.oauth.get('redirect_uri',''),refresh_present=bool(self.client.refresh_token)))
   return result
+ def experimental_vorticity_850(self,identity,*,target_grid=None):
+  """Derive an experimental 850-hPa scalar from a checksum-verified wind cache."""
+  import xarray as xr
+  from .pmc_vorticity import derive_relative_vorticity_850
+  meta=self.field(identity)
+  if meta.get('source') not in ('era5','merra2'):
+   raise ValueError('Экспериментальная вихревость поддерживает только ERA5 и MERRA-2.')
+  if meta.get('variable')!='wind' or meta.get('unit')!='m s-1':
+   raise ValueError('Нужно кэшированное поле ветра в м/с.')
+  if meta.get('level')!=850 or meta.get('time_kind')!='instantaneous_analysis':
+   raise ValueError('Нужно поле анализа ветра ровно на уровне 850 гПа.')
+  path=self.field_cache/identity/'field.nc'
+  expected=meta.get('sha256')
+  before=digest(path)
+  if before!=expected:
+   raise ValueError('Контрольная сумма поля изменилась. Повторите получение данных.')
+  try:
+   with xr.open_dataset(path) as ds:
+    if ds.attrs.get('source')!=meta.get('source') or ds.attrs.get('variable')!='wind':
+     raise ValueError('Метаданные NetCDF не совпадают с карточкой кэшированного поля.')
+    if ds.attrs.get('time_kind')!='instantaneous_analysis' or ds.attrs.get('wind_reference') not in ('east_north','geographic_from_direction'):
+     raise ValueError('В NetCDF не подтверждены мгновенный анализ и географическая система ветра.')
+    if ds.attrs.get('unit')!='m s-1':
+     raise ValueError('В карточке поля или NetCDF не подтверждены единицы м/с.')
+    if ds.attrs.get('geolocation_crs')!='EPSG:4326':
+     raise ValueError('В кэше не подтверждена географическая система координат EPSG:4326.')
+    time=ds.coords.get('time')
+    if time is None or time.ndim!=0:
+     raise ValueError('В NetCDF отсутствует единственный точный срок UTC.')
+    actual_time=np.datetime_as_string(np.asarray(time.values).astype('datetime64[ns]'),unit='s')+'Z'
+    if actual_time!=meta.get('time'):
+     raise ValueError('Срок UTC в NetCDF не совпадает с карточкой поля.')
+    level=ds.coords.get('pressure_level')
+    if level is None or level.ndim!=0 or float(level.values)!=850.0 or level.attrs.get('units')!='hPa':
+     raise ValueError('В NetCDF не подтверждён единственный уровень 850 гПа.')
+    if not all(name in ds.data_vars for name in ('u','v')):
+     raise ValueError('В NetCDF отсутствуют обе компоненты географического ветра.')
+    latitude=ds.coords.get('latitude');longitude=ds.coords.get('longitude')
+    if (ds['u'].ndim!=2 or ds['u'].dims!=ds['v'].dims
+        or latitude is None or longitude is None
+        or latitude.ndim!=2 or longitude.ndim!=2
+        or latitude.dims!=ds['u'].dims or longitude.dims!=ds['u'].dims
+        or ds['u'].shape!=ds['v'].shape
+        or latitude.shape!=ds['u'].shape or longitude.shape!=ds['u'].shape):
+     raise ValueError('Компоненты ветра и координаты должны иметь одну одинаково упорядоченную двумерную сетку.')
+    for name,standard,units in (('latitude','latitude','degrees_north'),('longitude','longitude','degrees_east')):
+     coordinate=ds.coords.get(name)
+     if coordinate is None or coordinate.attrs.get('standard_name')!=standard or coordinate.attrs.get('units')!=units:
+      raise ValueError('Координаты широты/долготы не подтверждены метаданными CF.')
+    for name,standard in (('u','eastward_wind'),('v','northward_wind')):
+     variable=ds[name]
+     if variable.attrs.get('units')!='m s-1' or variable.attrs.get('standard_name')!=standard:
+      raise ValueError('Единицы или standard_name компонент ветра не подтверждены.')
+    u=ds['u'].load().values
+    v=ds['v'].load().values
+    latitude=ds['latitude'].load().values
+    longitude=ds['longitude'].load().values
+    wind_reference=ds.attrs['wind_reference']
+   after=digest(path)
+  except (OSError,ValueError,KeyError):
+   raise
+  if after!=expected or after!=before:
+   raise ValueError('Кэшированное поле изменилось во время чтения; расчёт отменён.')
+  result=derive_relative_vorticity_850(
+   u,v,latitude,longitude,
+   field_metadata={'source':meta['source'],'field_id':identity,'input_sha256':after,
+                   'variable':'wind','units':'m s-1','level_hPa':850,
+                   'valid_time':meta['time'],'time_kind':'instantaneous_analysis',
+                   'wind_reference':wind_reference,
+                   # Cache `version` identifies our normalizer, not provider data.
+                   'source_version':'unavailable_from_normalized_cache'},
+  )
+  passport=result['passport']
+  passport['source_file_digest_attestation']='verified against cached field.nc digest before and after loading'
+  passport['source_normalizer_version']=meta.get('version')
+  passport['limitations'].append('Ревизия исходного набора данных не сохранена в кэше; версия нормализатора не выдаётся за ревизию источника.')
+  if target_grid is not None:
+   from .pmc_projection import reproject_vorticity_to_grid
+   result=reproject_vorticity_to_grid(result['values'],latitude,longitude,
+                                      target_grid=target_grid,source_passport=passport)
+  return result
+ def experimental_pmc_candidates(self,identity,*,target_grid,satellite_observation_mask=None,
+                                 satellite_observation_metadata=None):
+  """Run the explicitly experimental single-time detector on a chosen metric grid."""
+  from .pmc_detection import detect_candidates
+  from .pmc_projection import MAX_DETECTOR_PROJECTION_SCALE_ERROR
+  field=self.experimental_vorticity_850(identity,target_grid=target_grid)
+  passport=field['passport']
+  if passport['projection_scale']['maximum_relative_error']>MAX_DETECTOR_PROJECTION_SCALE_ERROR:
+   raise ValueError('Искажение масштаба целевой проекции превышает 5%; сетка непригодна для этого детектора.')
+  coverage=passport['input_coverage']
+  if coverage['valid_pixels']==0:
+   raise ValueError('В целевой сетке нет валидного покрытия исходного поля; кандидаты не рассчитаны.')
+  result=detect_candidates(field['values'],grid=field['grid'],valid_time=passport['valid_time'],
+                           source=passport['source'],source_field_metadata=passport,
+                           satellite_observation_mask=satellite_observation_mask,
+                           satellite_observation_metadata=satellite_observation_metadata)
+  result['field_passport']=passport
+  result['input_coverage']=coverage
+  result['projection_scale_tolerance_relative']=MAX_DETECTOR_PROJECTION_SCALE_ERROR
+  return result
  def derived_adapter_catalogue(self):
   return {'schema_version':'1.0','adapters':self.derived_adapters.catalogue()}
  def configure(self,data):
