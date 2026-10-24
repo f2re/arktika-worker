@@ -60,7 +60,7 @@
     "arktika/reanalysis/normalize.py": "371cf7e2a714c42c45dc9d2298741dae3a0b3ab9669a52d0d3e6f4c949d1b001",
     "arktika/reanalysis/render.py": "1a1510b5715529d9137122bbb8903c8b64a490567486a845a76f2883c302fcac",
     "arktika/reanalysis/transport.py": "48b57b64ec178729e08df7086cb4cedbf4663d2ca0b26bde52ec7759c5e1de7a",
-    "arktika/reanalysis/worker.py": "21976718ab0e203caca3de13640d606ababd583288c147ce9fd4828259fe38a2",
+    "arktika/reanalysis/worker.py": "3ed85ce8d25e8da86218788b1cbda0865be5c895ba2d8be70378a48ee86a5971",
     "arktika/reanalysis_service.py": "01441b798c71416b8eeba89ebdf5e09f3617ba18dac3db6c6aafb7e5cb7466b8",
     "arktika/routes.py": "cf783025f44732db8ddf7fb7de8857fd6e0a7a026c95201bed0dbf1ca74414ca",
     "arktika/saved_product_integrity.py": "736c7f7c743aeff2f351a8a5eb0e76e83d6b429e0a4499e253d884e39f5c084c",

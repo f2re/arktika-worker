@@ -136,7 +136,10 @@ def _prepare_lock(cache,identity):
         try:
             if sys.platform=='win32':
                 import msvcrt
-                handle.seek(0);handle.write(b'0');handle.flush();handle.seek(0)
+                handle.seek(0,2)
+                if handle.tell()==0:
+                    handle.write(b'0');handle.flush()
+                handle.seek(0)
                 try: msvcrt.locking(handle.fileno(),msvcrt.LK_NBLCK,1)
                 except OSError: raise ValueError('Этот расчёт уже выполняется. Повторите позже.') from None
             else:
@@ -171,18 +174,21 @@ def _prepare_locked(payload,progress,*,registry: AdapterRegistry = DEFAULT_REGIS
     adapter=get_runtime_adapter(plan.get('source'),registry=registry)
     if plan.get('variable') not in adapter.supported_variables:
         raise ValueError('Выбранное поле не поддерживается источником реанализа.')
-    if not payload.get('refresh'):
-        old=checked_cache(target)
-        if old: return {'field':old,'cached':True}
-    cache.mkdir(parents=True,exist_ok=True)
-    if shutil.disk_usage(cache).free<128*1024**2: raise ValueError('Для обработки требуется не менее 128 МиБ свободного места.')
-    # A stable, opaque staging key lets the trusted CDS transport resume completed
-    # request parts after a retry without persisting credentials or request URLs.
     checkpoint_key=hashlib.sha256(json.dumps(
         {'identity':identity,'plan':plan},sort_keys=True,separators=(',',':'),
         ensure_ascii=True,allow_nan=False).encode()).hexdigest()
     checkpoint_root=cache/'.incomplete'
     checkpoint=checkpoint_root/checkpoint_key
+    if not payload.get('refresh'):
+        old=checked_cache(target)
+        if old:
+            if not payload.get('path'):
+                shutil.rmtree(checkpoint,ignore_errors=True)
+            return {'field':old,'cached':True}
+    cache.mkdir(parents=True,exist_ok=True)
+    if shutil.disk_usage(cache).free<128*1024**2: raise ValueError('Для обработки требуется не менее 128 МиБ свободного места.')
+    # A stable, opaque staging key lets the trusted CDS transport resume completed
+    # request parts after a retry without persisting credentials or request URLs.
     if not payload.get('path'):
         checkpoint.mkdir(parents=True,exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='.field-',dir=cache) as temporary:
