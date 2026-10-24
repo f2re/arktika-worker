@@ -159,9 +159,9 @@ class PmcObservationIngest(unittest.TestCase):
         self.register(metadata=metadata)
         observation=self.app._pmc_observation_for_frame(
             '2024-01-01T01:00:00Z',self.metadata['grid'])
-        self.assertEqual('2024-01-01T01:00:00Z',observation['valid_time'])
-        self.assertEqual('2024-01-01T00:30:00Z',observation['scan_start_utc'])
-        self.assertEqual('2024-01-01T01:00:00Z',observation['scan_end_utc'])
+        self.assertEqual('2024-01-01T01:00:00Z',observation['metadata']['valid_time'])
+        self.assertEqual('2024-01-01T00:30:00Z',observation['metadata']['scan_start_utc'])
+        self.assertEqual('2024-01-01T01:00:00Z',observation['metadata']['scan_end_utc'])
 
     def test_no_covering_scan_is_unknown_and_two_covering_scans_are_ambiguous(self):
         no_coverage={**self.metadata,'valid_time':'2024-01-01T00:15:00Z',
