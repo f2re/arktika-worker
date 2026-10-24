@@ -23,7 +23,7 @@ from .product_schema import product_passport
 
 
 ALGORITHM_ID = "arktika.experimental_pmc_archive_run"
-ALGORITHM_VERSION = "0.4.0"
+ALGORITHM_VERSION = "0.5.0"
 MAX_FIELDS = 128
 MAX_GRID_PIXELS = 1_048_576
 
@@ -435,8 +435,9 @@ def build_archive_report(*, task_id: str, plan: dict[str, Any],
                             if isinstance(row["result"].get("grid"), dict)), None)
     # The single-time detector performs the pixel comparison while the mask is
     # available. Archive frames retain that compact result, never the raw mask.
-    # Accept it here only when its attributed UTC and complete target grid match
-    # the frame exactly; stale or malformed comparisons remain unknown.
+    # Accept legacy single-time observations only at exact UTC; interval
+    # observations only when the model instant lies inside the declared scan.
+    # Stale, ambiguous or malformed comparisons remain unknown.
     satellite_frames: list[dict[str, Any]] = []
     aggregate = {key: 0 for key in ("true_positive_pixels", "false_positive_pixels",
                                     "false_negative_pixels", "true_negative_pixels")}
@@ -472,10 +473,24 @@ def build_archive_report(*, task_id: str, plan: dict[str, Any],
         valid_match = False
         if isinstance(observation, dict):
             try:
+                observation_time = _utc(observation.get("valid_time"))
+                frame_time = _utc(stamp)
+                scan_start = observation.get("scan_start_utc")
+                scan_end = observation.get("scan_end_utc")
+                if scan_start is None and scan_end is None:
+                    temporal_match = observation_time == frame_time
+                elif isinstance(scan_start, str) and isinstance(scan_end, str):
+                    start_time = _utc(scan_start)
+                    end_time = _utc(scan_end)
+                    temporal_match = (start_time < end_time
+                                      and start_time <= observation_time <= end_time
+                                      and start_time <= frame_time <= end_time)
+                else:
+                    temporal_match = False
                 valid_match = (
                     all(isinstance(observation.get(key), str) and observation[key].strip()
                         for key in ("source", "product_id", "observation_id"))
-                    and _utc(observation.get("valid_time")).isoformat().replace("+00:00", "Z") == stamp
+                    and temporal_match
                     and isinstance(target_grid, dict)
                     and validate_grid(result.get("grid")) == validate_grid(target_grid)
                     and validate_grid(entry.get("grid")) == validate_grid(target_grid)
@@ -488,7 +503,8 @@ def build_archive_report(*, task_id: str, plan: dict[str, Any],
             frame = {"source": row.get("source"), "valid_time": row.get("valid_time"),
                      "status": "unknown_unmatched", "metrics": None}
             reason_code = comparison.get("reason_code")
-            if reason_code in {"duplicate_exact_time_observations", "observation_grid_unavailable"}:
+            if reason_code in {"duplicate_exact_time_observations", "ambiguous_eligible_observations",
+                               "no_eligible_observation", "observation_grid_unavailable"}:
                 frame["reason_code"] = reason_code
             satellite_frames.append(frame)
             continue

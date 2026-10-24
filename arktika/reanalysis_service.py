@@ -11,6 +11,7 @@ import tempfile
 import threading
 import uuid
 import zipfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .download import atomic_json, digest
@@ -91,8 +92,11 @@ class ReanalysisMixin:
         from datetime import datetime,timezone
 
         allowed={'schema_version','observation_ref','source','product','product_version',
-                 'valid_time','label_convention','qc_status','grid','nodata'}
-        if not isinstance(metadata,dict) or set(metadata)!=allowed:
+                 'valid_time','scan_start_utc','scan_end_utc',
+                 'label_convention','qc_status','grid','nodata'}
+        required=allowed-{'scan_start_utc','scan_end_utc'}
+        if (not isinstance(metadata,dict) or not required.issubset(metadata)
+                or not set(metadata).issubset(allowed)):
             raise ValueError('Метаданные наблюдения должны содержать ровно определённые поля sidecar.')
         if metadata.get('schema_version')!='arktika.pmc_satellite_observation.v1':
             raise ValueError('Неизвестная версия sidecar наблюдения.')
@@ -116,6 +120,28 @@ class ReanalysisMixin:
             valid_time=stamp.astimezone(timezone.utc).isoformat().replace('+00:00','Z')
         except (ValueError,OverflowError):
             raise ValueError('Некорректный срок UTC наблюдения.') from None
+        scan_start=metadata.get('scan_start_utc')
+        scan_end=metadata.get('scan_end_utc')
+        if (scan_start is None) != (scan_end is None):
+            raise ValueError('Интервал съёмки требует одновременно scan_start_utc и scan_end_utc.')
+        if scan_start is not None:
+            def parse_scan_time(value, field):
+                if not isinstance(value,str) or not re.search(r'(?:Z|\+00:00)$',value):
+                    raise ValueError(f'{field} должен содержать явное смещение UTC.')
+                try:
+                    parsed=datetime.fromisoformat(value.replace('Z','+00:00'))
+                    if parsed.utcoffset()!=timezone.utc.utcoffset(parsed):raise ValueError()
+                    return parsed.astimezone(timezone.utc)
+                except (ValueError,OverflowError):
+                    raise ValueError(f'Некорректное время UTC: {field}.') from None
+            start_time=parse_scan_time(scan_start,'scan_start_utc')
+            end_time=parse_scan_time(scan_end,'scan_end_utc')
+            if end_time<=start_time:
+                raise ValueError('scan_end_utc должен быть позже scan_start_utc.')
+            if not start_time<=stamp<=end_time:
+                raise ValueError('valid_time должен попадать внутрь интервала съёмки.')
+            scan_start=start_time.isoformat().replace('+00:00','Z')
+            scan_end=end_time.isoformat().replace('+00:00','Z')
         labels,label_grid=self._read_pmc_mask_raster(labels_bytes,'Маска меток')
         coverage,coverage_grid=self._read_pmc_mask_raster(coverage_bytes,'Маска покрытия')
         if label_grid!=coverage_grid:
@@ -141,9 +167,12 @@ class ReanalysisMixin:
                 or any(not math.isfinite(v) for v in checked['transform']+[checked['resolution_x_m'],checked['resolution_y_m']])
                 or checked!=label_grid):
             raise ValueError('Сетка sidecar должна точно совпадать с обеими масками.')
-        safe={key:metadata[key] for key in allowed if key not in ('grid','valid_time')}
+        safe={key:metadata[key] for key in allowed
+              if key in metadata and key not in ('grid','valid_time')}
         safe.update(valid_time=valid_time,grid=label_grid,units='1',algorithm_id='arktika.pmc_satellite_observation_import',
                     algorithm_version='0.1.0',status='imported_unverified')
+        if scan_start is not None:
+            safe.update(scan_start_utc=scan_start,scan_end_utc=scan_end)
         source_digest=hashlib.sha256(labels_bytes+coverage_bytes).hexdigest()
         safe['source_files_sha256']=source_digest
         if metadata_source_bytes is None:
@@ -172,13 +201,17 @@ class ReanalysisMixin:
         total=int(coverage.size)
         observed=int(np.count_nonzero(coverage))
         positives=int(np.count_nonzero((labels==1)&(coverage==1)))
+        observation_summary={key:safe[key] for key in (
+            'observation_ref','source','product','product_version','valid_time',
+            'label_convention','qc_status','grid','units','algorithm_id',
+            'algorithm_version')}
+        if isinstance(safe.get('scan_start_utc'),str):
+            observation_summary.update(scan_start_utc=safe['scan_start_utc'],
+                                       scan_end_utc=safe['scan_end_utc'])
         return {
             'status':'preview_only',
             'ingestion_status':'not_ingested',
-            'observation':{key:safe[key] for key in (
-                'observation_ref','source','product','product_version','valid_time',
-                'label_convention','qc_status','grid','units','algorithm_id',
-                'algorithm_version')},
+            'observation':observation_summary,
             'structural_summary':{
                 'grid':safe['grid'],
                 'total_pixels':total,
@@ -269,7 +302,8 @@ class ReanalysisMixin:
             try:
                 _,_,metadata=self.pmc_observation(identity)
                 items.append({key:metadata[key] for key in
-                              ('observation_id','source','product','product_id','valid_time','status')})
+                              ('observation_id','source','product','product_id','valid_time','status',
+                               'scan_start_utc','scan_end_utc') if key in metadata})
             except (OSError,ValueError,KeyError):
                 continue
         items.sort(key=lambda item:(item['valid_time'],item['observation_id']))
@@ -443,7 +477,8 @@ class ReanalysisMixin:
             result=row.get('result') if isinstance(row,dict) else None
             comparison=result.get('satellite_comparison') if isinstance(result,dict) else None
             if (row.get('status')=='completed' and isinstance(result,dict)
-                    and isinstance(comparison,dict) and comparison.get('status')=='comparison_only'):
+                    and isinstance(comparison,dict)
+                    and comparison.get('status') in ('comparison_only','unknown_unmatched')):
                 comparisons.append({'source':row.get('source'),'valid_time':row.get('valid_time'),
                                     'grid':result.get('grid'),'comparison':comparison})
         return build_archive_report(task_id=identity,plan=job['plan'],expected_times=expected,
@@ -452,31 +487,64 @@ class ReanalysisMixin:
             target_grid=job.get('target_grid'),satellite_comparisons=comparisons)
 
     def _pmc_observation_for_frame(self, valid_time, target_grid):
-        """Return one exact-time observation harmonized to the target grid.
+        """Return one temporally eligible observation harmonized to the target grid.
 
-        Duplicate observations for one UTC remain ambiguous. Grid changes use
-        nearest-neighbour for labels and coverage separately; this is technical
-        alignment only, not meteorological validation.
+        Legacy observations match exact UTC. Interval observations match only
+        when the model instant falls inside the explicitly supplied closed scan
+        interval. Grid changes use nearest-neighbour for labels and coverage;
+        temporal or spatial alignment is not meteorological validation.
         """
         frame_time=pmc_utc_hour(valid_time,'Срок кадра').isoformat().replace('+00:00','Z')
+        frame_stamp=pmc_utc_hour(frame_time,'Срок кадра')
+        def parse_scan_instant(value, name):
+            if not isinstance(value,str) or not re.search(r'(?:Z|\+00:00)$',value):
+                raise ValueError(f'{name} должен содержать явное смещение UTC.')
+            try:
+                parsed=datetime.fromisoformat(value.replace('Z','+00:00'))
+                if parsed.utcoffset()!=timezone.utc.utcoffset(parsed):raise ValueError()
+                return parsed.astimezone(timezone.utc)
+            except (ValueError,OverflowError):
+                raise ValueError(f'Некорректное время UTC: {name}.') from None
+        observation_state=self.pmc_observations_state()
+        observations=observation_state.get('observations',[])
         matching=[]
-        for item in self.pmc_observations_state().get('observations',[]):
+        for item in observations:
             if not isinstance(item,dict):
                 continue
             try:
                 listed_time=pmc_utc_hour(item.get('valid_time'),'Срок наблюдения').isoformat().replace('+00:00','Z')
-                if listed_time==frame_time:
+                start=item.get('scan_start_utc');end=item.get('scan_end_utc')
+                if start is None and end is None:
+                    eligible=listed_time==frame_time
+                elif isinstance(start,str) and isinstance(end,str):
+                    start_stamp=parse_scan_instant(start,'scan_start_utc')
+                    end_stamp=parse_scan_instant(end,'scan_end_utc')
+                    eligible=start_stamp<end_stamp and start_stamp<=frame_stamp<=end_stamp
+                else:
+                    eligible=False
+                if eligible:
                     matching.append(item)
             except (ValueError,TypeError):
                 continue
         if not matching:
+            if observations:
+                return {'unavailable_reason':'no_eligible_observation'}
             return None
         if len(matching)!=1:
-            return {'unavailable_reason':'duplicate_exact_time_observations'}
+            exact_legacy=all(item.get('scan_start_utc') is None and item.get('scan_end_utc') is None
+                             and item.get('valid_time')==frame_time for item in matching)
+            reason='duplicate_exact_time_observations' if exact_legacy else 'ambiguous_eligible_observations'
+            return {'unavailable_reason':reason}
         try:
             labels,coverage,metadata=self.pmc_observation(matching[0].get('observation_id'))
             observation_time=pmc_utc_hour(metadata.get('valid_time'),'Срок наблюдения').isoformat().replace('+00:00','Z')
-            if observation_time!=frame_time or metadata.get('status')!='imported_unverified':
+            start=metadata.get('scan_start_utc');end=metadata.get('scan_end_utc')
+            interval_match=False
+            if isinstance(start,str) and isinstance(end,str):
+                interval_match=(parse_scan_instant(start,'scan_start_utc')<=frame_stamp
+                                <=parse_scan_instant(end,'scan_end_utc'))
+            if (not (observation_time==frame_time or interval_match)
+                    or metadata.get('status')!='imported_unverified'):
                 return None
             source_grid=metadata.get('grid')
             labels,coverage,regridding=reproject_observation_masks(
@@ -486,6 +554,8 @@ class ReanalysisMixin:
         return {'labels':labels,'coverage':coverage,'metadata':{
             'source':metadata['source'],'product_id':metadata['product_id'],
             'valid_time':metadata['valid_time'],'observation_id':metadata['observation_id'],
+            **({'scan_start_utc':metadata['scan_start_utc'],'scan_end_utc':metadata['scan_end_utc']}
+               if isinstance(metadata.get('scan_start_utc'),str) else {}),
             'grid':target_grid,'regridding':regridding}}
 
     def pmc_archive_state(self, data=None):
