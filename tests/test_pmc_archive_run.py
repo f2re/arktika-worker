@@ -23,6 +23,76 @@ def frame(hour, source="era5", candidate_id="c"):
 
 
 class PmcArchiveRunTests(unittest.TestCase):
+    @staticmethod
+    def observation_comparison(nominal_time, scan_start, scan_end):
+        return {
+            "status": "comparison_only",
+            "observation": {
+                "source": "manual_satellite", "product_id": "labels-v1",
+                "valid_time": nominal_time, "scan_start_utc": scan_start,
+                "scan_end_utc": scan_end, "observation_id": "o" * 24,
+                "grid": dict(GRID),
+            },
+            "metrics": {"true_positive_pixels": 2, "false_positive_pixels": 1,
+                        "false_negative_pixels": 1, "true_negative_pixels": 16,
+                        "intersection_over_union": .5,
+                        "probability_of_detection": .6666666667,
+                        "false_alarm_ratio": .3333333333},
+            "coverage": {"observed_pixels": 20, "unknown_pixels": 0},
+        }
+
+    def interval_report(self, comparisons, stamp="2024-01-01T01:00:00Z"):
+        report = build_archive_report(
+            task_id="t" * 32, plan={"sources": ["era5"]},
+            expected_times={"era5": [stamp]}, interval_hours={"era5": 1},
+            frame_records=[{"field_id": "a" * 24, "source": "era5",
+                            "valid_time": stamp, "status": "completed",
+                            "result": frame(1)}], cached_fields=[], target_grid=GRID,
+            satellite_comparisons=comparisons,
+        )
+        self.assertEqual("not_meteorological_validation",
+                         report["satellite_comparison"]["validation_status"])
+        self.assertNotIn("genesis_location", report["tracks_by_source"][0]["tracks"][0])
+        return report["satellite_comparison"]["frames"][0]
+
+    def test_one_scan_interval_covering_frame_is_compared_inclusive_of_boundaries(self):
+        stamp = "2024-01-01T01:00:00Z"
+        entry = {"source": "era5", "valid_time": stamp, "grid": dict(GRID),
+                 "comparison": self.observation_comparison(
+                     "2024-01-01T00:45:00Z", "2024-01-01T00:30:00Z", stamp)}
+        result = self.interval_report([entry])
+        self.assertEqual("comparison_only", result["status"])
+        self.assertEqual(stamp, result["observation"]["scan_end_utc"])
+
+        start_entry = {"source": "era5", "valid_time": stamp, "grid": dict(GRID),
+                       "comparison": self.observation_comparison(
+                           "2024-01-01T01:15:00Z", stamp, "2024-01-01T01:30:00Z")}
+        start_result = self.interval_report([start_entry])
+        self.assertEqual("comparison_only", start_result["status"])
+        self.assertEqual(stamp, start_result["observation"]["scan_start_utc"])
+
+    def test_no_scan_interval_coverage_is_unknown_with_reason_and_no_comparison(self):
+        stamp = "2024-01-01T01:00:00Z"
+        entry = {"source": "era5", "valid_time": stamp, "grid": dict(GRID),
+                 "comparison": {"status": "unknown_no_eligible_observation",
+                                "reason_code": "no_eligible_observation",
+                                "observation": None, "metrics": None}}
+        result = self.interval_report([entry])
+        self.assertEqual("unknown_unmatched", result["status"])
+        self.assertEqual("no_eligible_observation", result["reason_code"])
+        self.assertIsNone(result["metrics"])
+
+    def test_two_eligible_overlapping_scan_intervals_are_ambiguous(self):
+        stamp = "2024-01-01T01:00:00Z"
+        entry = {"source": "era5", "valid_time": stamp, "grid": dict(GRID),
+                 "comparison": {"status": "unknown_ambiguous_observations",
+                                "reason_code": "ambiguous_eligible_observations",
+                                "observation": None, "metrics": None}}
+        result = self.interval_report([entry])
+        self.assertEqual("unknown_unmatched", result["status"])
+        self.assertEqual("ambiguous_eligible_observations", result["reason_code"])
+        self.assertIsNone(result["metrics"])
+
     def test_target_grid_requires_bounded_projected_metre_affine(self):
         valid = validate_grid(GRID)
         self.assertEqual("EPSG:3413", valid["crs"])
