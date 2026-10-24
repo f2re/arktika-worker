@@ -18,9 +18,10 @@ class CalibrationError(ValueError):pass
 
 def validate_calibration(config):
  if not isinstance(config,dict):raise CalibrationError('Калибровка должна быть JSON-объектом.')
- if set(config)-({'mode','reference','channels','blocked'} if config.get('mode')=='custom' else {'mode','reference','channels'}):raise CalibrationError('Неизвестные поля калибровки.')
+ if set(config)-({'mode','reference','channels','blocked'} if config.get('mode')=='custom' else {'mode','reference','channels','platform'}):raise CalibrationError('Неизвестные поля калибровки.')
  mode=config.get('mode','unknown')
  if mode not in ('unknown','assumed','declared','custom'):raise CalibrationError('Неизвестный режим калибровки.')
+ if 'platform' in config and config['platform'] not in ('ARCM1','ARCM2'):raise CalibrationError('Аппарат калибровки должен быть ARCM1 или ARCM2.')
  if mode=='custom':
   from .radiometry import affine_values
   if not isinstance(config.get('channels'),dict):raise CalibrationError('Нужен словарь шкал каналов.')
@@ -194,6 +195,10 @@ def build_product(scene,root,request,cal,cancel=None,progress=lambda x:None):
   quality_control={'flags':legend.get('quality_flags',{}),'valid_pixels':int(valid.sum()),'total_pixels':int(valid.size)},
   sources=[{'kind':'satellite_channel','channel':item['channel'],'filename':item['filename'],'sha256':item['sha256']} for item in inputs],
   calibration_version='calibration-config-v1',calibration_status=status,
+  calibration_provenance=[dict(channel=int(m['channel']),units=m['units'],status=m['status'],
+                               reference=m['reference'],scale=float(m['scale']),offset=float(m['offset']),
+                               applicability_platform=cal.get('channels',{}).get(str(m['channel']),{}).get('applicability_platform',scene['platform']))
+                          for m in metas],
   limitations=[legend.get('meaning',''),legend.get('threshold_status','')],
  )
  if field is not None:meta['files'].append('values.tif')

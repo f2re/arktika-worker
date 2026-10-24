@@ -61,6 +61,7 @@ def product_passport(
     calibration_version: str,
     calibration_status: str,
     limitations: list[str],
+    calibration_provenance: list[dict[str, Any]] | None = None,
     uncertainty: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Создаёт паспорт с обязательными полями; отсутствие оценки явно фиксируется."""
@@ -99,6 +100,22 @@ def product_passport(
         raise ValueError("Паспорт продукта: укажите хотя бы один источник.")
     if not isinstance(quality_control, dict):
         raise ValueError("Паспорт продукта: QC должен быть объектом.")
+    if calibration_provenance is not None:
+        if not isinstance(calibration_provenance, list):
+            raise ValueError("Паспорт продукта: provenance калибровки должен быть списком.")
+        for item in calibration_provenance:
+            if (not isinstance(item, dict) or isinstance(item.get("channel"), bool)
+                    or item.get("channel") not in range(1, 11)
+                    or item.get("units") not in ("K", "DN")
+                    or not isinstance(item.get("status"), str)
+                    or not isinstance(item.get("reference"), str)
+                    or item.get("applicability_platform") not in ("ARCM1", "ARCM2")):
+                raise ValueError("Паспорт продукта: неполное происхождение шкалы канала.")
+            for key in ("scale", "offset"):
+                number = item.get(key)
+                if (isinstance(number, bool) or not isinstance(number, (int, float))
+                        or not math.isfinite(float(number))):
+                    raise ValueError("Паспорт продукта: неверные коэффициенты калибровки.")
     if not isinstance(limitations, list) or any(not isinstance(item, str) for item in limitations):
         raise ValueError("Паспорт продукта: ограничения должны быть списком пояснений.")
     passport = {
@@ -119,6 +136,8 @@ def product_passport(
         "limitations": limitations,
         "uncertainty": uncertainty or {"status": "not_assessed", "method": None},
     }
+    if calibration_provenance is not None:
+        passport["calibration"]["channels"] = [dict(item) for item in calibration_provenance]
     if valid_time is not None:
         passport["valid_time"] = valid_time
     else:
@@ -164,6 +183,7 @@ def validate_product_passport(value: Any) -> dict[str, Any]:
             sources=value["sources"],
             calibration_version=calibration["version"],
             calibration_status=calibration["status"],
+            calibration_provenance=calibration.get("channels"),
             limitations=value["limitations"],
             uncertainty=uncertainty,
         )

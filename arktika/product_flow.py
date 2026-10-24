@@ -15,7 +15,7 @@ class ProductFlowMixin:
         from .processing import calibration
         saved = self.store.setting('scale_profiles', {})
         entries = {**saved.get(scene['platform'], {}), **saved.get(scene['id'], {})}
-        channels, issues = {}, {}
+        channels, issues, blocked = {}, {}, set()
         for ch, entry in scene['channels'].items():
             if int(ch) < 4 or not Path(entry['path']).is_file():
                 continue
@@ -34,18 +34,30 @@ class ProductFlowMixin:
                         continue
                 else:
                     legacy = self.cal
+                    legacy_platform = legacy.get('platform')
+                    scoped_legacy = legacy.get('mode') in ('assumed', 'declared')
+                    if scoped_legacy and legacy_platform != scene['platform']:
+                        issues[ch] = (
+                            'Глобальная калибровка не применена: выберите аппарат '
+                            'для неё и пересохраните настройки.' if not legacy_platform else
+                            'Глобальная калибровка задана для другого аппарата.'
+                        )
+                        legacy = {'mode': 'unknown'}
                 with rasterio.open(entry['path']) as ds:
                     if legacy.get('mode') == 'assumed' or (legacy.get('mode') == 'declared' and ch in legacy.get('channels',{})):
                         a,b,u,s,r = calibration(ds,int(ch),legacy)
                         if u == 'K':
-                            channels[ch] = dict(scale=a,offset=b,units=u,status=s,reference=r,method='legacy')
+                            channels[ch] = dict(scale=a,offset=b,units=u,status=s,reference=r,
+                                                method='legacy', applicability_platform=scene['platform'])
                     else:
                         match = metadata_scale(ds, entry.get('raster_bands'))
                         if match:
                             channels[ch] = match
             except (ValueError,OSError,rasterio.errors.RasterioError) as exc:
                 issues[ch] = str(exc)
-        return dict(mode='custom', reference='Шкалы каналов выбранного срока', channels=channels, blocked=list(issues)), issues
+                blocked.add(ch)
+        return dict(mode='custom', reference='Шкалы каналов выбранного срока', channels=channels,
+                    blocked=sorted(blocked, key=int)), issues
 
     def product_plan(self, data):
         product = str(data.get('product','channel'))

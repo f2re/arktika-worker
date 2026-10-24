@@ -133,6 +133,39 @@ class ProductFlowTests(unittest.TestCase):
         self.app.save_scale(self.scale(scope='platform'))
         scene=self.app.scene(self.scene['id']);scene['id']='ARCM1_other';scene['platform']='ARCM1'
         self.assertEqual(self.app.radiometry_config(scene)[0]['channels'],{})
+    def test_global_assumption_requires_and_matches_platform(self):
+        with self.assertRaisesRegex(ValueError,'задайте аппарат'):
+            self.app.set_calibration({'mode':'assumed'})
+        self.app.set_calibration({'mode':'assumed','platform':'ARCM2'})
+        scene=self.app.scene(self.scene['id']);cal,issues=self.app.radiometry_config(scene)
+        self.assertEqual(cal['channels']['9']['applicability_platform'],'ARCM2')
+        self.assertEqual(issues,{})
+        scene['platform']='ARCM1'
+        other,issues=self.app.radiometry_config(scene)
+        self.assertEqual(other['channels'],{})
+        self.assertIn('9',issues)
+        self.assertIn('другого аппарата',issues['9'])
+    def test_platform_mismatch_preserves_explicit_metadata_scale(self):
+        fixture(self.local,units=True)
+        self.app.set_calibration({'mode':'assumed','platform':'ARCM1'})
+        scene=self.app.scene(self.scene['id']);cal,issues=self.app.radiometry_config(scene)
+        self.assertEqual(cal['channels']['9']['status'],'metadata')
+        self.assertEqual(cal['blocked'],[])
+        self.assertIn('9',issues)
+    def test_global_declared_profile_is_platform_scoped_in_passport(self):
+        config={'mode':'declared','platform':'ARCM2','reference':'Синтетический тест',
+                'channels':{'9':{'scale':.1,'offset':200,'units':'K'}}}
+        self.app.set_calibration(config)
+        scene=self.app.scene(self.scene['id']);cal,_=self.app.radiometry_config(scene)
+        product=build_product(scene,self.app.product_root,
+                              dict(product='channel',channel=9,preset='barents',width=256),cal)
+        saved=self.app.product(product['id'])
+        self.assertEqual(saved['calibration_config']['channels']['9']['applicability_platform'],'ARCM2')
+        channel_provenance=next(c for c in saved['passport']['calibration']['channels'] if c['channel']==9)
+        self.assertEqual(channel_provenance['applicability_platform'],'ARCM2')
+        self.assertEqual(channel_provenance['reference'],'Синтетический тест')
+        scene['platform']='ARCM1'
+        self.assertNotIn('9',self.app.radiometry_config(scene)[0]['channels'])
     def test_return_to_metadata_clears_selected_override(self):
         self.app.save_scale(self.scale())
         d=self.scale();d['method']='auto';d['channels']=[9];self.app.save_scale(d)
@@ -213,7 +246,7 @@ class ProductFlowTests(unittest.TestCase):
         self.assertNotIn(str(self.root),json.dumps(result));self.assertEqual(len(result['channels']),7)
     def test_legacy_partial_declaration_keeps_other_channel_metadata(self):
         fixture(self.local,units=True)
-        self.app.cal=dict(mode='declared',reference='SYNTHETIC source',channels={'9':dict(scale=1,offset=0,units='K')})
+        self.app.cal=dict(mode='declared',platform='ARCM2',reference='SYNTHETIC source',channels={'9':dict(scale=1,offset=0,units='K')})
         p=self.plan()
         self.assertEqual(p['status'],'ready')
         self.assertEqual(p['calibration']['7']['status'],'metadata')

@@ -182,7 +182,10 @@ class Workstation(DerivedProductServiceMixin, ReanalysisMixin, SourceManagerMixi
  def set_calibration(self,value):
   if self.busy:raise ValueError('Дождитесь окончания расчёта перед сменой калибровки.')
   if not isinstance(value,dict):raise ValueError('Ожидается JSON-объект калибровки.')
-  validate_calibration(value);self.cal=json.loads(json.dumps(value));self.store.set_setting('calibration',self.cal)
+  validate_calibration(value)
+  if value.get('mode') in ('assumed','declared') and value.get('platform') not in ('ARCM1','ARCM2'):
+   raise ValueError('Для калибровки задайте аппарат ARCM1 или ARCM2.')
+  self.cal=json.loads(json.dumps(value));self.store.set_setting('calibration',self.cal)
   return self.cal
  def register_file(self,path,asset=None):
   path=Path(path).expanduser().resolve();m=FILE_PATTERN.fullmatch(path.name)
