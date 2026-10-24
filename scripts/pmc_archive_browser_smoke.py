@@ -189,7 +189,7 @@ def main():
                         '()=>document.querySelector("#cdsAccessDialog").open',
                     )
                     page.locator("#cdsAccessDialog").locator("[data-close]").click()
-                    page.wait_for_function("document.querySelector('#fieldDialog').open")
+                    page.locator("#fieldDialog[open]").wait_for(state="visible")
                     page.evaluate("document.querySelector('#fieldDialog')?.close()")
                     check(
                         "Ожидающая реквизитов подготовка доступна для отмены",
