@@ -13,6 +13,7 @@ from arktika.pmc_archive import build_plan
 from arktika.workstation import Workstation
 from arktika.pmc_detection import ALGORITHM_ID as PMC_DETECTOR_ID
 from arktika.pmc_detection import ALGORITHM_VERSION as PMC_DETECTOR_VERSION
+from arktika.reanalysis.catalog import request_plan
 
 
 def request(**changes):
@@ -226,7 +227,9 @@ class PmcArchivePlanTests(unittest.TestCase):
                   'transform':[10000,0,-100000,0,-10000,100000],
                   'resolution_x_m':10000,'resolution_y_m':10000}
             plan=request(sources=['era5'],start='2024-01-01T00:00:00Z',end='2024-01-01T00:00:00Z')
-            meta={'id':'a'*24,'source':'era5','variable':'wind','level':850,
+            meta={'id':request_plan({'source':'era5','variable':'wind','level':850,
+                                    'time':'2024-01-01T00:00:00Z','area':plan['area']})['key'],
+                  'source':'era5','variable':'wind','level':850,
                   'time_kind':'instantaneous_analysis','time':'2024-01-01T00:00:00Z'}
             completed=[]
             def load_field(identity):

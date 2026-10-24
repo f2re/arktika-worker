@@ -160,7 +160,7 @@
     "tests/test_interpretation.py": "2de06010c9a3e3a1c4625fe44dd908ecd017ef19dcc0f61a5068f0390e385461",
     "tests/test_network_retry.py": "5c354101513f98759b751f6a506020b110d9c1249e56d6f2530f0acb3286d10a",
     "tests/test_orbit.py": "f07522344a51ee49a4312cea9f1d5e16c0aaf01a4350f269d2df4842d33e68c6",
-    "tests/test_pmc_archive.py": "b1d734d52e4a1b4895283a6e4dd3448d5d924ec65c08e7f088a9cb4ccc9d19d0",
+    "tests/test_pmc_archive.py": "4611177094c084f3d692fb94af32f1180173deda960d88cf0c75bc7edaff56df",
     "tests/test_pmc_archive_run.py": "babebb7565fc403f51754863be93854b0960cf6431d86c3bd7ca4d1d6eb0146d",
     "tests/test_pmc_archive_ui_contract.py": "f25211b46e1bf4201e9f4000bb17be3e5e59b5bd54a419f9057485ae84868769",
     "tests/test_pmc_contours.py": "3136373a8b901f40e145156e27722593880fff06f3ada642ff123ec8c92492db",
