@@ -124,6 +124,66 @@ class PmcObservationIngest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'ровно определённые поля'):
             self.register(metadata=bad)
 
+    def test_optional_scan_interval_round_trips_as_utc_and_contains_nominal_time(self):
+        metadata={**self.metadata,
+                  'scan_start_utc':'2024-01-01T00:00:00+00:00',
+                  'scan_end_utc':'2024-01-01T00:30:00Z'}
+        result=self.register(metadata=metadata)
+        _,_,saved=self.app.pmc_observation(result['observation_id'])
+        self.assertEqual('2024-01-01T00:00:00Z',saved['scan_start_utc'])
+        self.assertEqual('2024-01-01T00:30:00Z',saved['scan_end_utc'])
+
+    def test_scan_interval_must_be_a_complete_ordered_utc_pair_containing_valid_time(self):
+        invalid_intervals=(
+            {'scan_start_utc':'2024-01-01T00:00:00Z'},
+            {'scan_end_utc':'2024-01-01T00:30:00Z'},
+            {'scan_start_utc':'2024-01-01T00:00:00',
+             'scan_end_utc':'2024-01-01T00:30:00Z'},
+            {'scan_start_utc':'2024-01-01T00:00:00+01:00',
+             'scan_end_utc':'2024-01-01T00:30:00Z'},
+            {'scan_start_utc':'2024-01-01T00:30:00Z',
+             'scan_end_utc':'2024-01-01T00:00:00Z'},
+            {'scan_start_utc':'2024-01-01T00:30:01Z',
+             'scan_end_utc':'2024-01-01T01:00:00Z'},
+        )
+        for interval in invalid_intervals:
+            with self.subTest(interval=interval),self.assertRaises(ValueError):
+                self.register(metadata={**self.metadata,**interval})
+
+    def test_archive_frame_uses_one_unique_scan_interval_including_closed_endpoint(self):
+        metadata={**self.metadata,
+                  'valid_time':'2024-01-01T00:30:00Z',
+                  'scan_start_utc':'2024-01-01T00:30:00Z',
+                  'scan_end_utc':'2024-01-01T01:00:00Z'}
+        self.register(metadata=metadata)
+        observation=self.app._pmc_observation_for_frame(
+            '2024-01-01T01:00:00Z',self.metadata['grid'])
+        self.assertEqual('2024-01-01T00:30:00Z',observation['metadata']['valid_time'])
+        self.assertEqual('2024-01-01T00:30:00Z',observation['metadata']['scan_start_utc'])
+        self.assertEqual('2024-01-01T01:00:00Z',observation['metadata']['scan_end_utc'])
+
+    def test_no_covering_scan_is_unknown_and_two_covering_scans_are_ambiguous(self):
+        no_coverage={**self.metadata,'valid_time':'2024-01-01T00:15:00Z',
+                     'scan_start_utc':'2024-01-01T00:00:00Z',
+                     'scan_end_utc':'2024-01-01T00:30:00Z'}
+        self.register(metadata=no_coverage)
+        uncovered=self.app._pmc_observation_for_frame(
+            '2024-01-01T01:00:00Z',self.metadata['grid'])
+        self.assertEqual('no_eligible_observation',uncovered['unavailable_reason'])
+
+        first={**self.metadata,'valid_time':'2024-01-01T00:45:00Z',
+               'scan_start_utc':'2024-01-01T00:30:00Z',
+               'scan_end_utc':'2024-01-01T01:15:00Z'}
+        second={**self.metadata,'observation_ref':'scene-20240101-b',
+                'valid_time':'2024-01-01T01:10:00Z',
+                'scan_start_utc':'2024-01-01T00:50:00Z',
+                'scan_end_utc':'2024-01-01T01:20:00Z'}
+        self.register(metadata=first)
+        self.register(metadata=second)
+        ambiguous=self.app._pmc_observation_for_frame(
+            '2024-01-01T01:00:00Z',self.metadata['grid'])
+        self.assertEqual('ambiguous_eligible_observations',ambiguous['unavailable_reason'])
+
     def test_saved_archive_tampering_is_detected(self):
         result=self.register();identity=result['observation_id']
         path=self.app.fields_root/'pmc-observations'/(identity+'.npz')

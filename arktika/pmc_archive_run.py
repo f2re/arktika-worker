@@ -392,10 +392,21 @@ def build_archive_report(*, task_id: str, plan: dict[str, Any],
         valid_match = False
         if isinstance(observation, dict):
             try:
+                obs_time = _utc(observation.get("valid_time")).isoformat().replace("+00:00", "Z")
+                scan_start = observation.get("scan_start_utc")
+                scan_end = observation.get("scan_end_utc")
+                time_matches = False
+                if obs_time == stamp:
+                    time_matches = True
+                elif scan_start and scan_end:
+                    start_utc = _utc(scan_start).isoformat().replace("+00:00", "Z")
+                    end_utc = _utc(scan_end).isoformat().replace("+00:00", "Z")
+                    if start_utc <= stamp <= end_utc:
+                        time_matches = True
                 valid_match = (
-                    all(isinstance(observation.get(key), str) and observation[key].strip()
-                        for key in ("source", "product_id", "observation_id"))
-                    and _utc(observation.get("valid_time")).isoformat().replace("+00:00", "Z") == stamp
+                    time_matches
+                    and all(isinstance(observation.get(key), str) and observation[key].strip()
+                            for key in ("source", "product_id", "observation_id"))
                     and isinstance(target_grid, dict)
                     and validate_grid(result.get("grid")) == validate_grid(target_grid)
                     and validate_grid(entry.get("grid")) == validate_grid(target_grid)
@@ -405,10 +416,14 @@ def build_archive_report(*, task_id: str, plan: dict[str, Any],
                 valid_match = False
         metrics = comparison.get("metrics")
         if not valid_match or comparison.get("status") != "comparison_only" or not isinstance(metrics, dict):
+            status = comparison.get("status")
+            if status not in ("unknown_no_eligible_observation", "unknown_ambiguous_observations"):
+                status = "unknown_unmatched"
             frame = {"source": row.get("source"), "valid_time": row.get("valid_time"),
-                     "status": "unknown_unmatched", "metrics": None}
+                     "status": status, "metrics": None}
             reason_code = comparison.get("reason_code")
-            if reason_code in {"duplicate_exact_time_observations", "observation_grid_unavailable"}:
+            if reason_code in {"duplicate_exact_time_observations", "observation_grid_unavailable",
+                               "no_eligible_observation", "ambiguous_eligible_observations"}:
                 frame["reason_code"] = reason_code
             satellite_frames.append(frame)
             continue

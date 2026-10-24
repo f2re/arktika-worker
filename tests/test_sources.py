@@ -51,6 +51,7 @@ class SourceFlow(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory()
         self.app,_,_,_=workflow_fixture(Path(self.tmp.name))
+        self.app.source_credentials({'provider':'cds','clear':True})
 
     def tearDown(self):
         self.app.cancel.set()
