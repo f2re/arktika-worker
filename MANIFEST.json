@@ -1,5 +1,5 @@
 {
-  "version": "0.10.9",
+  "version": "0.10.10",
   "files": {
     ".gitattributes": "8d75fbed0329d55480242ea79c61cbdd3da312c700298bfba9572b81ec325cc6",
     ".github/ISSUE_TEMPLATE/bug_report.md": "095ea2329092b4fd2b6847962b3a71c6ba37d843d3f6c5f5e64a716e4d2e33af",
@@ -8,14 +8,14 @@
     ".github/workflows/tests.yml": "81e939bfb8f4a56807fca8aee7a89f45aea4bf02dfec7c91e46520643c939b3e",
     ".gitignore": "3b42aaecd328025a9108a0e9979ff4f9cffb8d7611a863191b3ef23fb2dd4bc7",
     "AGENTS.md": "8d78fe9ae7d50db006ba7d9fa88829bde07376dc9f2c536e238bf0e11562fcaa",
-    "CHANGELOG.md": "6e85a8e8d30ae5cc88d67ad782edde3b2c1468b98f314dddde10b835529f22fa",
+    "CHANGELOG.md": "ae8fbea9c40a5dc149d8657679d9990ec8550c29fa251245ae422d622637772a",
     "CONTRIBUTING.md": "9bdd753016071c4feb0261e95b1ae53b810bc05ff65c007f94b982bdb3b2d8ee",
     "LICENSE": "ec1a4c03de73899d1d5a32abbfe1e0e8114710fdcc9ed1de967b53a69cb07745",
     "README.md": "c38caffb476ea942ca7fbceddd8db2ce7768d7badc696788eb676f42a445d38d",
-    "RELEASE_NOTES.md": "b528d78f5366198cbf95179083d443316542bcea85ee7ab45138f02c3b45d0eb",
+    "RELEASE_NOTES.md": "b1a63ded3f380584614e8f20da8939359fa1579167d50007a545631ff5ff1480",
     "SECURITY.md": "a64cd32afb48113ef1a9989d6d5f9c777c0b31204a163116651d69ae9de78644",
     "THIRD_PARTY_NOTICES.md": "353ffb2cec81f7e73201291c534425e3f758fbfe406f33b38defcbffd5b67b0c",
-    "arktika/__init__.py": "92ebedac44d62f4f5ed186126986822615ee0515682eb0cd274ee5a42abdabee",
+    "arktika/__init__.py": "024b6c93ce54951c257403308b90f7a3d93a513caa5586096d22bf8bccb6eac1",
     "arktika/adapters.py": "083fd505637f93c2048d3c34fcbc986b2e43572b27bc2b4b86d897a1cfdad1b3",
     "arktika/analysis_service.py": "48e98c8e6c347885b7ef1dc6e75b1f5b53d97f9286819080b1067954c569388e",
     "arktika/archive.py": "9b2241ec05a69da1f1777c80fc7f0d32211cba77a363b4a8e1680e5236b03459",
@@ -59,8 +59,8 @@
     "arktika/reanalysis/catalog.py": "34f6add69389223a63ac8565de1887c580b331a76f04e0cb74e2898692403168",
     "arktika/reanalysis/normalize.py": "371cf7e2a714c42c45dc9d2298741dae3a0b3ab9669a52d0d3e6f4c949d1b001",
     "arktika/reanalysis/render.py": "1a1510b5715529d9137122bbb8903c8b64a490567486a845a76f2883c302fcac",
-    "arktika/reanalysis/transport.py": "e31f5d550b08a9a309b0b5ad3a9e4ac57764a05f9ad2e6ca39c2cdca2840a96d",
-    "arktika/reanalysis/worker.py": "5ba61b52d733361d66c71b506a701725b6a29a47840fc59822e6fada56662748",
+    "arktika/reanalysis/transport.py": "48b57b64ec178729e08df7086cb4cedbf4663d2ca0b26bde52ec7759c5e1de7a",
+    "arktika/reanalysis/worker.py": "d83b29ed65da0d637f9b4e8e16bbb7bd3a1e4deb19e4cb191d20658cec5bdf6c",
     "arktika/reanalysis_service.py": "01441b798c71416b8eeba89ebdf5e09f3617ba18dac3db6c6aafb7e5cb7466b8",
     "arktika/routes.py": "cf783025f44732db8ddf7fb7de8857fd6e0a7a026c95201bed0dbf1ca74414ca",
     "arktika/saved_product_integrity.py": "736c7f7c743aeff2f351a8a5eb0e76e83d6b429e0a4499e253d884e39f5c084c",
@@ -84,7 +84,7 @@
     "docs/DATA_MODEL.md": "93c0498480a545de5cb7b4d0cd3e4e056d3fb86e55155fc9ce821f0e8f89d953",
     "docs/DERIVED_PRODUCT_ADAPTERS.md": "68adf27d135113ca7058d13f80f4a502ea11904af4a6543f892fd614adad8c03",
     "docs/DESIGN.md": "ef2e511dc9f167ff5fb4d0076635165f11e9e73300689d9d6691fb7d7117d919",
-    "docs/DEVELOPMENT_PLAN_2026-10.md": "f29a11ed02d8626c62e4d9d3c5468580adb719ed0cd8e3d30d55aaec97ff6a63",
+    "docs/DEVELOPMENT_PLAN_2026-10.md": "fc54b64e39dd0273069644c4379b3bb987c9232a32fce8e337434c1fb109f508",
     "docs/ERA5.html": "ba521ea151bb42eaf7f9f01384601867f27604361722b54a8641b106f84e3992",
     "docs/INSTALL.md": "3bfa5144eae80132906655269c41b2cd752625b2c073524552a5601e6e0ffc97",
     "docs/KNOWN_LIMITS.md": "ee7bb9f87d7d12391b3d41bacd79e71e9594c4abf5909896a92bb204f34aaa0f",
@@ -180,11 +180,12 @@
     "tests/test_reanalysis.py": "27cf2ed1d596a597b39d4ab552b0f31e7a95e05847953a47f9f04dfa85bb9b75",
     "tests/test_reanalysis_adapters.py": "60b8d84b5bad9ab6cdf3fd4b9d29cd2d457bf836ef7dc7ca99277ac1385d3c60",
     "tests/test_reanalysis_immutability.py": "9ca0b046c1c788c8f3661a12c2687466e6357b64020edf3151dbb223478ab55d",
+    "tests/test_reanalysis_resume.py": "e1ca01d554fcd5ab15ab00567564b9a658cd0f09324a06611dac746684d3a198",
     "tests/test_reanalysis_ui_contract.py": "92e22edbc7928ce68db6ae2826e0a88b3c18359808100229812bebd6b354618c",
     "tests/test_release.py": "4c55a779ecfa66e40e2469ace3a2602a39a48f9bcb57fa4e6ea9f22fb2870ef9",
     "tests/test_saved_product_integrity.py": "6e0045c0b0d8dbdb4da7a028246d97f10eb82e5f133c09b7cfada8723276cee9",
     "tests/test_science.py": "4ce8928b22a95c2188e097750819bfaa5ad3146364498e991be687ba4914033c",
     "tests/test_sources.py": "a703f483ad64cf56b40d2bbf5765387004074de7ce86b3cfc4a15729cad30605",
-    "tests/test_transport.py": "f2b2df96c5e5af642063b57aea097d463bcea8b2b40432c1cf3a641cf00a5e29"
+    "tests/test_transport.py": "1f9d413f788ad277364334fbf31e9137433e61b295f7bd7e86a4b483ad681b0b"
   }
 }

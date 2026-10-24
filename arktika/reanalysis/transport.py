@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
+import os
 import zipfile
 from pathlib import Path
 from urllib.parse import urlencode, urlsplit
@@ -10,6 +12,7 @@ from urllib.parse import urlencode, urlsplit
 import numpy as np
 
 from .normalize import exact_slice, normalize, save_native, spatial_slice
+from ..download import atomic_json, digest
 
 CDS_HOST='cds.climate.copernicus.eu'
 CDS_URL='https://'+CDS_HOST+'/api'
@@ -18,6 +21,34 @@ CMR='cmr.earthdata.nasa.gov'
 NASA_DATA={'goldsmr4.gesdisc.eosdis.nasa.gov','goldsmr5.gesdisc.eosdis.nasa.gov',
            'data.gesdisc.earthdata.nasa.gov','opendap.earthdata.nasa.gov'}
 MAX_BYTES=1024**3
+
+
+def _cds_checkpoint(folder, index, item):
+    """Find a complete, request-matched CDS response in a persistent staging folder."""
+    target=folder/('source-'+str(index)+'.nc')
+    manifest=folder/('source-'+str(index)+'.checkpoint.json')
+    request_hash=hashlib.sha256(json.dumps(
+        {'dataset':item['dataset'],'request':item['request']},sort_keys=True,
+        separators=(',',':'),ensure_ascii=True).encode()).hexdigest()
+    try:
+        saved=json.loads(manifest.read_text(encoding='utf-8'))
+        if (saved.get('request_sha256')!=request_hash
+                or saved.get('size')!=target.stat().st_size
+                or saved.get('sha256')!=digest(target)):
+            return None
+        # This also rejects interrupted files and HTML/XML login or error pages.
+        data_files(target,folder)
+        return target
+    except (OSError,ValueError,KeyError,TypeError):
+        return None
+
+
+def _save_cds_checkpoint(target, manifest, item):
+    request_hash=hashlib.sha256(json.dumps(
+        {'dataset':item['dataset'],'request':item['request']},sort_keys=True,
+        separators=(',',':'),ensure_ascii=True).encode()).hexdigest()
+    atomic_json(manifest,{'request_sha256':request_hash,'size':target.stat().st_size,
+                          'sha256':digest(target)})
 
 class AccessError(ValueError):
     pass
@@ -135,13 +166,24 @@ def fetch_cds(plan,credential,folder,progress,*,normalizer=normalize):
             schema=json_get(session,CDS_URL+'/retrieve/v1/processes/'+item['dataset'])
             validate_cds_schema(schema,item['request'])
             target=folder/('source-'+str(i)+'.nc')
-            progress('CDS: ожидание и загрузка поднабора '+str(i+1)+'/'+str(len(plan['requests'])))
-            def check_size(response,*args,**kwargs):
-                size=response.headers.get('Content-Length')
-                if size and int(size)>MAX_BYTES:
-                    response.close();raise AccessError('CDS вернул файл больше 1 ГиБ. Уменьшите область.')
-            session.hooks['response']=[check_size]
-            client.retrieve(item['dataset'],item['request'],str(target))
+            manifest=folder/('source-'+str(i)+'.checkpoint.json')
+            cached=_cds_checkpoint(folder,i,item)
+            if cached is None:
+                progress('CDS: ожидание и загрузка поднабора '+str(i+1)+'/'+str(len(plan['requests'])))
+                temporary=folder/('source-'+str(i)+'.download')
+                temporary.unlink(missing_ok=True)
+                def check_size(response,*args,**kwargs):
+                    size=response.headers.get('Content-Length')
+                    if size and int(size)>MAX_BYTES:
+                        response.close();raise AccessError('CDS вернул файл больше 1 ГиБ. Уменьшите область.')
+                session.hooks['response']=[check_size]
+                client.retrieve(item['dataset'],item['request'],str(temporary))
+                # Validate the provider payload before making it a resumable checkpoint.
+                data_files(temporary,folder)
+                os.replace(temporary,target)
+                _save_cds_checkpoint(target,manifest,item)
+            else:
+                progress('CDS: использую проверенный контрольный файл '+str(i+1)+'/'+str(len(plan['requests'])))
             files=data_files(target,folder)
             opened=[]
             try:
