@@ -118,6 +118,7 @@ class Handler(BaseHTTPRequestHandler):
             elif path=='/api/reanalysis/state':result=app.fields_state()
             elif path=='/api/pmc/observations':result=app.pmc_observations_state()
             elif path=='/api/pmc/archive/state':result=app.pmc_archive_state()
+            elif path=='/api/pmc/archive/prepare/state':result=app.pmc_archive_prepare_state()
             elif path=='/api/pmc/archive/report':
                 identity=q.get('id','')
                 self.send(200,app.pmc_archive_report(identity),'application/json; charset=utf-8',
@@ -211,6 +212,8 @@ class Handler(BaseHTTPRequestHandler):
                 if set(data)!={'preset','width','area'}:raise ValueError('Нужны preset, width и выбранный регион area.')
                 result={'target_grid':target_grid_for_area(preset=data['preset'],width=int(data['width']),area=data['area'])}
             elif path=='/api/pmc/archive/run':result=app.pmc_archive_start(data)
+            elif path=='/api/pmc/archive/prepare':result=app.pmc_archive_prepare(data)
+            elif path=='/api/pmc/archive/prepare/resume':result=app.pmc_archive_prepare_resume(data)
             elif path=='/api/pmc/archive/resume':result=app.pmc_archive_resume(data)
             elif path=='/api/pmc/archive/cancel':result=app.pmc_archive_cancel(data)
             elif path=='/api/pmc/run':

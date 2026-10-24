@@ -1,6 +1,6 @@
 'use strict';
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
-const S={registry:null,day:new Date().toISOString().slice(0,10),month:'',scene:null,scenes:[],catalog:[],fileAssets:[],selection:new Set(),map:null,product:null,view:null,drawing:false,route:null,folderMode:'local',folder:null,generation:0,revision:-1,busy:false,resultKey:'',pending:false,pmcArchiveFields:[],pmcArchivePlan:null,pmcArchivePlanRevision:0,pmcArchiveTimer:null};
+const S={registry:null,day:new Date().toISOString().slice(0,10),month:'',scene:null,scenes:[],catalog:[],fileAssets:[],selection:new Set(),map:null,product:null,view:null,drawing:false,route:null,folderMode:'local',folder:null,generation:0,revision:-1,busy:false,resultKey:'',pending:false,pmcArchiveFields:[],pmcArchivePlan:null,pmcArchivePlanRevision:0,pmcArchiveTimer:null,pmcPrepareTimer:null,pmcPrepareNeedsAction:null,pmcPrepareStatus:'idle'};
 const months=['Январь','Февраль','Март','Апрель','Май','Июнь','Июль','Август','Сентябрь','Октябрь','Ноябрь','Декабрь'];
 const calibrationNames={unknown:'не задана — DN',assumed:'допущение DN = K',declared:'задана пользователем',metadata:'записана в GeoTIFF'};
 const categoryNames={channel:'Канал GeoTIFF',rgb:'RGB / COG',image:'Обзор',raw:'Исходник?',science:'Числовой',metadata:'Метаданные',other:'Прочее'};
@@ -266,6 +266,7 @@ async function planPmcArchive(){
     if(revision!==S.pmcArchivePlanRevision)return;
     const plan=result?.plan;
     if(!plan||!Array.isArray(plan.area)||plan.area.length!==4||plan.area.some((value,index)=>!Number.isFinite(Number(value))||Number(value)!==body.area[index])||JSON.stringify(plan.sources)!==JSON.stringify(body.sources)||plan.start!==body.start||plan.end!==body.end)throw Error('Серверный план не совпадает с выбранными источниками, сроками и регионом. Проверьте план ещё раз.');
+    S.pmcArchiveFields=[];try{const cache=await api('/api/reanalysis/state');if(revision!==S.pmcArchivePlanRevision)return;S.pmcArchiveFields=cache.fields||[];}catch{}
     $('#pmcArchiveFeedback').replaceChildren();S.pmcArchivePlan=plan;
     const box=document.createElement('div');box.className='notice';const title=document.createElement('strong');title.textContent='Экспериментальный план · кандидатный анализ';box.append(title);
     const lines=[];
@@ -296,9 +297,42 @@ function pmcRenderArchiveFields(plan){
   runner.hidden=false;root.replaceChildren();const expected=Object.fromEntries(plan.sources.map(source=>[source,new Set()]));
   const intervals={era5:1,carra2:3,merra2:3};for(const source of plan.sources){const step=intervals[source]||1;let time=Date.parse(plan.start);while(time<=Date.parse(plan.end)&&new Date(time).getUTCHours()%step!==0)time+=3600000;for(;time<=Date.parse(plan.end);time+=step*3600000)expected[source].add(new Date(time).toISOString().replace('.000Z','Z'));}
   const fields=S.pmcArchiveFields.filter(field=>expected[field.source]?.has(String(field.time||'').replace('+00:00','Z'))&&field.variable==='wind'&&Number(field.level)===850&&field.time_kind==='instantaneous_analysis'&&!field.difference_of);
-  if(!fields.length){const p=document.createElement('p');p.className='empty';p.textContent='В выбранном интервале нет сохранённых мгновенных полей ветра 850 гПа. Сначала подготовьте сроки через «Пространственные поля»; архивный запуск ничего не скачивает.';root.append(p);$('#pmcArchiveRun').disabled=true;return;}
-  for(const field of fields){const label=document.createElement('label');label.className='check';const input=document.createElement('input');input.type='checkbox';input.name='pmcArchiveField';input.value=field.id;input.checked=true;const text=document.createElement('span');text.textContent=`${PMC_SOURCE_LABELS[field.source]||field.source} · ${String(field.time).replace('T',' ').replace('Z',' UTC')}`;label.append(input,text);root.append(label);}
-  $('#pmcArchiveRun').disabled=false;
+  if(!fields.length){const p=document.createElement('p');p.className='empty';p.textContent='Подходящих сохранённых полей пока нет. Подготовка загрузит недостающие сроки; детектор останется отдельным действием.';root.append(p);$('#pmcArchiveRun').disabled=true;$('#pmcArchivePrepare').disabled=['running','needs_action','ready'].includes(S.pmcPrepareStatus);return;}
+  for(const field of fields){const label=document.createElement('label');label.className='check';const input=document.createElement('input');input.type='checkbox';input.name='pmcArchiveField';input.value=field.id;input.checked=true;input.disabled=S.pmcPrepareStatus==='running';const text=document.createElement('span');text.textContent=`${PMC_SOURCE_LABELS[field.source]||field.source} · ${String(field.time).replace('T',' ').replace('Z',' UTC')}`;label.append(input,text);root.append(label);}
+  $('#pmcArchiveRun').disabled=S.pmcPrepareStatus==='running';$('#pmcArchivePrepare').disabled=['running','needs_action','ready'].includes(S.pmcPrepareStatus);
+}
+async function pmcPrepareArchive(){
+  const plan=S.pmcArchivePlan;if(!plan)throw Error('Сначала проверьте план архива.');
+  const revision=S.pmcArchivePlanRevision;
+  const current=pmcArchiveBody();if(JSON.stringify(current)!==JSON.stringify({sources:plan.sources,start:plan.start,end:plan.end,area:plan.area}))throw Error('Параметры плана изменились. Составьте план заново.');
+  const {target_grid}=await api('/api/pmc/archive/grid',{preset:$('#preset').value,width:$('#pmcRunWidth').value,area:plan.area});
+  if(revision!==S.pmcArchivePlanRevision||S.pmcArchivePlan!==plan)throw Error('Параметры изменились при подготовке сетки. Загрузка не запускалась; составьте план заново.');
+  await api('/api/pmc/archive/prepare',{plan,target_grid});await pmcRefreshArchivePrepare();
+}
+async function pmcRefreshArchivePrepare(){
+  const root=$('#pmcArchivePrepareTask');if(!root)return;
+  try{const task=await api('/api/pmc/archive/prepare/state');
+    S.pmcPrepareStatus=task.status||'idle';
+    if(task.status==='idle'){root.replaceChildren();root.textContent='Подготовка входных полей ещё не запускалась.';$('#pmcArchivePrepareResume').hidden=true;return;}
+    const progress=`${task.message||task.status} · готово ${task.prepared||0} из ${task.total||0}`;
+    let progressNode=root.querySelector('[data-pmc-progress]');
+    if(!progressNode){progressNode=document.createElement('p');progressNode.dataset.pmcProgress='';root.prepend(progressNode);}
+    if(root.dataset.progress!==progress){progressNode.textContent=progress;root.dataset.progress=progress;}
+    root.querySelectorAll('[data-pmc-action]').forEach(node=>node.remove());
+    if(task.status==='needs_action'&&task.needs_action){S.pmcPrepareNeedsAction=task.needs_action;const button=document.createElement('button');button.type='button';button.dataset.pmcAction='';button.className='tonal';button.textContent='Настроить доступ к '+(PMC_SOURCE_LABELS[task.needs_action.source]||task.needs_action.source);button.onclick=()=>{FIELDS.accessReturn=task.needs_action.source;openSourceAccess(task.needs_action.source);};root.append(button);}
+    else if(task.status==='ready'&&root.dataset.readyId!==task.id){
+      S.pmcPrepareNeedsAction=null;
+      try{const state=await api('/api/reanalysis/state');S.pmcArchiveFields=state.fields||[];}catch{}
+      pmcRenderArchiveFields(S.pmcArchivePlan);
+      root.dataset.readyId=task.id;
+    }
+    $('#pmcArchivePrepare').disabled=['running','needs_action','ready'].includes(task.status);
+    $('#pmcArchivePrepareResume').hidden=!(task.resume_available&&['needs_action','interrupted','cancelled','error'].includes(task.status));
+    $('#pmcArchiveCancel').hidden=!['running'].includes(task.status);
+    const preparing=task.status==='running';$('#pmcArchiveRun').disabled=preparing||!$('#pmcArchiveFields').querySelector('[name="pmcArchiveField"]');
+    $$('#pmcArchiveFields [name="pmcArchiveField"]').forEach(input=>{input.disabled=preparing;});
+    if(task.status==='running'){if(S.pmcPrepareTimer)clearTimeout(S.pmcPrepareTimer);S.pmcPrepareTimer=setTimeout(()=>pmcRefreshArchivePrepare().catch(()=>{}),1300);}
+  }catch(e){root.textContent='Состояние подготовки недоступно: '+e.message;}
 }
 async function pmcStartArchive(){
   const plan=S.pmcArchivePlan,field_ids=$$('[name="pmcArchiveField"]:checked').map(e=>e.value);if(!plan||!field_ids.length)throw Error('Сначала проверьте план и выберите кэшированные сроки.');
@@ -338,10 +372,11 @@ async function pmcShowArchiveEvidence(id,root){
 }
 async function pmcRefreshArchiveTask(){
   const root=$('#pmcArchiveTask');if(!root)return;try{const task=await api('/api/pmc/archive/state');root.replaceChildren();
-    if(task.status==='idle'){root.textContent='Архивная задача ещё не запускалась.';$('#pmcArchiveResume').hidden=true;$('#pmcArchiveCancel').hidden=true;return;}
+    if(task.status==='idle'){root.textContent='Архивный анализ ещё не запускался.';$('#pmcArchiveResume').hidden=true;await pmcRefreshArchivePrepare();return;}
     const p=document.createElement('p');p.textContent=`${task.message||task.status} · обработано ${task.completed||0} из ${task.total||0}${task.failed?` · ошибок ${task.failed}`:''}`;root.append(p);
     if(task.id){const report=document.createElement('a');report.className='text-button';report.href='/api/pmc/archive/report?id='+encodeURIComponent(task.id);report.download=`pmc-archive-${task.id}.json`;report.textContent='Скачать текущий отчёт JSON';root.append(report);if(task.status!=='running')pmcShowArchiveEvidence(task.id,root);}
     $('#pmcArchiveCancel').hidden=task.status!=='running';$('#pmcArchiveResume').hidden=!(task.resume_available&&['interrupted','cancelled','error','partial'].includes(task.status));
+    await pmcRefreshArchivePrepare();
     if(task.status==='running'){if(S.pmcArchiveTimer)clearTimeout(S.pmcArchiveTimer);S.pmcArchiveTimer=setTimeout(()=>pmcRefreshArchiveTask().catch(()=>{}),1300);}
   }catch(e){root.textContent='Состояние архивной задачи недоступно: '+e.message;}
 }
@@ -360,7 +395,8 @@ function registerEvents(){
  bind('#drawRoute',()=>{if(!S.product)throw Error('Сначала постройте продукт.');S.drawing=!S.drawing;$('#drawRoute').classList.toggle('draw-active',S.drawing);$('#drawRoute').textContent=S.drawing?'Режим точек включён — нажмите для выхода':'Добавлять точки на карте';});bind('#undoRoute',()=>{const rows=$('#routePoints').value.trim().split('\n');rows.pop();$('#routePoints').value=rows.join('\n');$('#routeLayer').lastElementChild?.remove();});bind('#clearRoute',()=>{$('#routePoints').value='';$('#routeLayer').replaceChildren();$('#routeResult').innerHTML='';S.route=null;});bind('#calculateRoute',calculateRoute);
  bind('#productsOpen',async()=>{const r=await api('/api/products');$('#savedProducts').innerHTML=r.products.map(p=>`<article class="reference-card"><h3>${escape(p.title)}</h3><p>${escape(p.platform+' · '+p.time+' · '+p.grid.name)} · ${escape(calibrationNames[p.calibration_status])}</p><button data-id="${p.id}">Открыть</button> <a href="/artifact/${p.id}/export.zip">Экспорт с легендой</a></article>`).join('')||'<p class="empty">Продуктов пока нет.</p>';$$('#savedProducts button').forEach(b=>b.onclick=()=>{showProduct(r.products.find(p=>p.id===b.dataset.id)).then(()=>$('#productsDialog').close()).catch(e=>toast(e.message));});open('#productsDialog');});
  bind('#labOpen',()=>open('#labDialog'));bind('#profileCalculate',async()=>{$('#profileResult').textContent=JSON.stringify(await api('/api/profile',JSON.parse($('#profileJson').value)),null,2);});bind('#motionOpen',async()=>{const r=await api('/api/scenes');const opts=r.scenes.map(s=>`<option value="${s.id}">${escape(s.platform+' · '+s.time)}</option>`).join('');$('#motionFirst').innerHTML=opts;$('#motionSecond').innerHTML=opts;if(r.scenes.length>1)$('#motionSecond').selectedIndex=1;open('#motionDialog');});bind('#motionCalculate',async()=>{await api('/api/motion',{first:$('#motionFirst').value,second:$('#motionSecond').value,preset:$('#preset').value,channel:9});S.busy=true;});
-  bind('#pmcArchivePlan',planPmcArchive);bind('#pmcArchiveRun',pmcStartArchive);bind('#pmcArchiveResume',async()=>{const task=await api('/api/pmc/archive/state');await api('/api/pmc/archive/resume',{id:task.id});await pmcRefreshArchiveTask();});bind('#pmcArchiveCancel',async()=>{const task=await api('/api/pmc/archive/state');await api('/api/pmc/archive/cancel',{id:task.id});await pmcRefreshArchiveTask();});
+  bind('#pmcArchivePlan',planPmcArchive);bind('#pmcArchivePrepare',pmcPrepareArchive);bind('#pmcArchivePrepareResume',async()=>{const task=await api('/api/pmc/archive/prepare/state');await api('/api/pmc/archive/prepare/resume',{id:task.id});await pmcRefreshArchivePrepare();});bind('#pmcArchiveRun',pmcStartArchive);bind('#pmcArchiveResume',async()=>{const task=await api('/api/pmc/archive/state');await api('/api/pmc/archive/resume',{id:task.id});await pmcRefreshArchiveTask();});bind('#pmcArchiveCancel',async()=>{let task=await api('/api/pmc/archive/state');if(task.status!=='running')task=await api('/api/pmc/archive/prepare/state');await api('/api/pmc/archive/cancel',{id:task.id});await pmcRefreshArchiveTask();});
+  window.addEventListener('pmc-credentials-saved',async event=>{const action=S.pmcPrepareNeedsAction;if(!action||event.detail?.source!==action.source)return;try{await api('/api/pmc/archive/prepare/resume',{id:action.id});S.pmcPrepareNeedsAction=null;await pmcRefreshArchivePrepare();}catch(e){pmcFeedback('Не удалось продолжить подготовку: '+e.message,'error-text');}});
  $('#pmcArchiveDialog').addEventListener('change',event=>{if(event.target.matches('#pmcArchiveStart,#pmcArchiveEnd,#pmcNorth,#pmcWest,#pmcSouth,#pmcEast,[name="pmcArchiveSource"]'))pmcInvalidateArchivePlan('Параметры изменились. Составьте план заново.');});
 }
 async function boot(){const key=location.hash.slice(1);if(key){await api('/api/bootstrap',{key});history.replaceState(null,'',location.pathname);}S.registry=await api('/api/registry');$('#month').innerHTML=months.map((m,i)=>`<option value="${i}">${m}</option>`).join('');$('#channel').innerHTML=S.registry.channels.map(c=>`<option value="${c.id}">${c.id} · ${c.wavelength_um} мкм · ${escape(c.name)}</option>`).join('');$('#channel').value=9;$('#product').innerHTML=S.registry.products.filter(p=>!['planned','profile_tool'].includes(p.status)&&p.id!=='motion').map(p=>`<option value="${p.id}">${escape(p.title)}</option>`).join('');$('#preset').innerHTML=Object.entries(S.registry.presets).map(([id,p])=>`<option value="${id}">${escape(p.name)}</option>`).join('');registerEvents();await setMap('arctic');const state=await api('/api/state');S.serverState=state;const saved=state.view_settings||{};if(saved.product)$('#product').value=saved.product;if(saved.channel)$('#channel').value=saved.channel;if(saved.preset){$('#preset').value=saved.preset;await setMap(saved.preset);}setDate(state.last_date||S.day);productHint();poll();}
