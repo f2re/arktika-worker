@@ -316,8 +316,6 @@ def _onset_satellite_evidence(
     elif isinstance(row.get("reason_code"), str):
         result["reason_code"] = row["reason_code"]
     return result
-
-
 def build_archive_report(*, task_id: str, plan: dict[str, Any],
                          expected_times: dict[str, list[str]],
                          interval_hours: dict[str, int],
@@ -500,8 +498,11 @@ def build_archive_report(*, task_id: str, plan: dict[str, Any],
                 valid_match = False
         metrics = comparison.get("metrics")
         if not valid_match or comparison.get("status") != "comparison_only" or not isinstance(metrics, dict):
+            status = comparison.get("status")
+            if status not in ("unknown_no_eligible_observation", "unknown_ambiguous_observations"):
+                status = "unknown_unmatched"
             frame = {"source": row.get("source"), "valid_time": row.get("valid_time"),
-                     "status": "unknown_unmatched", "metrics": None}
+                     "status": status, "metrics": None}
             reason_code = comparison.get("reason_code")
             if reason_code in {"duplicate_exact_time_observations", "ambiguous_eligible_observations",
                                "no_eligible_observation", "observation_grid_unavailable"}:

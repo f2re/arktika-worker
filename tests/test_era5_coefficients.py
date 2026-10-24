@@ -102,6 +102,7 @@ class Resume(unittest.TestCase):
         self.tmp=tempfile.TemporaryDirectory();self.root=Path(self.tmp.name)
         self.app,self.scene,_,_=workflow_fixture(self.root)
         self.app._era5_init()
+        self.app.source_credentials({'provider':'cds','clear':True})
         self.app._era5_job={'id':'2'*32,'status':'data_ready','scene':self.scene['id'],'product':'micro24','data_only':False,
             'phase':'Old pause','next_action':'engine','report_id':'2'*32,'steps':[{'key':'era5','status':'done'},{'key':'engine','status':'waiting'}]}
         self.app._save_flow()

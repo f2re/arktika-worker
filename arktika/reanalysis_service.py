@@ -168,7 +168,7 @@ class ReanalysisMixin:
                 or checked!=label_grid):
             raise ValueError('Сетка sidecar должна точно совпадать с обеими масками.')
         safe={key:metadata[key] for key in allowed
-              if key in metadata and key not in ('grid','valid_time')}
+              if key in metadata and key not in ('grid','valid_time','scan_start_utc','scan_end_utc')}
         safe.update(valid_time=valid_time,grid=label_grid,units='1',algorithm_id='arktika.pmc_satellite_observation_import',
                     algorithm_version='0.1.0',status='imported_unverified')
         if scan_start is not None:
@@ -483,8 +483,7 @@ class ReanalysisMixin:
             result=row.get('result') if isinstance(row,dict) else None
             comparison=result.get('satellite_comparison') if isinstance(result,dict) else None
             if (row.get('status')=='completed' and isinstance(result,dict)
-                    and isinstance(comparison,dict)
-                    and comparison.get('status') in ('comparison_only','unknown_unmatched')):
+                    and isinstance(comparison,dict) and comparison.get('status')!='not_supplied'):
                 comparisons.append({'source':row.get('source'),'valid_time':row.get('valid_time'),
                                     'grid':result.get('grid'),'comparison':comparison})
         return build_archive_report(task_id=identity,plan=job['plan'],expected_times=expected,
@@ -518,10 +517,10 @@ class ReanalysisMixin:
             if not isinstance(item,dict):
                 continue
             try:
-                listed_time=pmc_utc_hour(item.get('valid_time'),'Срок наблюдения').isoformat().replace('+00:00','Z')
                 start=item.get('scan_start_utc');end=item.get('scan_end_utc')
                 if start is None and end is None:
-                    eligible=listed_time==frame_time
+                    listed_time=parse_scan_instant(item.get('valid_time'),'Срок наблюдения')
+                    eligible=listed_time==frame_stamp
                 elif isinstance(start,str) and isinstance(end,str):
                     start_stamp=parse_scan_instant(start,'scan_start_utc')
                     end_stamp=parse_scan_instant(end,'scan_end_utc')
@@ -533,36 +532,35 @@ class ReanalysisMixin:
             except (ValueError,TypeError):
                 continue
         if not matching:
-            if observations:
-                return {'unavailable_reason':'no_eligible_observation'}
-            return None
+            return {'unavailable_reason':'no_eligible_observation'} if observations else None
         if len(matching)!=1:
             exact_legacy=all(item.get('scan_start_utc') is None and item.get('scan_end_utc') is None
-                             and item.get('valid_time')==frame_time for item in matching)
+                             for item in matching)
             reason='duplicate_exact_time_observations' if exact_legacy else 'ambiguous_eligible_observations'
             return {'unavailable_reason':reason}
         try:
             labels,coverage,metadata=self.pmc_observation(matching[0].get('observation_id'))
-            observation_time=pmc_utc_hour(metadata.get('valid_time'),'Срок наблюдения').isoformat().replace('+00:00','Z')
+            observation_time=parse_scan_instant(metadata.get('valid_time'),'Срок наблюдения')
             start=metadata.get('scan_start_utc');end=metadata.get('scan_end_utc')
             interval_match=False
             if isinstance(start,str) and isinstance(end,str):
                 interval_match=(parse_scan_instant(start,'scan_start_utc')<=frame_stamp
                                 <=parse_scan_instant(end,'scan_end_utc'))
-            if (not (observation_time==frame_time or interval_match)
+            if (not (observation_time==frame_stamp or interval_match)
                     or metadata.get('status')!='imported_unverified'):
-                return None
+                return {'unavailable_reason':'no_eligible_observation'}
             source_grid=metadata.get('grid')
             labels,coverage,regridding=reproject_observation_masks(
                 labels,coverage,source_grid=source_grid,target_grid=target_grid)
         except (ValueError,OSError,TypeError):
             return {'unavailable_reason':'observation_grid_unavailable'}
-        return {'labels':labels,'coverage':coverage,'metadata':{
-            'source':metadata['source'],'product_id':metadata['product_id'],
-            'valid_time':metadata['valid_time'],'observation_id':metadata['observation_id'],
-            **({'scan_start_utc':metadata['scan_start_utc'],'scan_end_utc':metadata['scan_end_utc']}
-               if isinstance(metadata.get('scan_start_utc'),str) else {}),
-            'grid':target_grid,'regridding':regridding}}
+        obs_meta={'source':metadata['source'],'product_id':metadata['product_id'],
+                  'valid_time':metadata['valid_time'],'observation_id':metadata['observation_id'],
+                  'grid':target_grid,'regridding':regridding}
+        if 'scan_start_utc' in metadata and 'scan_end_utc' in metadata:
+            obs_meta['scan_start_utc']=metadata['scan_start_utc']
+            obs_meta['scan_end_utc']=metadata['scan_end_utc']
+        return {'labels':labels,'coverage':coverage,'metadata':obs_meta}
 
     def pmc_archive_state(self, data=None):
         self._fields_init()
@@ -685,7 +683,7 @@ class ReanalysisMixin:
                 if self.cancel.is_set():raise Cancelled()
                 adapter=get_runtime_adapter(plan['source'])
                 try:self.field(field_id);cached=True
-                except (ValueError,OSError):cached=False
+                except (ValueError,OSError,StopIteration):cached=False
                 credential=self._adapter_credential(plan['source'])
                 if adapter.auth_provider!='none' and not credential and not cached:
                     with self.lock:
@@ -760,9 +758,11 @@ class ReanalysisMixin:
                     result=self.experimental_pmc_candidates(field_id,target_grid=job['target_grid'],
                                                            region_bounds=job['plan']['area'],**options)
                     if observation is not None and 'unavailable_reason' in observation:
+                        reason = observation['unavailable_reason']
+                        status = 'unknown_' + reason if reason in ('no_eligible_observation', 'ambiguous_eligible_observations') else 'unknown_unmatched'
                         result['satellite_comparison']={
-                            'status':'unknown_unmatched','metrics':None,
-                            'reason_code':observation['unavailable_reason']}
+                            'status': status, 'metrics': None,
+                            'reason_code': reason}
                     record={'field_id':field_id,'source':meta['source'],'valid_time':meta['time'],
                             'status':'completed','result':result}
                 except Cancelled:raise

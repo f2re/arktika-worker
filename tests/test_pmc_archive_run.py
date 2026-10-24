@@ -78,7 +78,7 @@ class PmcArchiveRunTests(unittest.TestCase):
                                 "reason_code": "no_eligible_observation",
                                 "observation": None, "metrics": None}}
         result = self.interval_report([entry])
-        self.assertEqual("unknown_unmatched", result["status"])
+        self.assertEqual("unknown_no_eligible_observation", result["status"])
         self.assertEqual("no_eligible_observation", result["reason_code"])
         self.assertIsNone(result["metrics"])
 
@@ -89,7 +89,7 @@ class PmcArchiveRunTests(unittest.TestCase):
                                 "reason_code": "ambiguous_eligible_observations",
                                 "observation": None, "metrics": None}}
         result = self.interval_report([entry])
-        self.assertEqual("unknown_unmatched", result["status"])
+        self.assertEqual("unknown_ambiguous_observations", result["status"])
         self.assertEqual("ambiguous_eligible_observations", result["reason_code"])
         self.assertIsNone(result["metrics"])
 

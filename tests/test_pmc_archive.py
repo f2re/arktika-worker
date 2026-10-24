@@ -249,6 +249,7 @@ class PmcArchivePlanTests(unittest.TestCase):
                     worker.assert_not_called()
                     saved=(root/'state'/'reanalysis'/'pmc_prepare_job.json').read_text(encoding='utf-8')
                     self.assertNotIn('"credential":',saved)
+                    self.assertNotIn('token',saved)
                     self.assertEqual('preparing',app.pmc_archive_cancel({'id':started['id']})['stage'])
                     state=app.pmc_archive_prepare_state()
                     self.assertEqual('cancelled',state['status'])
