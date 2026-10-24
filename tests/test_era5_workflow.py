@@ -181,9 +181,11 @@ class WorkflowTests(unittest.TestCase):
     def test_restart_marks_interrupted_and_preserves_progress(self):
         self.app._era5_job={'id':'test','status':'running','phase':'x','steps':[{'key':'era5','status':'running'}]};self.app._save_flow()
         del self.app._era5_credential
-        self.assertEqual(self.app.era5_state()['job']['status'],'interrupted')
-        self.assertEqual(self.app.era5_state()['job']['steps'][0]['status'],'waiting')
-        self.assertFalse(self.app.era5_state()['credentials']['present'])
+        empty_home = self.root / 'empty_home'; empty_home.mkdir(exist_ok=True)
+        with patch.dict(os.environ, {'HOME': str(empty_home), 'USERPROFILE': str(empty_home)}):
+            self.assertEqual(self.app.era5_state()['job']['status'],'interrupted')
+            self.assertEqual(self.app.era5_state()['job']['steps'][0]['status'],'waiting')
+            self.assertFalse(self.app.era5_state()['credentials']['present'])
     def test_setup_success_requires_import_probe(self):
         with patch('arktika.era5_workflow.ensure_runtime',return_value=RUNTIME):
             self.app.era5_setup({});state=self.wait()

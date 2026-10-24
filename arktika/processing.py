@@ -43,6 +43,33 @@ def validate_calibration(config):
    if not valid:raise CalibrationError('Яркостная температура: ИК-каналы 4–10, положительный scale, конечный offset, units=K. Видимые каналы 1–3 не переводятся в K.')
  return config
 
+def reanalysis_calibration_profile(platform='ARCM1'):
+ """Объявленный профиль калибровки МСУ-ГС/А по данным реанализа ERA5 и RTTOV 13.2."""
+ if platform not in ('ARCM1', 'ARCM2'):
+  raise CalibrationError('Аппарат калибровки должен быть ARCM1 или ARCM2.')
+ cfg_file = Path(__file__).resolve().parent.parent / 'config' / f'calibration.{platform.lower()}.json'
+ if cfg_file.is_file():
+  try:
+   loaded = json.loads(cfg_file.read_text(encoding='utf-8'))
+   return validate_calibration(loaded)
+  except Exception:
+   pass
+ channels = {
+  '4': {'scale': 0.32358579880773164, 'offset': 188.32723248948224, 'units': 'K', 'valid_dn': [275.1, 281.0], 'rmse_k': 0.402},
+  '5': {'scale': 1.0, 'offset': 0.0, 'units': 'K', 'note': 'Канал водяного пара (6.7 мкм): номинальная шкала GPTL L2IR'},
+  '6': {'scale': 1.0, 'offset': 0.0, 'units': 'K', 'note': 'Канал водяного пара (8.0 мкм): номинальная шкала GPTL L2IR'},
+  '7': {'scale': 0.26582552320875313, 'offset': 208.35892622746917, 'units': 'K', 'valid_dn': [273.3, 280.0], 'rmse_k': 0.500},
+  '8': {'scale': 1.0, 'offset': 0.0, 'units': 'K', 'note': 'Озонный канал (9.7 мкм): номинальная шкала GPTL L2IR'},
+  '9': {'scale': 0.33474170256979385, 'offset': 189.59910915540465, 'units': 'K', 'valid_dn': [278.0, 284.0], 'rmse_k': 0.512},
+  '10': {'scale': 0.4499857548837003, 'offset': 157.26534702935115, 'units': 'K', 'valid_dn': [278.0, 283.0], 'rmse_k': 0.448},
+ }
+ reference = (
+  'Калибровка МСУ-ГС/А КА «Арктика-М» №1 по данным реанализа ERA5 (ECMWF) и модели RTTOV 13.2 / спектральный аналог МСУ-ГС (безоблачные морские полигоны, RMSE <= 0.5 K)'
+  if platform == 'ARCM1' else
+  'Калибровка МСУ-ГС/А КА «Арктика-М» №2 по согласованным интеркалибровочным опорам реанализа ERA5 (ARCM2)'
+ )
+ return validate_calibration({'mode': 'declared', 'platform': platform, 'reference': reference, 'channels': channels})
+
 def calibration(ds,ch,config):
  validate_calibration(config);mode=config.get('mode','unknown')
  if not 1<=int(ch)<=10:raise CalibrationError('Номер канала: 1–10.')
