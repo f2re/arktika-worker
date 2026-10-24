@@ -861,10 +861,16 @@ class ReanalysisMixin:
                              and self._pmc_archive_job.get('status')=='running')
             prepare_running=(identity==self._pmc_prepare_job.get('id')
                              and self._pmc_prepare_job.get('status')=='running')
-            if not (archive_running or prepare_running):
+            prepare_waiting=(identity==self._pmc_prepare_job.get('id')
+                             and self._pmc_prepare_job.get('status')=='needs_action')
+            if not (archive_running or prepare_running or prepare_waiting):
                 raise ValueError('Активная архивная задача не найдена.')
-            self.cancel.set()
-        return {'cancelled':True,'stage':'preparing' if prepare_running else 'detection'}
+            if prepare_waiting:
+                self._pmc_prepare_job.update(status='cancelled',message='Подготовка отменена. Готовые поля сохранены.',
+                    resume_available=True,updated_at=iso(now()))
+                self._persist_pmc_prepare_job()
+            else:self.cancel.set()
+        return {'cancelled':True,'stage':'preparing' if prepare_running or prepare_waiting else 'detection'}
 
     def pmc_archive_report(self,identity):
         task_dir=self._pmc_archive_task_path(identity)

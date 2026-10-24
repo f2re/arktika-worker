@@ -207,7 +207,7 @@ class PmcArchivePlanTests(unittest.TestCase):
                         if state['status']!='running':break
                         time.sleep(.01)
                     self.assertEqual('ready',state['status'])
-                    self.assertEqual(2,state['prepared'])
+                    self.assertEqual(3,state['prepared'])
                     detector.assert_not_called()
                     saved=(root/'state'/'reanalysis'/'pmc_prepare_job.json').read_text(encoding='utf-8')
                     self.assertNotIn('do-not-save',saved)
@@ -215,7 +215,7 @@ class PmcArchivePlanTests(unittest.TestCase):
                     self.assertNotIn('sig=secret',saved)
                     parsed=json.loads(saved)
                     self.assertEqual({'source','variable','time','level','area'},set(parsed['specs'][0]))
-                    self.assertEqual(2,len(parsed['completed_field_ids']))
+                    self.assertEqual(3,len(parsed['completed_field_ids']))
             finally:
                 app.close()
 
@@ -245,7 +245,11 @@ class PmcArchivePlanTests(unittest.TestCase):
                     self.assertEqual('credentials_required',state['needs_action']['code'])
                     worker.assert_not_called()
                     saved=(root/'state'/'reanalysis'/'pmc_prepare_job.json').read_text(encoding='utf-8')
-                    self.assertNotIn('credential',saved)
+                    self.assertNotIn('"credential":',saved)
+                    self.assertEqual('preparing',app.pmc_archive_cancel({'id':started['id']})['stage'])
+                    state=app.pmc_archive_prepare_state()
+                    self.assertEqual('cancelled',state['status'])
+                    self.assertTrue(state['resume_available'])
                     with patch.object(app,'_adapter_credential',return_value={'token':'new-secret'}), \
                      patch.object(app,'_field_process',side_effect=lambda *args,**kwargs:(completed.append(True) or {'field':meta,'cached':False})) as resume_worker, \
                          patch.object(app,'field',side_effect=load_field):

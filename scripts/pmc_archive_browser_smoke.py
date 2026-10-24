@@ -189,10 +189,14 @@ def main():
                         '()=>document.querySelector("#cdsAccessDialog").open',
                     )
                     page.locator("#cdsAccessDialog").locator("[data-close]").click()
+                    check(
+                        "Ожидающая реквизитов подготовка доступна для отмены",
+                        '()=>!document.querySelector("#pmcArchiveCancel").hidden',
+                    )
                     page.locator("#pmcArchiveCancel").click()
                     check(
-                        "Подготовку можно отменить, не запуская детектор",
-                        '()=>document.querySelector("#pmcArchivePrepareTask").textContent.includes("Подготовка остановлена")',
+                        "Подготовку в ожидании реквизитов можно отменить и возобновить",
+                        '()=>document.querySelector("#pmcArchivePrepareTask").textContent.includes("Подготовка отменена")&& !document.querySelector("#pmcArchivePrepareResume").hidden',
                     )
                     assert not any(url.endswith("/api/pmc/archive/run") for _, url in requests)
                     report["checks"].append({"name": "Подготовка и детектор остаются раздельными", "passed": True})

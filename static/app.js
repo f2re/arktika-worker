@@ -328,7 +328,7 @@ async function pmcRefreshArchivePrepare(){
     }
     $('#pmcArchivePrepare').disabled=['running','needs_action','ready'].includes(task.status);
     $('#pmcArchivePrepareResume').hidden=!(task.resume_available&&['needs_action','interrupted','cancelled','error'].includes(task.status));
-    $('#pmcArchiveCancel').hidden=!['running'].includes(task.status);
+    $('#pmcArchiveCancel').hidden=!['running','needs_action'].includes(task.status);
     const preparing=task.status==='running';$('#pmcArchiveRun').disabled=preparing||!$('#pmcArchiveFields').querySelector('[name="pmcArchiveField"]');
     $$('#pmcArchiveFields [name="pmcArchiveField"]').forEach(input=>{input.disabled=preparing;});
     if(task.status==='running'){if(S.pmcPrepareTimer)clearTimeout(S.pmcPrepareTimer);S.pmcPrepareTimer=setTimeout(()=>pmcRefreshArchivePrepare().catch(()=>{}),1300);}
