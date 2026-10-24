@@ -59,8 +59,8 @@
     "arktika/reanalysis/catalog.py": "34f6add69389223a63ac8565de1887c580b331a76f04e0cb74e2898692403168",
     "arktika/reanalysis/normalize.py": "371cf7e2a714c42c45dc9d2298741dae3a0b3ab9669a52d0d3e6f4c949d1b001",
     "arktika/reanalysis/render.py": "1a1510b5715529d9137122bbb8903c8b64a490567486a845a76f2883c302fcac",
-    "arktika/reanalysis/transport.py": "e31f5d550b08a9a309b0b5ad3a9e4ac57764a05f9ad2e6ca39c2cdca2840a96d",
-    "arktika/reanalysis/worker.py": "5ba61b52d733361d66c71b506a701725b6a29a47840fc59822e6fada56662748",
+    "arktika/reanalysis/transport.py": "48b57b64ec178729e08df7086cb4cedbf4663d2ca0b26bde52ec7759c5e1de7a",
+    "arktika/reanalysis/worker.py": "21976718ab0e203caca3de13640d606ababd583288c147ce9fd4828259fe38a2",
     "arktika/reanalysis_service.py": "01441b798c71416b8eeba89ebdf5e09f3617ba18dac3db6c6aafb7e5cb7466b8",
     "arktika/routes.py": "cf783025f44732db8ddf7fb7de8857fd6e0a7a026c95201bed0dbf1ca74414ca",
     "arktika/saved_product_integrity.py": "736c7f7c743aeff2f351a8a5eb0e76e83d6b429e0a4499e253d884e39f5c084c",
@@ -84,7 +84,7 @@
     "docs/DATA_MODEL.md": "93c0498480a545de5cb7b4d0cd3e4e056d3fb86e55155fc9ce821f0e8f89d953",
     "docs/DERIVED_PRODUCT_ADAPTERS.md": "68adf27d135113ca7058d13f80f4a502ea11904af4a6543f892fd614adad8c03",
     "docs/DESIGN.md": "ef2e511dc9f167ff5fb4d0076635165f11e9e73300689d9d6691fb7d7117d919",
-    "docs/DEVELOPMENT_PLAN_2026-10.md": "f29a11ed02d8626c62e4d9d3c5468580adb719ed0cd8e3d30d55aaec97ff6a63",
+    "docs/DEVELOPMENT_PLAN_2026-10.md": "045ad621ca93645a75d096e0a858cef843696e9097eba0bfb0f8011747c8ca3a",
     "docs/ERA5.html": "ba521ea151bb42eaf7f9f01384601867f27604361722b54a8641b106f84e3992",
     "docs/INSTALL.md": "3bfa5144eae80132906655269c41b2cd752625b2c073524552a5601e6e0ffc97",
     "docs/KNOWN_LIMITS.md": "ee7bb9f87d7d12391b3d41bacd79e71e9594c4abf5909896a92bb204f34aaa0f",
@@ -185,6 +185,6 @@
     "tests/test_saved_product_integrity.py": "6e0045c0b0d8dbdb4da7a028246d97f10eb82e5f133c09b7cfada8723276cee9",
     "tests/test_science.py": "4ce8928b22a95c2188e097750819bfaa5ad3146364498e991be687ba4914033c",
     "tests/test_sources.py": "a703f483ad64cf56b40d2bbf5765387004074de7ce86b3cfc4a15729cad30605",
-    "tests/test_transport.py": "f2b2df96c5e5af642063b57aea097d463bcea8b2b40432c1cf3a641cf00a5e29"
+    "tests/test_transport.py": "1f9d413f788ad277364334fbf31e9137433e61b295f7bd7e86a4b483ad681b0b"
   }
 }
