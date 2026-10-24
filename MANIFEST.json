@@ -122,7 +122,7 @@
     "scripts/era5_pipeline_worker.py": "dd9a118ce0daa58a9767b3f4a4921522bb6804b9cbe26b78e9c6d0f40619d255",
     "scripts/era5_worker.py": "412151c790ca39ae440ff01f028781383895273b5fae0238e86a523433fa1486",
     "scripts/manifest.py": "966f6ac187ee8966218380a80673e7a527bf891a37a847b04dd46d3f6bec2cf7",
-    "scripts/pmc_archive_browser_smoke.py": "255b8b0d933f5efb7d0b17baac3984e991875b6132ac694915c9a1d3d824fd8d",
+    "scripts/pmc_archive_browser_smoke.py": "a62ebef6f67607b3d8c4ccefb5c2c15218b172e97ba011332e696583b75b3c84",
     "scripts/product_browser_smoke.py": "2d8815dc1b3e71ce0d6d7acb65dd0fb3d75311f6e4531d1dfef7743a1d948a71",
     "scripts/publish.py": "61357a10f32f8589a5b3be29a78e368afc2e5bc3e883e76dd646a5b99acd9e23",
     "scripts/reanalysis_browser_smoke.py": "93c39e8161de7dd6b6d973895fbb59377700f397927a42cfa9f3f40c773859b6",
