@@ -201,6 +201,7 @@ def main():
                     assert not any(url.endswith("/api/pmc/archive/run") for _, url in requests)
                     report["checks"].append({"name": "Подготовка и детектор остаются раздельными", "passed": True})
 
+                    page.evaluate("document.querySelector('#fieldDialog')?.close()")
                     page.evaluate("""() => {
                       api = async () => ({tracks_by_source:[{source:'era5',candidate_emergence_evidence:[{
                         source:'era5',first_detected_time:'2024-01-01T01:00:00Z',candidate_id:'e1',
