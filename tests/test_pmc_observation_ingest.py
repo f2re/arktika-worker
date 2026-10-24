@@ -153,15 +153,15 @@ class PmcObservationIngest(unittest.TestCase):
 
     def test_archive_frame_uses_one_unique_scan_interval_including_closed_endpoint(self):
         metadata={**self.metadata,
-                  'valid_time':'2024-01-01T00:30:00Z',
+                  'valid_time':'2024-01-01T01:00:00Z',
                   'scan_start_utc':'2024-01-01T00:30:00Z',
                   'scan_end_utc':'2024-01-01T01:00:00Z'}
         self.register(metadata=metadata)
         observation=self.app._pmc_observation_for_frame(
             '2024-01-01T01:00:00Z',self.metadata['grid'])
-        self.assertEqual('2024-01-01T00:30:00Z',observation['metadata']['valid_time'])
-        self.assertEqual('2024-01-01T00:30:00Z',observation['metadata']['scan_start_utc'])
-        self.assertEqual('2024-01-01T01:00:00Z',observation['metadata']['scan_end_utc'])
+        self.assertEqual('2024-01-01T01:00:00Z',observation['valid_time'])
+        self.assertEqual('2024-01-01T00:30:00Z',observation['scan_start_utc'])
+        self.assertEqual('2024-01-01T01:00:00Z',observation['scan_end_utc'])
 
     def test_no_covering_scan_is_unknown_and_two_covering_scans_are_ambiguous(self):
         no_coverage={**self.metadata,'valid_time':'2024-01-01T00:15:00Z',
@@ -172,11 +172,11 @@ class PmcObservationIngest(unittest.TestCase):
             '2024-01-01T01:00:00Z',self.metadata['grid'])
         self.assertEqual('no_eligible_observation',uncovered['unavailable_reason'])
 
-        first={**self.metadata,'valid_time':'2024-01-01T00:45:00Z',
+        first={**self.metadata,'valid_time':'2024-01-01T01:00:00Z',
                'scan_start_utc':'2024-01-01T00:30:00Z',
                'scan_end_utc':'2024-01-01T01:15:00Z'}
         second={**self.metadata,'observation_ref':'scene-20240101-b',
-                'valid_time':'2024-01-01T01:10:00Z',
+                'valid_time':'2024-01-01T01:00:00Z',
                 'scan_start_utc':'2024-01-01T00:50:00Z',
                 'scan_end_utc':'2024-01-01T01:20:00Z'}
         self.register(metadata=first)
