@@ -1,6 +1,8 @@
 """Контракт локальных производных адаптеров; сетевые данные не запрашиваются."""
 import unittest
 from dataclasses import replace
+from types import SimpleNamespace
+from unittest.mock import patch
 import requests
 
 import numpy as np
@@ -85,7 +87,7 @@ class AdapterTests(unittest.TestCase):
         item = self.inputs["u"]
         bad["u"] = SourceData(item.input_id, item.values, item.quantity, "knots",
                               item.valid_time, item.grid, item.source)
-        with self.assertRaisesRegex(ValueError, "m s-1"):
+        with self.assertRaisesRegex(ValueError, "не смог выполнить"):
             self.registry.run("wind_speed", bad)
         bad = dict(self.inputs)
         item = self.inputs["u"]
@@ -106,6 +108,68 @@ class AdapterTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "major.minor.patch"):
             self.registry.register(InvalidAdapter())
+
+    def test_public_spec_rejects_paths_secrets_and_unbounded_text(self):
+        for title in ("token=PRIVATE", "client_secret=PRIVATE", "AWS_SECRET_ACCESS_KEY=PRIVATE",
+                      "AWS_ACCESS_KEY_ID=PRIVATE", "/Users/person/private-file", "x" * 121):
+            with self.subTest(title=title), self.assertRaises(ValueError):
+                AdapterSpec("safe_id", "1.0.0", "safe_product", title, "pkg.method",
+                            "experimental", "stored_value", "Поле", "1", ("input",)).validate()
+
+    def test_plugin_runtime_exception_is_scrubbed(self):
+        class BrokenAdapter:
+            spec = AdapterSpec("broken_runtime", "1.0.0", "broken_product", "Сломанный метод",
+                               "test.broken", "experimental", "stored_value", "Поле", "1", ("u", "v"))
+
+            def derive(self, inputs):
+                raise RuntimeError("/private/path PRIVATE_TOKEN")
+
+        registry = AdapterRegistry()
+        registry.register(BrokenAdapter())
+        with self.assertRaisesRegex(ValueError, "не смог выполнить") as error:
+            registry.run("broken_runtime", self.inputs)
+        self.assertNotIn("PRIVATE_TOKEN", str(error.exception))
+        self.assertNotIn("/private/path", str(error.exception))
+
+    def test_installed_entry_points_load_trusted_adapter_objects(self):
+        class PluginAdapter:
+            spec = AdapterSpec("test_plugin", "1.0.0", "test_product", "Плагин теста",
+                               "test.plugin", "experimental", "stored_value",
+                               "Тестовое поле", "1", ("input",))
+
+            def derive(self, inputs):
+                return np.asarray(inputs["input"].values)
+
+        entries = [SimpleNamespace(name="test_plugin", load=lambda: PluginAdapter)]
+        with patch("importlib.metadata.entry_points", return_value=entries):
+            warnings = self.registry.load_installed()
+        self.assertEqual(warnings, ())
+        self.assertEqual({item["id"] for item in self.registry.catalogue()},
+                         {"wind_speed", "test_plugin"})
+
+    def test_bad_installed_entry_points_are_isolated_and_secrets_scrubbed(self):
+        entries = [SimpleNamespace(name="broken_plugin",
+                                   load=lambda: (_ for _ in ()).throw(RuntimeError("PRIVATE_TOKEN")))]
+        with patch("importlib.metadata.entry_points", return_value=entries):
+            warnings = self.registry.load_installed()
+        self.assertEqual(len(warnings), 1)
+        self.assertNotIn("PRIVATE_TOKEN", repr(warnings))
+        self.assertIn("wind_speed", {item["id"] for item in self.registry.catalogue()})
+
+    def test_installed_plugin_cannot_self_declare_implemented_maturity(self):
+        class UnreviewedAdapter:
+            spec = AdapterSpec("unreviewed", "1.0.0", "unreviewed_product", "Плагин",
+                               "third_party.method", "implemented", "stored_value",
+                               "Поле", "1", ("input",))
+
+            def derive(self, inputs):
+                return np.asarray(inputs["input"].values)
+
+        entry = SimpleNamespace(name="unreviewed", load=lambda: UnreviewedAdapter())
+        with patch("importlib.metadata.entry_points", return_value=[entry]):
+            warnings = self.registry.load_installed()
+        self.assertEqual(warnings[0]["status"], "not_loaded")
+        self.assertNotIn("unreviewed", {item["id"] for item in self.registry.catalogue()})
 
 
 class RemoteRetryClassificationTests(unittest.TestCase):

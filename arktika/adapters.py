@@ -17,6 +17,13 @@ from .product_schema import product_passport
 
 _ID = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _VERSION = re.compile(r"^\d+\.\d+\.\d+$")
+_PUBLIC_TEXT_SECRET = re.compile(
+    r"(?:[a-z][a-z0-9+.-]*://|(?:^|[\s=:])[A-Za-z]:[\\/]|"
+    r"(?:^|[\s=:])/(?:Users|home|private|tmp|var|opt)/|"
+    r"(?:bearer\s+\S+|[A-Z0-9_]*(?:TOKEN|CREDENTIAL|SECRET|PASSWORD|ACCESS[_-]?KEY|API[_-]?KEY)"
+    r"[A-Z0-9_]*\s*[:=]))",
+    re.IGNORECASE,
+)
 _GRID_KEYS = ("crs", "width", "height", "transform")
 
 
@@ -43,10 +50,16 @@ class AdapterSpec:
             raise ValueError("Идентификатор адаптера или продукта имеет неверный формат.")
         if not _VERSION.fullmatch(self.version):
             raise ValueError("Версия адаптера должна иметь формат major.minor.patch.")
-        for value in (self.title, self.algorithm_id, self.quantity_kind,
-                      self.quantity, self.units, self.nodata):
-            if not isinstance(value, str) or not value.strip():
+        public_text = ((self.title, 120), (self.algorithm_id, 128),
+                       (self.quantity_kind, 80), (self.quantity, 240),
+                       (self.units, 40), (self.nodata, 200))
+        for value, limit in public_text:
+            if (not isinstance(value, str) or not value.strip() or len(value) > limit
+                    or any(ord(char) < 32 and char not in "\t\n\r" for char in value)
+                    or _PUBLIC_TEXT_SECRET.search(value)):
                 raise ValueError("Описание адаптера содержит пустое обязательное поле.")
+        if not re.fullmatch(r"[A-Za-z0-9_.:-]+", self.algorithm_id):
+            raise ValueError("Идентификатор алгоритма имеет неверный формат.")
         if (not isinstance(self.input_ids, tuple) or not self.input_ids
                 or len(set(self.input_ids)) != len(self.input_ids)
                 or any(not _ID.fullmatch(item) for item in self.input_ids)):
@@ -55,7 +68,9 @@ class AdapterSpec:
             raise ValueError("Неизвестный статус готовности адаптера.")
         if self.data_kind not in ("observation", "analysis", "forecast", "synthetic"):
             raise ValueError("Неизвестный вид входных данных адаптера.")
-        if not isinstance(self.limitations, tuple) or any(not isinstance(x, str) for x in self.limitations):
+        if (not isinstance(self.limitations, tuple) or len(self.limitations) > 20
+                or any(not isinstance(x, str) or not x.strip() or len(x) > 500
+                       or _PUBLIC_TEXT_SECRET.search(x) for x in self.limitations)):
             raise ValueError("Ограничения адаптера должны быть текстовым списком.")
 
 
@@ -148,6 +163,8 @@ class AdapterRegistry:
 
     def __init__(self) -> None:
         self._items: dict[str, DerivedProductAdapter] = {}
+        self._plugin_warnings: tuple[dict[str, str], ...] = ()
+        self._plugins_loaded = False
 
     def register(self, adapter: DerivedProductAdapter) -> None:
         if not callable(getattr(adapter, "derive", None)):
@@ -182,6 +199,49 @@ class AdapterRegistry:
             "limitations": a.spec.limitations,
         } for a in self._items.values())
 
+    def load_installed(self) -> tuple[dict[str, str], ...]:
+        """Load only explicitly installed entry points; never import a user-supplied path.
+
+        Third-party plugins remain experimental or planned until they are reviewed
+        and registered by the application itself.
+        """
+        if self._plugins_loaded:
+            return self._plugin_warnings
+        self._plugins_loaded = True
+        warnings = []
+        try:
+            from importlib.metadata import entry_points
+            installed = sorted(entry_points(group="arktika.derived_product_adapters"),
+                               key=lambda item: item.name)
+        except Exception:
+            self._plugin_warnings = ({"id": "entry_points", "status": "not_loaded",
+                                      "reason": "Не удалось прочитать каталог установленных адаптеров."},)
+            return self._plugin_warnings
+        for point in installed:
+            public_id = point.name if isinstance(point.name, str) and _ID.fullmatch(point.name) else "invalid_entry_point"
+            try:
+                adapter = point.load()
+                if isinstance(adapter, type) or (not callable(getattr(adapter, "derive", None))
+                                                  and callable(adapter)):
+                    adapter = adapter()
+                spec = getattr(adapter, "spec", None)
+                if not isinstance(spec, AdapterSpec) or spec.adapter_id != point.name:
+                    raise ValueError("AdapterSpec ID must match entry-point name")
+                if spec.maturity not in ("experimental", "planned"):
+                    raise ValueError("Installed adapters require experimental or planned maturity")
+                self.register(adapter)
+            except Exception:
+                # Third-party import errors can contain local paths or credentials.
+                warnings.append({"id": public_id, "status": "not_loaded",
+                                 "reason": "Адаптер не прошёл проверку контракта."})
+        self._plugin_warnings = tuple(warnings)
+        return self._plugin_warnings
+
+    @property
+    def plugin_warnings(self) -> tuple[dict[str, str], ...]:
+        """Generic, secret-safe diagnostics for unavailable installed adapters."""
+        return self._plugin_warnings
+
     def run(self, adapter_id: str, inputs: Mapping[str, SourceData]) -> DerivedProduct:
         adapter = self.get(adapter_id)
         spec = adapter.spec
@@ -211,7 +271,11 @@ class AdapterRegistry:
             arrays.append(array)
             sources.append(_source_record(item.source))
             checked[input_id] = item
-        output = np.asarray(adapter.derive(MappingProxyType(checked)))
+        try:
+            output = np.asarray(adapter.derive(MappingProxyType(checked)))
+        except Exception:
+            # Plugin exceptions are untrusted and may contain paths or credentials.
+            raise ValueError("Адаптер не смог выполнить расчёт.") from None
         if output.ndim != 2 or output.shape != arrays[0].shape or output.dtype.kind not in "fiu":
             raise ValueError("Адаптер вернул поле неправильной формы или типа.")
         output = np.array(output, dtype=np.float32, copy=True)

@@ -37,7 +37,7 @@ class Workstation(DerivedProductServiceMixin, ReanalysisMixin, SourceManagerMixi
   self.derived_product_root=self.store.root/'derived-products';self.derived_product_root.mkdir(exist_ok=True)
   # Registry entries are trusted Python objects registered by application code;
   # HTTP requests can inspect metadata but cannot load or register executable code.
-  self.derived_adapters=AdapterRegistry();self.derived_adapters.register(WindSpeedAdapter())
+  self.derived_adapters=AdapterRegistry();self.derived_adapters.register(WindSpeedAdapter());self.derived_adapters.load_installed()
   self.product_style_store=ProductStyleStore(self.store.root/'product-styles')
   self.route_root=self.store.root/'routes';self.route_root.mkdir(exist_ok=True)
   self.context_cache={};self.done_jobs={};self.registration_errors={}
@@ -169,7 +169,8 @@ class Workstation(DerivedProductServiceMixin, ReanalysisMixin, SourceManagerMixi
   result['projection_scale_tolerance_relative']=MAX_DETECTOR_PROJECTION_SCALE_ERROR
   return result
  def derived_adapter_catalogue(self):
-  return {'schema_version':'1.0','adapters':self.derived_adapters.catalogue()}
+  return {'schema_version':'1.0','adapters':self.derived_adapters.catalogue(),
+          'warnings':self.derived_adapters.plugin_warnings}
  def configure(self,data):
   if 'view_settings' in data:
    from .products import PRESETS,PRODUCTS
