@@ -3,6 +3,7 @@
 from __future__ import annotations
 import argparse
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -17,6 +18,8 @@ from server import LocalServer
 from browser_support import mount
 from arktika.workstation import Workstation
 from test_reanalysis import dataset
+from test_adapter_credentials import adapter as custom_test_adapter
+from arktika.reanalysis.adapters import register_adapter, unregister_adapter
 
 
 def main():
@@ -24,7 +27,17 @@ def main():
     out=Path(a.output).resolve();out.mkdir(parents=True,exist_ok=True)
     report={'mode':'explicit-http-bridge; browser Origin/cookies/CSP not verified' if a.bridge else 'native-http','fixture':'SYNTHETIC SOFTWARE TESTS, NOT WEATHER OBSERVATIONS','checks':[],'browser_errors':[],'network':'localhost only; no live CDS/Earthdata test'}
     with tempfile.TemporaryDirectory() as tmp:
-        root=Path(tmp);app=Workstation(root/'state');app.store.set_setting('last_date','2024-01-01')
+        root=Path(tmp);isolated_home=root/'home';isolated_home.mkdir()
+        previous_home=os.environ.get('HOME');previous_userprofile=os.environ.get('USERPROFILE')
+        os.environ['HOME']=str(isolated_home);os.environ['USERPROFILE']=str(isolated_home)
+        previous_browser_path=os.environ.get('PLAYWRIGHT_BROWSERS_PATH')
+        if previous_browser_path is None and previous_home:
+            if sys.platform=='darwin':cache=Path(previous_home)/'Library'/'Caches'/'ms-playwright'
+            elif sys.platform=='win32':cache=Path(previous_home)/'AppData'/'Local'/'ms-playwright'
+            else:cache=Path(previous_home)/'.cache'/'ms-playwright'
+            os.environ['PLAYWRIGHT_BROWSERS_PATH']=str(cache)
+        app=Workstation(root/'state')
+        app.store.set_setting('last_date','2024-01-01')
         app.store.set_setting('view_settings',{'preset':'barents','product':'channel','channel':9})
         paths={}
         for source,offset in [('era5',0),('merra2',2)]:
@@ -35,8 +48,11 @@ def main():
             with sync_playwright() as pw:
                 launch={'headless':True}
                 if a.executable:launch['executable_path']=a.executable
-                browser=pw.chromium.launch(**launch);context=browser.new_context(viewport={'width':1536,'height':960})
+                browser=pw.chromium.launch(**launch)
+                context=browser.new_context(viewport={'width':1536,'height':960})
+                browser_console=[]
                 page=context.new_page();page.on('pageerror',lambda e:report['browser_errors'].append(str(e)))
+                page.on('console',lambda message:browser_console.append(message.text))
                 def wait(expression,timeout=30000):
                     end=time.monotonic()+timeout/1000
                     while time.monotonic()<end:
@@ -66,6 +82,50 @@ def main():
                 check('Отмена доступа возвращает сохранённый запрос к настройке', '()=>document.querySelector("#fieldDialog").open&&!FIELDS.credentialRetry&&FIELDS.job.status==="needs_action"&&!document.querySelector("#fieldDialogCancel").hidden')
                 page.locator('#fieldDialogCancel').click()
                 check('Сохранённый сетевой запрос можно явно отменить перед локальным импортом', '()=>FIELDS.job.status==="cancelled"&&!FIELDS.job.resume_available')
+                # A trusted third-party plugin declares its own credential schema.
+                # Stop the resumed worker deliberately after the request crosses the
+                # credential boundary; no real provider/network is contacted.
+                custom_adapter=custom_test_adapter()
+                object.__setattr__(custom_adapter,'planner',lambda request:{**request,'resolution_km':10,'time_kind':'analysis','key':'synthetic-plan-key'})
+                register_adapter(custom_adapter)
+                custom_source='custom_reanalysis'
+                page.evaluate('''()=>{const s=document.querySelector('#fieldSource');const o=document.createElement('option');o.value='custom_reanalysis';o.textContent='Тестовый источник';s.append(o);return openFieldDialog('custom_reanalysis')}''')
+                page.locator('#fieldSource').select_option(custom_source)
+                page.locator('#fieldVariable').select_option('mslp')
+                page.locator('#fieldTime').fill('2024-01-01T00:00')
+                custom_payloads=[]
+                real_field_process=app._field_process
+                def stop_after_custom_resume(payload,**kwargs):
+                    custom_payloads.append(payload)
+                    raise ValueError('Синтетическая остановка браузерного теста.')
+                app._field_process=stop_after_custom_resume
+                page.locator('#fieldDownload').click()
+                check('Сторонний адаптер приостанавливает точный запрос до ввода реквизитов',
+                      '()=>document.querySelector("dialog[data-credential-provider=research_auth]")?.open&&document.querySelector("dialog[data-credential-provider=research_auth]").querySelectorAll("input").length===2&&FIELDS.job.status==="needs_action"')
+                credential_dialog=page.locator('dialog[data-credential-provider="research_auth"]')
+                check('Поля формы строятся по безопасной схеме адаптера',
+                      '()=>{const d=document.querySelector("dialog[data-credential-provider=research_auth]");return d&&d.textContent.includes("Доступ тестового источника.")&&d.querySelectorAll("input[type=text]").length===1&&d.querySelectorAll("input[type=password]").length===1&&d.textContent.includes("Имя пользователя")&&d.textContent.includes("Токен")}')
+                custom_task_id=page.evaluate('()=>FIELDS.credentialRetry.id')
+                credential_dialog.locator('input[type="text"]').fill('synthetic-operator')
+                credential_dialog.locator('input[type="password"]').fill('SYNTHETIC-ADAPTER-SECRET')
+                credential_dialog.get_by_role('button',name='Сохранить в памяти и продолжить').click()
+                check('После ввода реквизитов продолжается тот же запрос',
+                      '()=>FIELDS.job.id==="'+custom_task_id+'"&&FIELDS.job.status==="error"&&FIELDS.credentialRetry===null&&document.querySelector("dialog[data-credential-provider=research_auth]")===null')
+                assert len(custom_payloads)==1, 'custom provider request was not resumed exactly once'
+                assert 'SYNTHETIC-ADAPTER-SECRET' in json.dumps(custom_payloads[0])
+                assert custom_payloads[0]['plan']['source']==custom_source
+                assert custom_payloads[0]['plan']['time']=='2024-01-01T00:00:00Z'
+                public_state=json.dumps({'job':app._field_job,'source_state':app.source_state(),
+                                         'provider_status':app.provider_credential_status('research_auth')},ensure_ascii=False)
+                browser_state=page.evaluate('''()=>JSON.stringify({fields:FIELDS,local:localStorage,session:sessionStorage,
+                    text:document.body.innerText,values:[...document.querySelectorAll('input')].map(x=>x.value),
+                    attributes:[...document.querySelectorAll('*')].flatMap(x=>[...x.attributes].map(a=>a.value))})''')
+                assert 'SYNTHETIC-ADAPTER-SECRET' not in public_state
+                assert 'SYNTHETIC-ADAPTER-SECRET' not in browser_state
+                assert 'SYNTHETIC-ADAPTER-SECRET' not in '\n'.join(browser_console)
+                report['checks'].append({'name':'Реквизиты не попали в UI state, storage, DOM или публичный state сервера','passed':True});print(report['checks'][-1]['name'],flush=True)
+                app.clear_provider_credential('research_auth')
+                app._field_process=real_field_process
                 import_field('era5',1)
                 page.locator('#productRail').click()
                 check('Слой содержит срок и единицы','()=>document.querySelector("#fieldLayerRows").textContent.includes("2024-01-01")&&document.querySelector(".field-legend").textContent.includes("°C")')
@@ -95,7 +155,6 @@ def main():
                 check('Возврат к полю после настройки CDS','()=>document.querySelector("#fieldDialog").open&&document.querySelector("#fieldSource").value==="era5"')
                 from arktika.reanalysis_service import RetryableFieldError
                 cached_meta=app.field(identity)
-                real_field_process=app._field_process
                 def fail_remote(*args,**kwargs):raise RetryableFieldError('Временная ошибка сети. Повторите сохранённый запрос.')
                 app._field_process=fail_remote
                 page.locator('#fieldTime').fill('2024-01-01T00:00');page.locator('#fieldDownload').click()
@@ -135,6 +194,13 @@ def main():
             app.cancel.set()
             if app.task and app.task.is_alive():app.task.join(5)
             server.shutdown();server.server_close();app.close()
+            if previous_browser_path is None:os.environ.pop('PLAYWRIGHT_BROWSERS_PATH',None)
+            else:os.environ['PLAYWRIGHT_BROWSERS_PATH']=previous_browser_path
+            if previous_home is None:os.environ.pop('HOME',None)
+            else:os.environ['HOME']=previous_home
+            if previous_userprofile is None:os.environ.pop('USERPROFILE',None)
+            else:os.environ['USERPROFILE']=previous_userprofile
+        unregister_adapter('custom_reanalysis')
     print('Passed',len(report['checks']),'browser checks',flush=True)
 
 if __name__=='__main__':main()
