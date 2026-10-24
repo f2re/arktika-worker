@@ -15,6 +15,7 @@ from server import LocalServer, ROOT
 from arktika.model import normalize_asset, normalize_item
 from arktika.network import Client, NetworkError, Response
 from arktika.download import download
+from arktika.reanalysis.transport import _cds_checkpoint, _save_cds_checkpoint
 from arktika.service import App
 
 # Deliberate byte fixture: not a valid scientific dataset or decoded image.
@@ -102,6 +103,18 @@ class PackageChecks(unittest.TestCase):
     def test_untrusted_external_host_rejected(self):
         with self.assertRaises(NetworkError):
             Client(transport=FakeTransport()).open_object('https://example.invalid/object.tif')
+
+    def test_cds_checkpoint_requires_matching_request_hash_and_complete_netcdf(self):
+        with tempfile.TemporaryDirectory() as td:
+            folder=Path(td);item={'dataset':'fixture-dataset','request':{'year':['2024'],'area':[80,-20,60,20]}}
+            target=folder/'source-0.nc';manifest=folder/'source-0.checkpoint.json'
+            target.write_bytes(b'CDF\x01complete-test-fixture')
+            _save_cds_checkpoint(target,manifest,item)
+            self.assertEqual(_cds_checkpoint(folder,0,item),target)
+            self.assertIsNone(_cds_checkpoint(folder,0,dict(item,request={'year':['2025']})))
+            target.write_bytes(b'<html>login required</html>')
+            _save_cds_checkpoint(target,manifest,item)
+            self.assertIsNone(_cds_checkpoint(folder,0,item))
 
 class ServerChecks(unittest.TestCase):
     @classmethod
