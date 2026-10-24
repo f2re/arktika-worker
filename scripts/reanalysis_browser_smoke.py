@@ -27,8 +27,11 @@ def main():
     out=Path(a.output).resolve();out.mkdir(parents=True,exist_ok=True)
     report={'mode':'explicit-http-bridge; browser Origin/cookies/CSP not verified' if a.bridge else 'native-http','fixture':'SYNTHETIC SOFTWARE TESTS, NOT WEATHER OBSERVATIONS','checks':[],'browser_errors':[],'network':'localhost only; no live CDS/Earthdata test'}
     with tempfile.TemporaryDirectory() as tmp:
-        root=Path(tmp);isolated_home=root/'home';isolated_home.mkdir();os.environ['HOME']=str(isolated_home)
-        app=Workstation(root/'state');app.store.set_setting('last_date','2024-01-01')
+        root=Path(tmp);isolated_home=root/'home';isolated_home.mkdir()
+        previous_home=os.environ.get('HOME');previous_userprofile=os.environ.get('USERPROFILE')
+        os.environ['HOME']=str(isolated_home);os.environ['USERPROFILE']=str(isolated_home)
+        app=Workstation(root/'state')
+        app.store.set_setting('last_date','2024-01-01')
         app.store.set_setting('view_settings',{'preset':'barents','product':'channel','channel':9})
         paths={}
         for source,offset in [('era5',0),('merra2',2)]:
@@ -39,7 +42,17 @@ def main():
             with sync_playwright() as pw:
                 launch={'headless':True}
                 if a.executable:launch['executable_path']=a.executable
-                browser=pw.chromium.launch(**launch);context=browser.new_context(viewport={'width':1536,'height':960})
+                previous_browser_path=os.environ.get('PLAYWRIGHT_BROWSERS_PATH')
+                if previous_browser_path is None and previous_home:
+                    if sys.platform=='darwin':cache=Path(previous_home)/'Library'/'Caches'/'ms-playwright'
+                    elif sys.platform=='win32':cache=Path(previous_home)/'AppData'/'Local'/'ms-playwright'
+                    else:cache=Path(previous_home)/'.cache'/'ms-playwright'
+                    os.environ['PLAYWRIGHT_BROWSERS_PATH']=str(cache)
+                try:browser=pw.chromium.launch(**launch)
+                finally:
+                    if previous_browser_path is None:os.environ.pop('PLAYWRIGHT_BROWSERS_PATH',None)
+                    else:os.environ['PLAYWRIGHT_BROWSERS_PATH']=previous_browser_path
+                context=browser.new_context(viewport={'width':1536,'height':960})
                 browser_console=[]
                 page=context.new_page();page.on('pageerror',lambda e:report['browser_errors'].append(str(e)))
                 page.on('console',lambda message:browser_console.append(message.text))
