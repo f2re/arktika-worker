@@ -259,7 +259,7 @@ class PmcArchivePlanTests(unittest.TestCase):
                             state=app.pmc_archive_prepare_state()
                             if state['status']!='running':break
                             time.sleep(.01)
-                        self.assertEqual('ready',state['status'])
+                        self.assertEqual('ready',state['status'],state)
                         self.assertEqual('new-secret',resume_worker.call_args.args[0]['credential']['token'])
                         persisted=(root/'state'/'reanalysis'/'pmc_prepare_job.json').read_text(encoding='utf-8')
                         self.assertNotIn('new-secret',persisted)
