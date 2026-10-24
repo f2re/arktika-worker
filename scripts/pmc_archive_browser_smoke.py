@@ -178,6 +178,30 @@ def main():
                     assert not any("/api/queue" in url or "/api/pmc/archive/run" in url for _, url in requests)
                     report["checks"].append({"name": "План не запускает загрузки или детектор", "passed": True})
 
+                    page.locator("#pmcArchivePrepare").click()
+                    check(
+                        "Подготовка без реквизитов приостанавливается на конкретном источнике",
+                        '()=>document.querySelector("#pmcArchivePrepareTask").textContent.includes("Настроить доступ к ERA5")',
+                    )
+                    page.locator("#pmcArchivePrepareTask button").click()
+                    check(
+                        "Для добавления реквизитов открывается штатная форма CDS",
+                        '()=>document.querySelector("#cdsAccessDialog").open',
+                    )
+                    page.locator("#cdsAccessDialog").locator("[data-close]").click()
+                    check(
+                        "Ожидающая реквизитов подготовка доступна для отмены",
+                        '()=>!document.querySelector("#pmcArchiveCancel").hidden',
+                    )
+                    page.locator("#pmcArchiveCancel").click()
+                    check(
+                        "Подготовку в ожидании реквизитов можно отменить и возобновить",
+                        '()=>document.querySelector("#pmcArchivePrepareTask").textContent.includes("Подготовка отменена")&& !document.querySelector("#pmcArchivePrepareResume").hidden',
+                    )
+                    assert not any(url.endswith("/api/pmc/archive/run") for _, url in requests)
+                    report["checks"].append({"name": "Подготовка и детектор остаются раздельными", "passed": True})
+
+                    page.evaluate("document.querySelector('#fieldDialog')?.close()")
                     page.evaluate("""() => {
                       api = async () => ({tracks_by_source:[{source:'era5',candidate_emergence_evidence:[{
                         source:'era5',first_detected_time:'2024-01-01T01:00:00Z',candidate_id:'e1',

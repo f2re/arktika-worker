@@ -29,6 +29,21 @@ class PmcArchiveUiContractTests(unittest.TestCase):
         self.assertNotIn("/api/pmc/archive/run", handler)
         self.assertIn("Никакие данные не загружены", handler)
 
+    def test_missing_fields_can_be_prepared_without_implicitly_running_detector(self):
+        html = (ROOT / "static/index.html").read_text(encoding="utf-8")
+        source = (ROOT / "static/app.js").read_text(encoding="utf-8")
+        self.assertIn('id="pmcArchivePrepare"', html)
+        prepare = source[source.index("async function pmcPrepareArchive()"):source.index("async function pmcRefreshArchivePrepare(")]
+        self.assertIn("api('/api/pmc/archive/prepare'", prepare)
+        self.assertIn("api('/api/pmc/archive/prepare/resume'", source)
+        self.assertIn("api('/api/pmc/archive/prepare/state'", source)
+        self.assertNotIn("/api/pmc/archive/run", prepare)
+        self.assertIn("pmc-credentials-saved", source)
+        self.assertIn("revision!==S.pmcArchivePlanRevision||S.pmcArchivePlan!==plan", prepare)
+        state = source[source.index("async function pmcRefreshArchivePrepare()"):source.index("async function pmcStartArchive(")]
+        self.assertIn("$('#pmcArchiveRun').disabled=preparing", state)
+        self.assertIn("root.dataset.progress!==progress", state)
+
     def test_source_rows_are_derived_from_registered_source_catalogue(self):
         source = (ROOT / "static/app.js").read_text(encoding="utf-8")
         self.assertIn("state.catalogue?.sources||[]", source)

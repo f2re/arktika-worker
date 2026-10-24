@@ -13,6 +13,7 @@ from arktika.pmc_archive import build_plan
 from arktika.workstation import Workstation
 from arktika.pmc_detection import ALGORITHM_ID as PMC_DETECTOR_ID
 from arktika.pmc_detection import ALGORITHM_VERSION as PMC_DETECTOR_VERSION
+from arktika.reanalysis.catalog import request_plan
 
 
 def request(**changes):
@@ -175,6 +176,98 @@ class PmcArchivePlanTests(unittest.TestCase):
                     self.assertEqual(2,state['completed'])
             finally:
                 resumed.close()
+
+    def test_remote_preparation_persists_safe_specs_and_stops_before_detector(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);app=Workstation(root/'state',download_dir=root/'downloads')
+            grid={'crs':'EPSG:3413','width':20,'height':20,
+                  'transform':[10000,0,-100000,0,-10000,100000],
+                  'resolution_x_m':10000,'resolution_y_m':10000}
+            plan=request(sources=['era5'],end='2024-01-01T02:00:00Z',
+                         access_token='do-not-save',private_uri='https://private.invalid/?sig=secret')
+            metas=[]
+            def field_process(payload,**kwargs):
+                meta={'id':payload['identity'],'source':'era5','variable':'wind','level':850,
+                      'time_kind':'instantaneous_analysis','time':payload['plan']['time']}
+                metas.append(meta)
+                return {'field':meta,'cached':False}
+            def load_field(identity):
+                for meta in metas:
+                    if meta['id']==identity:return meta
+                raise ValueError('Field is not cached yet.')
+            try:
+                with patch.object(app,'_adapter_credential',return_value={'token':'do-not-save'}), \
+                     patch.object(app,'_field_process',side_effect=field_process), \
+                     patch.object(app,'field',side_effect=load_field), \
+                     patch.object(app,'experimental_pmc_candidates') as detector:
+                    started=app.pmc_archive_prepare({'plan':plan,'target_grid':grid})
+                    self.assertFalse(started['detector_started'])
+                    deadline=time.monotonic()+5
+                    while time.monotonic()<deadline:
+                        state=app.pmc_archive_prepare_state()
+                        if state['status']!='running':break
+                        time.sleep(.01)
+                    self.assertEqual('ready',state['status'])
+                    self.assertEqual(3,state['prepared'])
+                    detector.assert_not_called()
+                    saved=(root/'state'/'reanalysis'/'pmc_prepare_job.json').read_text(encoding='utf-8')
+                    self.assertNotIn('do-not-save',saved)
+                    self.assertNotIn('private.invalid',saved)
+                    self.assertNotIn('sig=secret',saved)
+                    parsed=json.loads(saved)
+                    self.assertEqual({'source','variable','time','level','area'},set(parsed['specs'][0]))
+                    self.assertEqual(3,len(parsed['completed_field_ids']))
+            finally:
+                app.close()
+
+    def test_missing_credentials_pause_and_resume_with_current_configuration(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);app=Workstation(root/'state',download_dir=root/'downloads')
+            grid={'crs':'EPSG:3413','width':20,'height':20,
+                  'transform':[10000,0,-100000,0,-10000,100000],
+                  'resolution_x_m':10000,'resolution_y_m':10000}
+            plan=request(sources=['era5'],start='2024-01-01T00:00:00Z',end='2024-01-01T00:00:00Z')
+            meta={'id':request_plan({'source':'era5','variable':'wind','level':850,
+                                    'time':'2024-01-01T00:00:00Z','area':plan['area']})['key'],
+                  'source':'era5','variable':'wind','level':850,
+                  'time_kind':'instantaneous_analysis','time':'2024-01-01T00:00:00Z'}
+            completed=[]
+            def load_field(identity):
+                if completed:return meta
+                raise ValueError('Field is not cached yet.')
+            try:
+                with patch.object(app,'_adapter_credential',return_value={}), \
+                     patch.object(app,'_field_process') as worker:
+                    started=app.pmc_archive_prepare({'plan':plan,'target_grid':grid})
+                    deadline=time.monotonic()+5
+                    while time.monotonic()<deadline:
+                        state=app.pmc_archive_prepare_state()
+                        if state['status']!='running':break
+                        time.sleep(.01)
+                    self.assertEqual('needs_action',state['status'])
+                    self.assertEqual('credentials_required',state['needs_action']['code'])
+                    worker.assert_not_called()
+                    saved=(root/'state'/'reanalysis'/'pmc_prepare_job.json').read_text(encoding='utf-8')
+                    self.assertNotIn('"credential":',saved)
+                    self.assertEqual('preparing',app.pmc_archive_cancel({'id':started['id']})['stage'])
+                    state=app.pmc_archive_prepare_state()
+                    self.assertEqual('cancelled',state['status'])
+                    self.assertTrue(state['resume_available'])
+                    with patch.object(app,'_adapter_credential',return_value={'token':'new-secret'}), \
+                     patch.object(app,'_field_process',side_effect=lambda *args,**kwargs:(completed.append(True) or {'field':meta,'cached':False})) as resume_worker, \
+                         patch.object(app,'field',side_effect=load_field):
+                        app.pmc_archive_prepare_resume({'id':started['id']})
+                        deadline=time.monotonic()+5
+                        while time.monotonic()<deadline:
+                            state=app.pmc_archive_prepare_state()
+                            if state['status']!='running':break
+                            time.sleep(.01)
+                        self.assertEqual('ready',state['status'],state)
+                        self.assertEqual('new-secret',resume_worker.call_args.args[0]['credential']['token'])
+                        persisted=(root/'state'/'reanalysis'/'pmc_prepare_job.json').read_text(encoding='utf-8')
+                        self.assertNotIn('new-secret',persisted)
+            finally:
+                app.close()
 
 
 if __name__ == "__main__":
