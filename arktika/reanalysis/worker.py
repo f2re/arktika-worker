@@ -128,10 +128,9 @@ def checked_cache(folder):
 
 
 @contextlib.contextmanager
-def _prepare_lock(cache,identity):
-    """Serialize commits and checkpoint access for one immutable field identity."""
+def _field_lock(cache,key):
+    """Acquire a lock for a pre-hashed field identity."""
     lock_dir=cache/'.locks';lock_dir.mkdir(parents=True,exist_ok=True)
-    key=hashlib.sha256(identity.encode('utf-8')).hexdigest()
     with (lock_dir/(key+'.lock')).open('a+b') as handle:
         try:
             if sys.platform=='win32':
@@ -158,6 +157,33 @@ def _prepare_lock(cache,identity):
                 fcntl.flock(handle.fileno(),fcntl.LOCK_UN)
 
 
+def _prepare_lock(cache,identity):
+    """Serialize commits and checkpoint access for one immutable field identity."""
+    return _field_lock(cache,hashlib.sha256(identity.encode('utf-8')).hexdigest())
+
+
+def _prune_stale_checkpoints(cache,*,now=None,max_age_days=30):
+    """Remove old abandoned staging dirs only while their identity lock is free."""
+    root=cache/'.incomplete'
+    if root.is_symlink() or not root.is_dir():
+        return
+    current=dt.datetime.now().timestamp() if now is None else now
+    cutoff=current-max_age_days*24*60*60
+    for stage in root.iterdir():
+        if stage.is_symlink() or not stage.is_dir() or not re.fullmatch(r'[a-f0-9]{64}-[a-f0-9]{64}',stage.name):
+            continue
+        try:
+            if stage.stat().st_mtime>=cutoff:
+                continue
+            identity_key=stage.name.split('-',1)[0]
+            with _field_lock(cache,identity_key):
+                if not stage.is_symlink() and stage.is_dir() and stage.stat().st_mtime<cutoff:
+                    shutil.rmtree(stage)
+        except (OSError,ValueError):
+            # Busy identities remain untouched for their active worker.
+            continue
+
+
 def prepare(payload,progress,*,registry: AdapterRegistry = DEFAULT_REGISTRY):
     identity=payload.get('identity')
     if not isinstance(identity,str) or identity in ('.','..') or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,127}',identity):
@@ -165,6 +191,7 @@ def prepare(payload,progress,*,registry: AdapterRegistry = DEFAULT_REGISTRY):
     cache=Path(payload['cache'])
     cache.mkdir(parents=True,exist_ok=True)
     with _prepare_lock(cache,identity):
+        _prune_stale_checkpoints(cache)
         return _prepare_locked(payload,progress,registry=registry)
 
 
@@ -174,9 +201,10 @@ def _prepare_locked(payload,progress,*,registry: AdapterRegistry = DEFAULT_REGIS
     adapter=get_runtime_adapter(plan.get('source'),registry=registry)
     if plan.get('variable') not in adapter.supported_variables:
         raise ValueError('Выбранное поле не поддерживается источником реанализа.')
-    checkpoint_key=hashlib.sha256(json.dumps(
-        {'identity':identity,'plan':plan},sort_keys=True,separators=(',',':'),
-        ensure_ascii=True,allow_nan=False).encode()).hexdigest()
+    identity_key=hashlib.sha256(identity.encode('utf-8')).hexdigest()
+    plan_key=hashlib.sha256(json.dumps(
+        plan,sort_keys=True,separators=(',',':'),ensure_ascii=True,allow_nan=False).encode()).hexdigest()
+    checkpoint_key=identity_key+'-'+plan_key
     checkpoint_root=cache/'.incomplete'
     checkpoint=checkpoint_root/checkpoint_key
     if not payload.get('refresh'):
