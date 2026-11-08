@@ -1,5 +1,5 @@
 {
-  "version": "0.10.12",
+  "version": "0.10.13",
   "files": {
     ".gitattributes": "8d75fbed0329d55480242ea79c61cbdd3da312c700298bfba9572b81ec325cc6",
     ".github/ISSUE_TEMPLATE/bug_report.md": "095ea2329092b4fd2b6847962b3a71c6ba37d843d3f6c5f5e64a716e4d2e33af",
@@ -12,10 +12,10 @@
     "CONTRIBUTING.md": "9bdd753016071c4feb0261e95b1ae53b810bc05ff65c007f94b982bdb3b2d8ee",
     "LICENSE": "ec1a4c03de73899d1d5a32abbfe1e0e8114710fdcc9ed1de967b53a69cb07745",
     "README.md": "c38caffb476ea942ca7fbceddd8db2ce7768d7badc696788eb676f42a445d38d",
-    "RELEASE_NOTES.md": "6dc36fccffcdcd9f5f6894a9baec2f6d61050bdce2c0d1220bbf76beb38b6a37",
+    "RELEASE_NOTES.md": "63be68a0574e3abbcec2f51f422238e62e107af124f517b44af443a2f23f9d7b",
     "SECURITY.md": "a64cd32afb48113ef1a9989d6d5f9c777c0b31204a163116651d69ae9de78644",
     "THIRD_PARTY_NOTICES.md": "353ffb2cec81f7e73201291c534425e3f758fbfe406f33b38defcbffd5b67b0c",
-    "arktika/__init__.py": "f079aa71a94a625ba844cd670a6a67b5c8ec1437aa5c06f90a5d3070cba2158d",
+    "arktika/__init__.py": "cbbf49112cc1bce8c7fe95a64f92edee4dacfec97066431d5570ab7707be3456",
     "arktika/adapters.py": "083fd505637f93c2048d3c34fcbc986b2e43572b27bc2b4b86d897a1cfdad1b3",
     "arktika/analysis_service.py": "48e98c8e6c347885b7ef1dc6e75b1f5b53d97f9286819080b1067954c569388e",
     "arktika/archive.py": "9b2241ec05a69da1f1777c80fc7f0d32211cba77a363b4a8e1680e5236b03459",
@@ -84,7 +84,7 @@
     "docs/DATA_MODEL.md": "93c0498480a545de5cb7b4d0cd3e4e056d3fb86e55155fc9ce821f0e8f89d953",
     "docs/DERIVED_PRODUCT_ADAPTERS.md": "68adf27d135113ca7058d13f80f4a502ea11904af4a6543f892fd614adad8c03",
     "docs/DESIGN.md": "ef2e511dc9f167ff5fb4d0076635165f11e9e73300689d9d6691fb7d7117d919",
-    "docs/DEVELOPMENT_PLAN_2026-10.md": "f1951c7730c3ec33ba4696b1fca8d33680372bfc807741d8b8ef38ef1a38e01f",
+    "docs/DEVELOPMENT_PLAN_2026-10.md": "a23c97faa65a1501e451415e5213d3cefa1c5c0b33aa0228f3542fe4e19ef3d3",
     "docs/ERA5.html": "ba521ea151bb42eaf7f9f01384601867f27604361722b54a8641b106f84e3992",
     "docs/INSTALL.md": "3bfa5144eae80132906655269c41b2cd752625b2c073524552a5601e6e0ffc97",
     "docs/KNOWN_LIMITS.md": "ee7bb9f87d7d12391b3d41bacd79e71e9594c4abf5909896a92bb204f34aaa0f",
