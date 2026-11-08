@@ -8,6 +8,8 @@ import urllib.error
 import urllib.request
 from unittest.mock import patch
 
+import numpy as np
+
 from server import LocalServer
 from arktika.workstation import Workstation
 
@@ -60,6 +62,41 @@ class PmcRunHttpTests(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError) as cm:
             self.request({'field_id':'wind-1','target_grid':grid})
         self.assertEqual(cm.exception.code,400)
+
+    def test_custom_peak_threshold_changes_detector_result_and_passport(self):
+        grid = dict(self.grid, width=15, height=15, resolution_x_m=60_000,
+                    resolution_y_m=60_000, transform=[60_000, 0, -450_000, 0, -60_000, 450_000])
+        values = np.zeros((15, 15))
+        values[4:11, 4:11] = 2e-4
+        passport = {
+            'source': 'era5', 'variable': 'relative_vorticity', 'level_hPa': 850,
+            'units': 's-1', 'valid_time': '2024-01-01T00:00:00Z', 'grid': grid,
+            'projection_scale': {'maximum_relative_error': 0.01},
+            'input_coverage': {'valid_pixels': 225},
+        }
+        field = {'passport': passport, 'values': values, 'grid': grid}
+        payload = {'field_id': 'synthetic-wind', 'target_grid': grid}
+        with patch.object(self.app, 'experimental_vorticity_850', return_value=field):
+            with self.request(payload) as response:
+                default = json.load(response)
+            with self.request({**payload, 'thresholds': {'peak_vorticity_s-1': 2.5e-4}}) as response:
+                custom = json.load(response)
+        self.assertEqual(default['candidate_count'], 1)
+        self.assertEqual(default['candidates'][0]['confirmation_status'], 'not_confirmed')
+        self.assertEqual(custom['candidate_count'], 0)
+        self.assertEqual(custom['parameters']['peak_vorticity_s-1'], 2.5e-4)
+        self.assertEqual(custom['detector_passport']['quality_control']['thresholds'], {
+            'minimum_vorticity_s-1': 1e-4, 'peak_vorticity_s-1': 2.5e-4,
+        })
+
+    def test_rejects_invalid_custom_thresholds_before_reading_field(self):
+        with patch.object(self.app, 'experimental_vorticity_850') as read:
+            for thresholds in (None, {'peak_vorticity_s-1': 0}, {'other': 1e-4}):
+                with self.subTest(thresholds=thresholds), self.assertRaises(urllib.error.HTTPError) as cm:
+                    self.request({'field_id': 'synthetic-wind', 'target_grid': self.grid,
+                                  'thresholds': thresholds})
+                self.assertEqual(cm.exception.code, 400)
+        read.assert_not_called()
 
     def test_success_returns_experimental_status_provenance_and_projected_centres(self):
         fake={

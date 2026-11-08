@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Native-HTTP UI smoke for experimental PMC archive planning and diagnostics."""
 import argparse
+import hashlib
 import json
 from pathlib import Path
 import sys
@@ -20,6 +21,34 @@ from arktika.pmc_archive_run import build_archive_report
 from arktika.pmc_detection import ALGORITHM_VERSION, METHOD_REFERENCE, PARAMETERS
 from arktika.workstation import Workstation
 from server import LocalServer
+
+
+def install_synthetic_vorticity(app):
+    """Use a controlled projected field with the real single and archive detectors."""
+    field_id = "d" * 24
+    field_dir = app.field_cache / field_id
+    field_dir.mkdir()
+    cached = b"SYNTHETIC VORTICITY TEST INPUT"
+    stamp = "2024-01-01T03:00:00Z"
+    (field_dir / "field.nc").write_bytes(cached)
+    (field_dir / "metadata.json").write_text(json.dumps({
+        "id": field_id, "source": "era5", "time": stamp, "variable": "wind",
+        "level": 850, "time_kind": "instantaneous_analysis",
+        "sha256": hashlib.sha256(cached).hexdigest(),
+    }), encoding="utf-8")
+
+    def projected_field(identity, *, target_grid):
+        assert identity == field_id
+        values = np.full((target_grid["height"], target_grid["width"]), 2e-4)
+        return {"values": values, "grid": target_grid, "passport": {
+            "source": "era5", "valid_time": stamp, "level_hPa": 850,
+            "variable": "relative_vorticity", "units": "s-1", "grid": target_grid,
+            "projection_scale": {"maximum_relative_error": 0.0},
+            "input_coverage": {"valid_pixels": values.size},
+        }}
+
+    app.experimental_vorticity_850 = projected_field
+    return field_id
 
 
 def synthetic_archive_report(task_id, grid, observation):
@@ -110,7 +139,14 @@ def main():
                 page = browser.new_page(viewport={"width": 1440, "height": 960})
                 page.on("pageerror", lambda error: report["browser_errors"].append(str(error)))
                 requests = []
-                page.on("request", lambda request: requests.append((request.method, request.url)))
+                diagnostic_requests = []
+
+                def capture_request(request):
+                    requests.append((request.method, request.url))
+                    if request.method == "POST" and request.url.endswith(("/api/pmc/run", "/api/pmc/archive/run")):
+                        diagnostic_requests.append(request.post_data_json)
+
+                page.on("request", capture_request)
 
                 def wait(expression, timeout=30):
                     deadline = time.monotonic() + timeout
@@ -262,6 +298,45 @@ def main():
                     )
                     assert not any(url.endswith("/api/pmc/archive/run") for _, url in requests)
                     report["checks"].append({"name": "Подготовка и детектор остаются раздельными", "passed": True})
+
+                    field_id = install_synthetic_vorticity(app)
+                    page.evaluate("async()=>pmcCachedChoices((await api('/api/reanalysis/state')).fields)")
+                    page.locator("#pmcRunWidth").select_option("512")
+                    check("Настройки порогов свёрнуты по умолчанию",
+                          '()=>!document.querySelector("#pmcThresholdSettings").open')
+                    page.locator("#pmcRunButton").click()
+                    check("Стандартные пороги находят синтетический кандидат",
+                          '()=>document.querySelector("#pmcRunResult strong")?.textContent.endsWith("· 1")')
+                    assert diagnostic_requests[-1]["field_id"] == field_id
+                    assert "thresholds" not in diagnostic_requests[-1]
+                    page.locator("#pmcThresholdSettings summary").click()
+                    page.locator("#pmcMinimumThreshold").fill("1.5")
+                    page.locator("#pmcRunButton").click()
+                    check("Пик ниже порога области отклоняется до API",
+                          '()=>document.querySelector("#pmcRunResult").textContent.includes("порог пика — не ниже")')
+                    assert len(diagnostic_requests) == 1
+                    page.locator("#pmcPeakThreshold").fill("3")
+                    page.locator("#pmcRunButton").click()
+                    check("Пользовательский порог убирает синтетический кандидат",
+                          '()=>document.querySelector("#pmcRunResult strong")?.textContent.endsWith("· 0")')
+                    thresholds = {"minimum_vorticity_s-1": 1.5e-4, "peak_vorticity_s-1": 3e-4}
+                    assert diagnostic_requests[-1]["thresholds"] == thresholds
+                    page.locator("#pmcRunResult .pmc-method summary").click()
+                    assert "область 1.5e-4 с⁻¹ · пик 3e-4 с⁻¹" in page.locator("#pmcRunResult .pmc-method").inner_text()
+
+                    page.locator("#pmcArchivePlan").click()
+                    page.locator(f'[name="pmcArchiveField"][value="{field_id}"]').wait_for()
+                    page.locator("#pmcArchiveRun").click()
+                    check("Архив обрабатывает срок с пользовательскими порогами", """() => {
+                        const task = document.querySelector('#pmcArchiveTask');
+                        return task.dataset.status === 'partial' && task.textContent.includes('обработано 1 из 1');
+                    }""")
+                    assert diagnostic_requests[-1]["thresholds"] == thresholds
+                    page.get_by_role("button", name="Показать диагностику и сравнение").click()
+                    check("Архивный отчёт показывает применённые пороги и ноль кандидатов", """() => {
+                        const text = document.querySelector('#pmcArchiveDiagnostics')?.textContent || '';
+                        return text.includes('область 1.5e-4 с⁻¹ · пик 3e-4 с⁻¹') && text.includes('Кандидаты · 0');
+                    }""")
 
                     page.evaluate("document.querySelector('#fieldDialog')?.close()")
                     page.locator('[name="pmcArchiveSource"][value="carra2"]').check()

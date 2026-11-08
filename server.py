@@ -219,8 +219,8 @@ class Handler(BaseHTTPRequestHandler):
             elif path=='/api/pmc/run':
                 # Single cached field only. This route never fetches data and
                 # intentionally does not accept client-supplied scientific arrays.
-                if set(data)-{'field_id','target_grid','observation_id'} or not {'field_id','target_grid'}<=set(data):
-                    raise ValueError('Нужны field_id выбранного кэшированного поля и явная target_grid; observation_id необязателен.')
+                if set(data)-{'field_id','target_grid','observation_id','thresholds'} or not {'field_id','target_grid'}<=set(data):
+                    raise ValueError('Укажите field_id кэшированного поля и target_grid. Дополнительно доступны observation_id и thresholds.')
                 identity=data.get('field_id')
                 grid=data.get('target_grid')
                 if not isinstance(identity,str) or not identity.strip():
@@ -236,6 +236,10 @@ class Handler(BaseHTTPRequestHandler):
                 except (TypeError,ValueError):
                     raise ValueError('Размер целевой сетки должен быть целым и не превышать 1 048 576 пикселей.') from None
                 detector_options={}
+                if 'thresholds' in data:
+                    if not isinstance(data['thresholds'],dict):
+                        raise ValueError('Пороги ПМЦ должны быть объектом thresholds.')
+                    detector_options['thresholds']=data['thresholds']
                 if 'observation_id' in data:
                     observation_id=data['observation_id']
                     if not isinstance(observation_id,str) or not observation_id.strip():

@@ -150,6 +150,27 @@ class CachedVorticity(unittest.TestCase):
         self.assertGreater(comparison["coverage"]["observed_pixels"], 0)
         self.assertGreater(comparison["coverage"]["unknown_pixels"], 0)
 
+    def test_custom_thresholds_change_cached_wind_screen_and_mask_overlap(self):
+        grid = self._projected_grid()
+        observation_id = self._register_observation(grid, valid_time=self.metadata["time"])
+        options = {"target_grid": grid, "observation_id": observation_id}
+        default = self.app.experimental_pmc_candidates(self.identity, **options)
+        thresholds = {"minimum_vorticity_s-1": 1e-5, "peak_vorticity_s-1": 2e-5}
+        custom = self.app.experimental_pmc_candidates(self.identity, thresholds=thresholds, **options)
+
+        self.assertEqual(default["candidate_count"], 0)
+        self.assertEqual(custom["candidate_count"], 1)
+        self.assertEqual(custom["candidates"][0]["confirmation_status"], "not_confirmed")
+        self.assertEqual(custom["passport"]["quality_control"]["thresholds"], thresholds)
+        default_comparison = default["satellite_comparison"]
+        custom_comparison = custom["satellite_comparison"]
+        self.assertEqual(custom_comparison["status"], "comparison_only")
+        for key in ("valid_model_pixels", "observed_pixels", "unknown_pixels"):
+            self.assertEqual(custom_comparison["coverage"][key], default_comparison["coverage"][key])
+        self.assertGreater(custom_comparison["coverage"]["candidate_pixels_outside_coverage"], 0)
+        self.assertEqual(default_comparison["metrics"]["false_positive_pixels"], 0)
+        self.assertGreater(custom_comparison["metrics"]["false_positive_pixels"], 0)
+
     def test_explicit_satellite_outside_time_preserves_model_result(self):
         observation_id = self._register_observation(
             self._projected_grid(), valid_time="2024-01-01T01:00:00Z")

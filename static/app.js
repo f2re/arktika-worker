@@ -109,6 +109,23 @@ async function help(){const r=S.registry;$('#channelReference').innerHTML=r.chan
 async function poll(){try{const r=await api('/api/state');S.serverState=r;$('#status').textContent=r.status;$('#statusdot').classList.toggle('busy',r.busy);$('#cancel').hidden=!r.busy;$('#process').disabled=r.busy;$('#calibrationState').textContent=calibrationNames[r.calibration?.mode]||'не задана';$('#downloadPath').textContent=r.download_dir;const q=r.queue_counts||{};$('#queueCount').textContent=(q.queued||0)+(q.running||0);$('#tokenStatus').innerHTML=`<p class="micro">Bearer: ${r.token.present?(r.token.remaining==null?'срок неизвестен':r.token.remaining>0?num(r.token.remaining/60,0)+' мин':'истёк'):'не задан'}<br>STS: ${r.token.sts_expires?new Date(r.token.sts_expires*1000).toISOString():'сессии нет'}<br>Refresh token: ${r.oauth?.refresh_present?'в памяти':'не задан'}</p>`;if(r.revision!==S.revision){S.revision=r.revision;await loadDay();await loadCalendar();}if(S.busy&&!r.busy&&r.result){if(r.result.ok&&r.result.result?.id&&r.result.result?.legend){await showProduct(r.result.result);}else if(r.result.ok&&r.result.result?.vectors){const motion=r.result.result;drawMotion(motion);$('#motionResult').innerHTML=`<p>Векторов: ${motion.vectors.length}; кандидатов вращения: ${motion.candidates.length}.</p><p class="notice">${escape(motion.note)}</p>`;}else if(!r.result.ok)toast(r.result.error);S.pending=false;}S.busy=r.busy;if($('#queueDialog').open)await refreshQueue();}catch(e){$('#status').textContent=e.message;}finally{setTimeout(poll,1800);}}
 function drawMotion(r){if(!S.map||S.map.grid.preset!==r.grid.preset||S.map.grid.crs!==r.grid.crs)return;const sx=S.map.grid.width/r.grid.width,sy=S.map.grid.height/r.grid.height;const els=r.vectors.map(v=>svgEl('line',{x1:v.x*sx,y1:v.y*sy,x2:(v.x+v.dx)*sx,y2:(v.y+v.dy)*sy,stroke:'#fbe17a','stroke-width':1.5}));for(const c of r.candidates)els.push(svgEl('circle',{cx:c.x*sx,cy:c.y*sy,r:30*sx,fill:'none',stroke:'#e58fd8','stroke-width':2}));$('#motionLayer').replaceChildren(...els);toast('Слежение показано: отрезки смещений и кандидаты вращения, не ПМЦ.');}
 const PMC_SOURCE_LABELS={era5:'ERA5',carra2:'CARRA2',merra2:'MERRA-2'};
+function pmcThresholdControls(){return [$('#pmcMinimumThreshold'),$('#pmcPeakThreshold')];}
+function pmcReadThresholds(){
+  const controls=pmcThresholdControls();
+  const values=controls.map(input=>{
+    if(input.validity.badInput)return NaN;
+    // Shift the decimal exponent before converting to binary floating point.
+    const [mantissa,exponent='0']=(input.value||input.defaultValue).toLowerCase().split('e');
+    return Number(`${mantissa}e${Number(exponent)-4}`);
+  });
+  const [minimum,peak]=values;
+  if(values.some(value=>!Number.isFinite(value)||value<=0)||peak<minimum){
+    $('#pmcThresholdSettings').open=true;
+    throw Error('Пороги должны быть положительными числами, а порог пика — не ниже порога области.');
+  }
+  if(controls.every(input=>!input.value||input.valueAsNumber===Number(input.defaultValue)))return undefined;
+  return {'minimum_vorticity_s-1':minimum,'peak_vorticity_s-1':peak};
+}
 function pmcRunPanel(){
   if($('#pmcRunPanel'))return;
   const panel=document.createElement('section');panel.id='pmcRunPanel';panel.className='pmc-run-panel';
@@ -122,6 +139,10 @@ function pmcRunPanel(){
     pmcClearOverlay();pmcClearResult();
     pmcRunMessage('Параметры изменены. Запустите расчёт снова, чтобы обновить результат.');
     $('#pmcRunButton').disabled=!$('#pmcCachedField').value;
+  });
+  for(const input of pmcThresholdControls())input.addEventListener('input',()=>{
+    pmcClearOverlay();
+    pmcRunMessage('Пороги изменены. Запустите расчёт, чтобы обновить результат.');
   });
 }
 function pmcObservationForm(){
@@ -180,6 +201,10 @@ function pmcText(parent,tag,value,className=''){
   if(className)element.className=className;
   parent.append(element);return element;
 }
+function pmcRenderThresholds(parameters,root){
+  const base=parameters?.['minimum_vorticity_s-1'],peak=parameters?.['peak_vorticity_s-1'];
+  if(Number.isFinite(base)&&Number.isFinite(peak))pmcText(root,'p',`Применённые пороги · область ${base.toExponential()} с⁻¹ · пик ${peak.toExponential()} с⁻¹`,'micro');
+}
 function pmcRenderMethod(result,root){
   const details=document.createElement('details');details.className='pmc-method';root.append(details);
   pmcText(details,'summary','Формула и пороги');
@@ -189,8 +214,7 @@ function pmcRenderMethod(result,root){
     pmcText(details,'p','ζ — относительная завихрённость на 850 гПа, с⁻¹. u и v — восточная и северная компоненты ветра, м/с. φ и λ — широта и долгота в радианах, a — радиус Земли в метрах.','micro');
   }else pmcText(details,'p','В сохранённом кадре нет записи формулы.','micro');
   if(Number.isFinite(parameters.uniform_radius_km))pmcText(details,'p',`Круговое среднее по валидным ячейкам, радиус ${num(parameters.uniform_radius_km)} км.`,'micro');
-  const base=parameters['minimum_vorticity_s-1'],peak=parameters['peak_vorticity_s-1'];
-  if(Number.isFinite(base)&&Number.isFinite(peak))pmcText(details,'p',`Связная область от ${base.toExponential()} с⁻¹, пик от ${peak.toExponential()} с⁻¹.`,'micro');
+  pmcRenderThresholds(parameters,details);
   if(Number.isFinite(parameters.peak_isolation_gamma))pmcText(details,'p',`Условие изоляции пика: (ζпик − ζседло) / ζпик > ${num(parameters.peak_isolation_gamma,3)}.`,'micro');
   if(result.method_reference)pmcText(details,'p',`Основа параметров: ${result.method_reference}`,'micro');
 }
@@ -258,7 +282,8 @@ function pmcDrawOverlay(r){
 }
 async function runPmcCached(){
   const fieldId=$('#pmcCachedField').value;if(!fieldId)throw Error('В кэше нет подходящего ветрового поля ERA5/CARRA2/MERRA-2 850 гПа. Откройте «Пространственные поля» и подготовьте срок отдельно.');
-  const controls=['#pmcCachedField','#pmcRunCrs','#pmcRunWidth','#pmcObservation'].map(selector=>$(selector));
+  const thresholds=pmcReadThresholds();
+  const controls=[...['#pmcCachedField','#pmcRunCrs','#pmcRunWidth','#pmcObservation'].map(selector=>$(selector)),...pmcThresholdControls()];
   const selection=controls.map(control=>control.value);
   pmcClearOverlay();$('#pmcRunButton').disabled=true;controls.forEach(control=>control.disabled=true);pmcRunMessage('Считаю только выбранное поле из локального кэша…');
   try{
@@ -266,6 +291,7 @@ async function runPmcCached(){
     const target_grid=pmcGridForRun(area,{preset:selection[1]},selection[2]);
     const observationId=controls[3]?.value;
     const body={field_id:fieldId,target_grid};if(observationId)body.observation_id=observationId;
+    if(thresholds)body.thresholds=thresholds;
     const result=await api('/api/pmc/run',body);
     if(result.status!=='completed'||result.maturity!=='experimental'||result.field_id!==fieldId)throw Error('Ответ API не соответствует контракту экспериментального расчёта.');
     if(controls.some((control,index)=>control.value!==selection[index]))throw Error('Параметры изменились во время расчёта. Запустите его снова.');
@@ -396,10 +422,13 @@ async function pmcStartArchive(){
   const revision=S.pmcArchivePlanRevision;
   const current=pmcArchiveBody();if(JSON.stringify(current)!==JSON.stringify({sources:plan.sources,start:plan.start,end:plan.end,area:plan.area}))throw Error('Параметры плана изменились. Составьте план заново.');
   if(field_ids.some(id=>!S.pmcArchiveFields.some(f=>f.id===id&&['era5','carra2','merra2'].includes(f.source))))throw Error('Выберите кэшированные поля ветра 850 гПа из поддерживаемых адаптеров ERA5, CARRA2 или MERRA-2.');
+  const thresholds=pmcReadThresholds();
   const preset=$('#pmcRunCrs').value||'arctic',width=Number($('#pmcRunWidth').value||'768');
   const {target_grid}=await api('/api/pmc/archive/grid',{preset,width,area:plan.area});
   if(revision!==S.pmcArchivePlanRevision||S.pmcArchivePlan!==plan)throw Error('Параметры изменились при подготовке сетки. Составьте план заново.');
-  await api('/api/pmc/archive/run',{plan,field_ids,target_grid});await pmcRefreshArchiveTask();
+  if(JSON.stringify(pmcReadThresholds())!==JSON.stringify(thresholds))throw Error('Пороги изменились при подготовке сетки. Запустите расчёт снова.');
+  const body={plan,field_ids,target_grid};if(thresholds)body.thresholds=thresholds;
+  await api('/api/pmc/archive/run',body);await pmcRefreshArchiveTask();
 }
 function pmcRenderArchiveDiagnostics(report){
   const panel=document.createElement('section');panel.id='pmcArchiveDiagnostics';
@@ -407,6 +436,7 @@ function pmcRenderArchiveDiagnostics(report){
   pmcText(panel,'p','Экспериментальный поиск модельных кандидатов. Спутниковое сравнение показывает перекрытие с импортированной разметкой. Физическое зарождение ПМЦ и прогноз остаются за рамками расчёта.','hint');
   const plan=report.plan||{};
   if(plan.start&&plan.end)pmcText(panel,'p',`${pmcTime(plan.start)} — ${pmcTime(plan.end)}`,'micro');
+  pmcRenderThresholds(report.thresholds,panel);
   const coverage=new Map((report.coverage||[]).map(row=>[row.source,row]));
   const sources=pmcText(panel,'ul','','pmc-source-coverage');
   for(const [id,name] of Object.entries(PMC_SOURCE_LABELS)){
@@ -550,7 +580,7 @@ function registerEvents(){
  bind('#drawRoute',()=>{if(!S.product)throw Error('Сначала постройте продукт.');S.drawing=!S.drawing;$('#drawRoute').classList.toggle('draw-active',S.drawing);$('#drawRoute').textContent=S.drawing?'Режим точек включён — нажмите для выхода':'Добавлять точки на карте';});bind('#undoRoute',()=>{const rows=$('#routePoints').value.trim().split('\n');rows.pop();$('#routePoints').value=rows.join('\n');$('#routeLayer').lastElementChild?.remove();});bind('#clearRoute',()=>{$('#routePoints').value='';$('#routeLayer').replaceChildren();$('#routeResult').innerHTML='';S.route=null;});bind('#calculateRoute',calculateRoute);
  bind('#productsOpen',async()=>{const r=await api('/api/products');$('#savedProducts').innerHTML=r.products.map(p=>`<article class="reference-card"><h3>${escape(p.title)}</h3><p>${escape(p.platform+' · '+p.time+' · '+p.grid.name)} · ${escape(calibrationNames[p.calibration_status])}</p><button data-id="${p.id}">Открыть</button> <a href="/artifact/${p.id}/export.zip">Экспорт с легендой</a></article>`).join('')||'<p class="empty">Продуктов пока нет.</p>';$$('#savedProducts button').forEach(b=>b.onclick=()=>{showProduct(r.products.find(p=>p.id===b.dataset.id)).then(()=>$('#productsDialog').close()).catch(e=>toast(e.message));});open('#productsDialog');});
  bind('#labOpen',()=>open('#labDialog'));bind('#profileCalculate',async()=>{$('#profileResult').textContent=JSON.stringify(await api('/api/profile',JSON.parse($('#profileJson').value)),null,2);});bind('#motionOpen',async()=>{const r=await api('/api/scenes');const opts=r.scenes.map(s=>`<option value="${s.id}">${escape(s.platform+' · '+s.time)}</option>`).join('');$('#motionFirst').innerHTML=opts;$('#motionSecond').innerHTML=opts;if(r.scenes.length>1)$('#motionSecond').selectedIndex=1;open('#motionDialog');});bind('#motionCalculate',async()=>{await api('/api/motion',{first:$('#motionFirst').value,second:$('#motionSecond').value,preset:$('#preset').value,channel:9});S.busy=true;});
-  bind('#pmcArchivePlan',planPmcArchive);bind('#pmcArchivePrepare',pmcPrepareArchive);bind('#pmcArchivePrepareResume',async()=>{const task=await api('/api/pmc/archive/prepare/state');await api('/api/pmc/archive/prepare/resume',{id:task.id});await pmcRefreshArchivePrepare();});bind('#pmcArchiveRun',pmcStartArchive);bind('#pmcArchiveResume',async()=>{const task=await api('/api/pmc/archive/state');await api('/api/pmc/archive/resume',{id:task.id});await pmcRefreshArchiveTask();});bind('#pmcArchiveCancel',async()=>{let task=await api('/api/pmc/archive/state');if(task.status!=='running')task=await api('/api/pmc/archive/prepare/state');await api('/api/pmc/archive/cancel',{id:task.id});await pmcRefreshArchiveTask();});
+  bind('#pmcArchivePlan',planPmcArchive);bind('#pmcArchivePrepare',pmcPrepareArchive);bind('#pmcArchivePrepareResume',async()=>{const task=await api('/api/pmc/archive/prepare/state');await api('/api/pmc/archive/prepare/resume',{id:task.id});await pmcRefreshArchivePrepare();});bind('#pmcArchiveRun',()=>pmcStartArchive().catch(e=>pmcFeedback(e.message,'error-text')));bind('#pmcArchiveResume',async()=>{const task=await api('/api/pmc/archive/state');await api('/api/pmc/archive/resume',{id:task.id});await pmcRefreshArchiveTask();});bind('#pmcArchiveCancel',async()=>{let task=await api('/api/pmc/archive/state');if(task.status!=='running')task=await api('/api/pmc/archive/prepare/state');await api('/api/pmc/archive/cancel',{id:task.id});await pmcRefreshArchiveTask();});
   window.addEventListener('pmc-credentials-saved',async event=>{const action=S.pmcPrepareNeedsAction;if(!action||event.detail?.source!==action.source)return;try{await api('/api/pmc/archive/prepare/resume',{id:action.id});S.pmcPrepareNeedsAction=null;await pmcRefreshArchivePrepare();}catch(e){pmcFeedback('Не удалось продолжить подготовку: '+e.message,'error-text');}});
  $('#pmcArchiveDialog').addEventListener('change',event=>{if(event.target.matches('#pmcArchiveStart,#pmcArchiveEnd,#pmcNorth,#pmcWest,#pmcSouth,#pmcEast,[name="pmcArchiveSource"]'))pmcInvalidateArchivePlan('Параметры изменились. Составьте план заново.');});
 }

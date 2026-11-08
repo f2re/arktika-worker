@@ -10,6 +10,7 @@ from arktika.pmc_detection import (
     _local_peak_diagnostics,
     _smooth_uniform_radius,
     detect_candidates,
+    validate_candidate_thresholds,
 )
 
 
@@ -29,9 +30,10 @@ class PmcDetectionTests(unittest.TestCase):
         values[4:11, 4:11] = 2.0e-4
         return values
 
-    def run_detector(self, **kwargs):
+    def run_detector(self, values=None, **kwargs):
         return detect_candidates(
-            self.field(), grid=self.grid, valid_time="2025-01-02T06:00:00Z",
+            self.field() if values is None else values,
+            grid=self.grid, valid_time="2025-01-02T06:00:00Z",
             source="ERA5: test fixture", source_field_metadata={
                 "source": "ERA5: test fixture", "variable": "relative_vorticity",
                 "level_hPa": 850, "units": "s-1", "valid_time": "2025-01-02T06:00:00Z",
@@ -70,6 +72,45 @@ class PmcDetectionTests(unittest.TestCase):
         self.assertEqual("2025-01-02T06:00:00Z", result["passport"]["valid_time"])
         self.assertEqual(self.grid, result["passport"]["grid"])
         self.assertEqual("not_assessed", result["passport"]["uncertainty"]["status"])
+
+    def test_raising_peak_threshold_excludes_candidate_and_records_applied_values(self):
+        self.assertEqual(1, self.run_detector()["candidate_count"])
+        result = self.run_detector(thresholds={"peak_vorticity_s-1": 2.1e-4})
+        applied = {"minimum_vorticity_s-1": 1.0e-4, "peak_vorticity_s-1": 2.1e-4}
+        self.assertEqual(0, result["candidate_count"])
+        self.assertEqual(applied, {key: result["parameters"][key] for key in applied})
+        self.assertEqual(applied, result["passport"]["quality_control"]["thresholds"])
+        self.assertEqual(1, self.run_detector()["candidate_count"])
+
+    def test_lower_thresholds_include_faint_candidate_and_its_local_peak(self):
+        values = self.field() * 0.55
+        self.assertEqual(0, self.run_detector(values)["candidate_count"])
+        result = self.run_detector(values, thresholds={
+            "minimum_vorticity_s-1": 8e-5,
+            "peak_vorticity_s-1": 1e-4,
+        })
+        self.assertEqual(1, result["candidate_count"])
+        candidate = result["candidates"][0]
+        self.assertEqual("not_confirmed", candidate["confirmation_status"])
+        self.assertEqual(1, candidate["peak_structure"]["local_maximum_count"])
+        self.assertAlmostEqual(1.1e-4, candidate["peak_850hpa_relative_vorticity_s-1"])
+
+    def test_thresholds_reject_invalid_values_and_unrecognized_parameters(self):
+        for overrides in (
+            [],
+            {"uniform_radius_km": 60},
+            {"peak_vorticity_s-1": 1e-5},
+            {"minimum_vorticity_s-1": 0},
+            {"minimum_vorticity_s-1": -1},
+            {"peak_vorticity_s-1": True},
+            {"peak_vorticity_s-1": "0.0002"},
+            {"peak_vorticity_s-1": None},
+            {"peak_vorticity_s-1": float("inf")},
+            {"peak_vorticity_s-1": float("nan")},
+            {"peak_vorticity_s-1": 10**400},
+        ):
+            with self.subTest(overrides=overrides), self.assertRaises(ValueError):
+                validate_candidate_thresholds(overrides)
 
     def test_multiple_isolated_local_maxima_partition_candidate_area(self):
         values = np.zeros((15, 15), dtype=float)

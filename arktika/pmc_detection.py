@@ -6,8 +6,8 @@ optional comparison and never upgrades a candidate to a confirmed PMC.
 
 The vorticity thresholds and circular uniform-radius smoothing are based on
 the low-threshold Nordic Seas IMPMCT settings (Fang et al., 2025). This
-prototype retains connected areas above 1.0e-4 s-1 whose peak reaches
-1.2e-4 s-1. It adds bilinearly interpolated marching-squares contour cores
+prototype defaults to retaining connected areas above 1.0e-4 s-1 whose peak
+reaches 1.2e-4 s-1. It adds bilinearly interpolated marching-squares contour cores
 plus nearest-projected-grid remainder, but saddle isolation is still a
 discrete approximation and this is not the complete published
 valley-line partition method. Temporal tracking/steering, satellite
@@ -17,7 +17,9 @@ reproduction or validation of IMPMCT.
 from __future__ import annotations
 
 from collections import deque
+from collections.abc import Mapping
 from datetime import datetime, timezone
+from math import isfinite
 from typing import Any
 
 import numpy as np
@@ -46,6 +48,32 @@ PARAMETERS = {
     "connectivity": 8,
     "quantity": "850-hPa relative vorticity",
 }
+
+
+def validate_candidate_thresholds(
+    overrides: Mapping[str, int | float] | None = None,
+) -> dict[str, float]:
+    """Resolve the two experimental vorticity thresholds in s⁻¹."""
+    minimum_key = "minimum_vorticity_s-1"
+    peak_key = "peak_vorticity_s-1"
+    thresholds = {key: PARAMETERS[key] for key in (minimum_key, peak_key)}
+    if overrides is None:
+        return thresholds
+    if not isinstance(overrides, Mapping) or set(overrides) - thresholds.keys():
+        raise ValueError("Настройки ПМЦ принимают только пороги области и пика завихрённости.")
+    for key, raw in overrides.items():
+        try:
+            if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+                raise ValueError
+            value = float(raw)
+            if not isfinite(value) or value <= 0:
+                raise ValueError
+        except (ValueError, OverflowError):
+            raise ValueError(f"Порог {key} должен быть конечным положительным числом в с⁻¹.") from None
+        thresholds[key] = value
+    if thresholds[peak_key] < thresholds[minimum_key]:
+        raise ValueError("Порог пика завихрённости должен быть не ниже порога области.")
+    return thresholds
 
 
 def _validate_time(value: str) -> str:
@@ -106,15 +134,18 @@ def _components(mask: np.ndarray) -> list[list[tuple[int, int]]]:
     return found
 
 
-def _local_peak_diagnostics(field: np.ndarray, component: np.ndarray) -> tuple[list[dict[str, Any]], int]:
+def _local_peak_diagnostics(field: np.ndarray, component: np.ndarray, *,
+                            peak_threshold: float | None = None) -> tuple[list[dict[str, Any]], int]:
     """Describe local peaks without partitioning or changing a candidate area.
 
     This is a discrete diagnostic only. It does not reproduce the published
     contour/valley-line isolation procedure and must not be used as a vortex
     count or as evidence of a confirmed PMC.
     """
+    if peak_threshold is None:
+        peak_threshold = PARAMETERS["peak_vorticity_s-1"]
     neighborhood_max = ndimage.maximum_filter(field, size=3, mode="constant", cval=-np.inf)
-    peak_cells = component & np.isfinite(field) & (field >= PARAMETERS["peak_vorticity_s-1"])
+    peak_cells = component & np.isfinite(field) & (field >= peak_threshold)
     peak_cells &= field == neighborhood_max
     labels, total = ndimage.label(peak_cells, structure=np.ones((3, 3), dtype=np.uint8))
     if total == 0:
@@ -402,14 +433,17 @@ def detect_candidates(vorticity_850: np.ndarray, *, grid: dict[str, Any],
                       satellite_observation_mask: np.ndarray | None = None,
                       satellite_observation_metadata: dict[str, Any] | None = None,
                       satellite_coverage_mask: np.ndarray | None = None,
-                      domain_mask: np.ndarray | None = None) -> dict[str, Any]:
+                      domain_mask: np.ndarray | None = None,
+                      thresholds: Mapping[str, int | float] | None = None) -> dict[str, Any]:
     """Detect experimental circulation candidates from 850-hPa relative vorticity.
 
     Required grid keys include projected metric ``crs``, dimensions, cell sizes,
     and a six-value affine ``transform``. The input field passport must declare
     relative vorticity at 850 hPa in s-1 and the matching source/time/grid. ``source``
     must identify provenance (for example ERA5/CARRA/MERRA-2 plus dataset id).
+    Threshold overrides are in s⁻¹ and do not alter the smoothing radius.
     """
+    applied_thresholds = validate_candidate_thresholds(thresholds)
     array = np.asarray(vorticity_850, dtype=float)
     if array.ndim != 2 or min(array.shape, default=0) < 1:
         raise ValueError("850-hPa vorticity must be a non-empty 2-D array")
@@ -460,8 +494,8 @@ def detect_candidates(vorticity_850: np.ndarray, *, grid: dict[str, Any],
         domain = np.asarray(domain_mask, dtype=bool)
         if domain.shape != array.shape or not domain.any():
             raise ValueError("domain mask must match the vorticity grid and include at least one cell")
-    threshold = PARAMETERS["minimum_vorticity_s-1"]
-    peak_threshold = PARAMETERS["peak_vorticity_s-1"]
+    threshold = applied_thresholds["minimum_vorticity_s-1"]
+    peak_threshold = applied_thresholds["peak_vorticity_s-1"]
     candidate_mask = np.zeros(array.shape, dtype=bool)
     candidates: list[dict[str, Any]] = []
     for cells in _components(np.isfinite(smoothed) & (smoothed >= threshold) & domain):
@@ -477,7 +511,8 @@ def detect_candidates(vorticity_850: np.ndarray, *, grid: dict[str, Any],
         if component_too_large:
             local_peaks, local_peak_count = [], None
         else:
-            local_peaks, local_peak_count = _local_peak_diagnostics(smoothed, component)
+            local_peaks, local_peak_count = _local_peak_diagnostics(
+                smoothed, component, peak_threshold=peak_threshold)
         over_peak_limit = (local_peak_count is not None
                            and local_peak_count > PARAMETERS["peak_isolation_max_local_maxima"])
         saddle_peaks = None if (component_too_large or over_peak_limit) else _peak_saddle_diagnostics(
@@ -576,6 +611,7 @@ def detect_candidates(vorticity_850: np.ndarray, *, grid: dict[str, Any],
             "valid_cells": valid_pixels,
             "missing_or_outside_domain_cells": int(array.size - valid_pixels),
             "candidate_count": len(candidates),
+            "thresholds": applied_thresholds,
             "satellite_comparison_status": "not_supplied" if satellite_observation_mask is None else "provided",
         },
         sources=[source_record],
@@ -596,7 +632,7 @@ def detect_candidates(vorticity_850: np.ndarray, *, grid: dict[str, Any],
                   "source_field_metadata_required": ["isobaric_level_hPa", "quantity", "units", "time"]},
         "grid": {key: grid[key] for key in required},
         "passport": passport,
-        "parameters": dict(PARAMETERS),
+        "parameters": {**PARAMETERS, **applied_thresholds},
         "candidate_count": len(candidates),
         "candidates": candidates,
         "satellite_comparison": compare_satellite(

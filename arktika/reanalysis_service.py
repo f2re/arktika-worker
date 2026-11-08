@@ -28,6 +28,7 @@ from .pmc_archive_run import validate_grid as validate_pmc_archive_grid
 from .pmc_detection import ALGORITHM_ID as PMC_DETECTOR_ID
 from .pmc_detection import ALGORITHM_VERSION as PMC_DETECTOR_VERSION
 from .pmc_detection import _satellite_times as pmc_satellite_times
+from .pmc_detection import validate_candidate_thresholds
 from .pmc_projection import MAX_OBSERVATION_SOURCE_PIXELS, reproject_observation_masks
 from .reanalysis.adapters import get_runtime_adapter
 from .reanalysis.catalog import SOURCES, VERSION, catalogue, request_plan
@@ -401,6 +402,8 @@ class ReanalysisMixin:
     def _pmc_archive_frame_records(self, job):
         folder=self._pmc_archive_task_path(job.get('id'))/'frames'
         fields={item.get('id'):item for item in self.fields_state().get('fields',[])}
+        default_thresholds=validate_candidate_thresholds()
+        expected_thresholds=validate_candidate_thresholds(job.get('thresholds'))
         records=[]
         for identity in job.get('field_ids',[]):
             if not isinstance(identity,str) or not ID.fullmatch(identity):continue
@@ -423,6 +426,18 @@ class ReanalysisMixin:
                     or result.get('grid')!=job.get('target_grid')
                     or not isinstance(result.get('candidates'),list)
                     or result.get('candidate_count')!=len(result['candidates'])):continue
+            parameters=result.get('parameters',{})
+            if not isinstance(parameters,dict):continue
+            observed_thresholds={key:parameters[key] for key in default_thresholds if key in parameters}
+            if not observed_thresholds:
+                # Legacy records without parameter provenance can only be reused at the defaults.
+                if expected_thresholds!=default_thresholds:continue
+            else:
+                if observed_thresholds.keys()!=expected_thresholds.keys():continue
+                try:
+                    if validate_candidate_thresholds(observed_thresholds)!=expected_thresholds:continue
+                except ValueError:
+                    continue
             valid=True
             for candidate in result['candidates']:
                 rc=candidate.get('centroid_pixel_rc') if isinstance(candidate,dict) else None
@@ -463,6 +478,8 @@ class ReanalysisMixin:
                      'area':[float(x) for x in plan['area']]}
             build_pmc_archive_plan(request,credentials={},cached_fields=[])
             target_grid=validate_pmc_archive_grid(job.get('target_grid'))
+            if 'thresholds' in job and not isinstance(job['thresholds'],dict):raise ValueError()
+            thresholds=validate_candidate_thresholds(job.get('thresholds'))
         except (ValueError,TypeError,KeyError):
             return {'status':'idle','message':'Сохранённая архивная задача повреждена.'}
         return {'id':identity,'status':status,'message':str(job.get('message',''))[:500],
@@ -470,7 +487,7 @@ class ReanalysisMixin:
                 'updated_at':str(job.get('updated_at',''))[:64],
                 'plan':{'sources':list(plan['sources']),'start':plan['start'],'end':plan['end'],
                         'area':[float(x) for x in plan['area']]},
-                'field_ids':list(fields),'target_grid':target_grid,'total':len(fields),
+                'field_ids':list(fields),'target_grid':target_grid,'thresholds':thresholds,'total':len(fields),
                 'resume_available':bool(job.get('resume_available'))}
 
     def _pmc_archive_report_snapshot(self,job):
@@ -487,10 +504,12 @@ class ReanalysisMixin:
                     and isinstance(comparison,dict) and comparison.get('status')!='not_supplied'):
                 comparisons.append({'source':row.get('source'),'valid_time':row.get('valid_time'),
                                     'grid':result.get('grid'),'comparison':comparison})
-        return build_archive_report(task_id=identity,plan=job['plan'],expected_times=expected,
+        report=build_archive_report(task_id=identity,plan=job['plan'],expected_times=expected,
             interval_hours={source:SOURCES[source]['step_hours'] for source in job['plan']['sources']},
             frame_records=records,cached_fields=self.fields_state()['fields'],
             target_grid=job.get('target_grid'),satellite_comparisons=comparisons)
+        report['thresholds']=validate_candidate_thresholds(job.get('thresholds'))
+        return report
 
     def _pmc_observation_for_frame(self, valid_time, target_grid, *, observation_id=None):
         """Return one temporally eligible observation harmonized to the target grid.
@@ -558,7 +577,7 @@ class ReanalysisMixin:
             return {'status':'idle','message':'Архивная задача ещё не запускалась.'}
         records=self._pmc_archive_frame_records(job)
         return {k:copy.deepcopy(job[k]) for k in (
-            'id','status','message','created_at','updated_at','total','resume_available'
+            'id','status','message','created_at','updated_at','total','resume_available','thresholds'
         ) if k in job} | {'completed':sum(row.get('status')=='completed' for row in records),
                           'failed':sum(row.get('status')=='error' for row in records),
                           'processed':len(records)}
@@ -722,8 +741,10 @@ class ReanalysisMixin:
         return {'started':True,'id':identity,'status':'running'}
 
     def _run_pmc_archive_task(self, identity):
-        task_dir=self._pmc_archive_task_path(identity);frames_dir=task_dir/'frames';frames_dir.mkdir(parents=True,exist_ok=True)
         with self.lock:job=copy.deepcopy(self._pmc_archive_job)
+        if job.get('id')!=identity or job.get('status')!='running':
+            raise ValueError('Архивная задача больше не активна.')
+        task_dir=self._pmc_archive_task_path(identity);frames_dir=task_dir/'frames';frames_dir.mkdir(parents=True,exist_ok=True)
         try:
             completed_ids={row.get('field_id') for row in self._pmc_archive_frame_records(job)
                            if row.get('status')=='completed'}
@@ -743,8 +764,9 @@ class ReanalysisMixin:
                             options={'satellite_observation_mask':observation['labels'],
                                      'satellite_coverage_mask':observation['coverage'],
                                      'satellite_observation_metadata':observation['metadata']}
-                    result=self.experimental_pmc_candidates(field_id,target_grid=job['target_grid'],
-                                                           region_bounds=job['plan']['area'],**options)
+                    result=self.experimental_pmc_candidates(
+                        field_id,target_grid=job['target_grid'],region_bounds=job['plan']['area'],
+                        thresholds=job['thresholds'],**options)
                     if observation is not None and 'unavailable_reason' in observation:
                         self._record_pmc_unknown_satellite_comparison(
                             result,observation['unavailable_reason'])
@@ -789,8 +811,12 @@ class ReanalysisMixin:
 
     def pmc_archive_start(self,data):
         self._fields_init()
-        if not isinstance(data,dict) or set(data)!={'plan','field_ids','target_grid'}:
-            raise ValueError('Архивный запуск принимает plan, явный список field_ids и target_grid.')
+        required={'plan','field_ids','target_grid'}
+        if not isinstance(data,dict) or not required<=set(data) or set(data)-required-{'thresholds'}:
+            raise ValueError('Архивный запуск принимает plan, явный список field_ids, target_grid и необязательные thresholds.')
+        if 'thresholds' in data and not isinstance(data['thresholds'],dict):
+            raise ValueError('Пороги ПМЦ должны быть объектом thresholds.')
+        thresholds=validate_candidate_thresholds(data.get('thresholds'))
         planned=self.pmc_archive_plan(data['plan']);plan=planned['plan']
         ids=data['field_ids']
         if not isinstance(ids,list) or not ids or len(ids)>MAX_PMC_ARCHIVE_FIELDS:
@@ -819,7 +845,8 @@ class ReanalysisMixin:
             identity=uuid.uuid4().hex
             job={'id':identity,'status':'running','message':'Подготовка архивного расчёта',
                  'created_at':iso(now()),'updated_at':iso(now()),'plan':copy.deepcopy(plan),
-                 'field_ids':list(ids),'target_grid':target_grid,'total':len(ids),'resume_available':False}
+                 'field_ids':list(ids),'target_grid':target_grid,'thresholds':thresholds,
+                 'total':len(ids),'resume_available':False}
             self._pmc_archive_job=job;self._persist_pmc_archive_job()
             self.start('Архивный анализ кандидатов ПМЦ',lambda:self._run_pmc_archive_task(identity))
         return {'started':True,'id':identity,'status':'running','selected_steps':len(ids),
@@ -827,12 +854,18 @@ class ReanalysisMixin:
 
     def pmc_archive_resume(self,data):
         self._fields_init();identity=data.get('id') if isinstance(data,dict) else None
+        if isinstance(data,dict) and 'thresholds' in data:
+            raise ValueError('При возобновлении используются сохранённые пороги. Для новых порогов запустите новый архивный расчёт.')
         with self.lock:job=copy.deepcopy(self._pmc_archive_job)
         if identity!=job.get('id') or job.get('status') not in ('interrupted','cancelled','error','partial') or not job.get('resume_available'):
             raise ValueError('Эту архивную задачу нельзя возобновить.')
         for field_id in job.get('field_ids',[]):self.field(field_id)
         with self.lock:
             if self.busy:raise ValueError('Сначала завершите текущую операцию.')
+            if (self._pmc_archive_job.get('id')!=identity
+                    or self._pmc_archive_job.get('status')!=job['status']
+                    or not self._pmc_archive_job.get('resume_available')):
+                raise ValueError('Архивная задача изменилась. Проверьте её состояние перед возобновлением.')
             self._pmc_archive_job.update(status='running',message='Возобновление с последнего сохранённого срока.',resume_available=False)
             self._persist_pmc_archive_job()
             self.start('Продолжение архивного анализа ПМЦ',lambda:self._run_pmc_archive_task(identity))
