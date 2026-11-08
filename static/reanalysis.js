@@ -1,6 +1,7 @@
 /* Пространственные поля: независимый от спутника стек, точные сроки, без CDN. */
 'use strict';
 const FIELDS={catalogue:[],fields:[],stack:[],epoch:0,probeEpoch:0,pending:null,timer:null,saveTail:Promise.resolve(),job:{status:'idle'},credentialRetry:null,accessReturn:null,archiveCredentialSource:null,accessSaving:false,credentialPromptOpen:false};
+const DERIVED={adapters:[],products:[],busy:false,loaded:false,fieldSignature:''};
 const fieldDialog=document.createElement('dialog');fieldDialog.id='fieldDialog';fieldDialog.className='wide fixed-dialog';
 fieldDialog.innerHTML=`<div class="dialog-head"><div><h2>Добавить поле реанализа</h2><p>Один источник · один срок анализа · один уровень</p></div><button id="fieldClose" aria-label="Закрыть">✕</button></div>
 <div class="dialog-body"><div class="row"><label>Источник<select id="fieldSource"></select></label><label>Поле<select id="fieldVariable"></select></label></div>
@@ -101,8 +102,10 @@ function fieldsJob(){
 }
 async function refreshFields(){
   const data=await api('/api/reanalysis/state');FIELDS.catalogue=data.catalogue.sources;FIELDS.fields=data.fields;FIELDS.job=data.job;
+  const fieldSignature=FIELDS.fields.map(f=>`${f.id}:${f.variable}`).join('|');
   if(!$('#fieldSource').options.length){$('#fieldSource').innerHTML=FIELDS.catalogue.map(s=>`<option value="${s.id}">${escape(s.name)}</option>`).join('');fieldSelectors();}
   fieldsJob();drawFieldCache();
+  if(DERIVED.loaded&&fieldSignature!==DERIVED.fieldSignature){DERIVED.fieldSignature=fieldSignature;renderDerived();}
   const legacy=$('#fieldLegacyNotice');
   if(legacy){legacy.hidden=!data.legacy_cache_count;legacy.textContent=data.legacy_cache_count?'Кэш предыдущей версии сохранён на диске. Получите поля повторно: изменились проверки времени и формат метаданных.':'';}
   if(FIELDS.pending&&data.job.id===FIELDS.pending&&data.job.status==='done'){
@@ -133,6 +136,48 @@ function drawFieldCache(){
   const originals=FIELDS.fields.filter(f=>!f.difference_of);
   for(const selector of ['#fieldFirst','#fieldSecond']){const old=$(selector).value;$(selector).innerHTML=originals.map(f=>`<option value="${f.id}">${escape(fieldLabel(f))}</option>`).join('');if(originals.some(f=>f.id===old))$(selector).value=old;}
   if($('#fieldFirst').value===$('#fieldSecond').value&&originals.length>1)$('#fieldSecond').selectedIndex=1;
+}
+function derivedCompatibleFields(input){
+  return FIELDS.fields.filter(f=>!['u','v'].includes(input)||['wind','wind10'].includes(f.variable));
+}
+function derivedFieldOptions(adapter,input){
+  const candidates=derivedCompatibleFields(input);
+  return candidates.length?candidates.map(f=>`<option value="${f.id}">${escape(fieldLabel(f))}</option>`).join(''):'<option value="">Нет подходящих сохранённых полей</option>';
+}
+function renderDerived(){
+  const root=$('#derivedAdapters');if(!root)return;
+  const selected={};root.querySelectorAll('[data-derived-input]').forEach(el=>{selected[`${el.dataset.adapter}:${el.dataset.derivedInput}`]=el.value;});
+  const openDetails=new Set([...root.querySelectorAll('details[data-derived-detail]')].filter(el=>el.open).map(el=>el.dataset.derivedDetail));
+  if(!DERIVED.adapters.length){root.innerHTML='<p class="empty">Нет зарегистрированных адаптеров производных продуктов.</p>';return;}
+  root.innerHTML=DERIVED.adapters.map(a=>{
+    const maturity={implemented:'Рабочий расчёт',experimental:'Эксперимент',planned:'Планируется'}[a.maturity]||'Статус неизвестен';
+    const inputHtml=a.inputs.map(input=>`<label>${escape(({u:'Восточная компонента u',v:'Северная компонента v'})[input]||input)}<select data-derived-input="${escape(input)}" data-adapter="${escape(a.id)}">${derivedFieldOptions(a,input)}</select></label>`).join('');
+    const hasFields=a.inputs.every(input=>derivedCompatibleFields(input).length>0);
+    return `<article class="derived-adapter-card"><div class="section-heading"><h4>${escape(a.title)}</h4><span class="derived-maturity">${maturity}</span></div><p>${escape(a.quantity)} · ${escape(a.units)} · версия ${escape(a.version)}</p><p class="micro">Алгоритм: ${escape(a.algorithm_id)} · входы: ${a.inputs.map(escape).join(', ')}</p>${a.limitations?.length?`<ul class="micro">${a.limitations.map(x=>`<li>${escape(x)}</li>`).join('')}</ul>`:''}<div class="derived-inputs">${inputHtml}</div><p class="micro">Поля должны иметь одинаковые точный срок UTC, уровень и геолокационную сетку. Сервер повторно проверит их перед расчётом.</p>${!hasFields?'<p class="hint">Сначала добавьте подходящие поля в кэш.</p>':''}<button class="tonal" data-derived-run="${escape(a.id)}" ${DERIVED.busy||!hasFields?'disabled':''}>Рассчитать</button></article>`;
+  }).join('')+`<section class="derived-history"><h4>Сохранённые производные продукты · ${DERIVED.products.length}</h4>${DERIVED.products.length?DERIVED.products.map(derivedProductCard).join(''):'<p class="empty">Пока нет выполненных производных расчётов.</p>'}</section>`;
+  root.querySelectorAll('[data-derived-input]').forEach(el=>{const value=selected[`${el.dataset.adapter}:${el.dataset.derivedInput}`];if(value&&[...el.options].some(option=>option.value===value))el.value=value;});
+  root.querySelectorAll('details[data-derived-detail]').forEach(el=>{if(openDetails.has(el.dataset.derivedDetail))el.open=true;});
+  root.querySelectorAll('[data-derived-run]').forEach(button=>button.onclick=()=>runDerived(button.dataset.derivedRun).catch(e=>derivedMessage(e.message,true)));
+}
+function derivedProductCard(p){
+  const pass=p.passport||{},grid=pass.grid||p.grid||{},sources=Array.isArray(pass.sources)?pass.sources.map(s=>s.id||s.dataset||'источник').join(', '):'см. паспорт';
+  return `<article class="derived-result"><strong>${escape(p.title||p.product_id)} · ${escape(p.time||pass.valid_time||'срок не указан')}</strong><p>${escape(pass.quantity||p.quantity)} · ${escape(pass.units||p.units)} · ${escape(p.output_status||p.maturity)}</p><p class="micro">Источник: ${escape(sources)} · алгоритм ${escape(p.algorithm_id)} ${escape(p.algorithm_version)} · сетка ${escape(grid.width??'?')}×${escape(grid.height??'?')}, ${escape(grid.crs||'CRS не указан')}, ${escape(grid.grid_type||'тип не указан')}</p><details data-derived-detail="${escape(p.id)}"><summary>Паспорт и ограничения</summary><pre>${escape(JSON.stringify(pass,null,2))}</pre></details><p class="notice">Числовой массив с координатами широты/долготы; это не карта и не оценка метеорологической точности.</p><a class="tonal derived-download" href="/derived-artifact/${encodeURIComponent(p.id)}/values.npz">Скачать массив NPZ</a></article>`;
+}
+function derivedMessage(message,error=false){const el=$('#derivedStatus');if(el){el.textContent=message||'';el.classList.toggle('error-text',error);}}
+async function loadDerived(){
+  derivedMessage('Загружаю каталог адаптеров и сохранённые результаты…');
+  try{const [adapters,products,state]=await Promise.all([api('/api/derived-adapters'),api('/api/derived-products'),api('/api/reanalysis/state')]);
+    DERIVED.adapters=adapters.adapters||[];DERIVED.products=products.products||[];FIELDS.fields=state.fields||FIELDS.fields;DERIVED.loaded=true;DERIVED.fieldSignature=FIELDS.fields.map(f=>`${f.id}:${f.variable}`).join('|');renderDerived();derivedMessage('Каталог и сохранённые результаты обновлены.');
+  }catch(e){derivedMessage(e.message,true);}
+}
+async function runDerived(adapterId){
+  const adapter=DERIVED.adapters.find(a=>a.id===adapterId);if(!adapter)throw Error('Адаптер отсутствует в текущем каталоге.');
+  const card=$(`[data-derived-run="${CSS.escape(adapterId)}"]`)?.closest('.derived-adapter-card');if(!card)throw Error('Не найдена карточка адаптера.');
+  const inputs={};for(const input of adapter.inputs){const select=card.querySelector(`[data-derived-input="${CSS.escape(input)}"]`);if(!select?.value)throw Error('Нет подходящих сохранённых входных полей. Сначала добавьте поля реанализа.');inputs[input]=select.value;}
+  DERIVED.busy=true;renderDerived();derivedMessage(`Выполняю: ${adapter.title}…`);
+  try{const result=await api('/api/derived-adapters/run',{adapter_id:adapterId,inputs});if(result.product){DERIVED.products=[result.product,...DERIVED.products.filter(p=>p.id!==result.product.id)];}
+    renderDerived();derivedMessage('Расчёт завершён. Проверьте паспорт и ограничения перед использованием.');
+  }catch(e){throw e;}finally{DERIVED.busy=false;renderDerived();}
 }
 async function startField(local=false,frozenBody=null){
   fieldError();try{
@@ -227,13 +272,15 @@ invalidatePoint=function(){FIELDS.probeEpoch++;$('#fieldProbe')?.replaceChildren
 function initFieldUI(){
   if(!$('#taskGrid button')){setTimeout(initFieldUI,100);return;}
   const block=document.createElement('section');block.id='fieldLayerPanel';block.innerHTML='<div class="section-heading"><h3>Поля реанализа</h3><button id="fieldAddOpen" class="tonal" aria-label="Добавить поле реанализа">＋</button></div><div id="fieldLayerRows"></div><p id="fieldLegacyNotice" class="notice" hidden></p><p id="fieldStatus" class="micro" role="status"></p><button id="fieldRetry" class="text-button" hidden>Повторить запрос</button><button id="fieldCancel" class="text-button" hidden>Отменить сохранённый запрос</button><hr>';
+  block.insertAdjacentHTML('beforeend','<section id="derivedProductPanel"><div class="section-heading"><h3>Производные расчёты</h3><button id="derivedRefresh" class="text-button">Обновить</button></div><p class="micro">Адаптеры выполняют зарегистрированные расчёты по сохранённым полям. Результаты доступны как массивы данных, отдельно от картографических продуктов.</p><p id="derivedStatus" class="micro" role="status" aria-live="polite"></p><div id="derivedAdapters"></div></section>');
   $('#productPanel').prepend(block);$('#productRail span').textContent='Слои';$('#productRail').setAttribute('aria-label','Слои и продукты');
+  $('#derivedRefresh').onclick=loadDerived;
   $('#fieldAddOpen').onclick=()=>{FIELDS.credentialPromptOpen=false;openFieldDialog().catch(e=>toast(e.message));};
 const cancelFieldJob=async()=>{try{await api('/api/reanalysis/cancel',{id:FIELDS.job.id});await refreshFields();}catch(e){toast(e.message);}};
 $('#fieldCancel').onclick=cancelFieldJob;$('#fieldDialogCancel').onclick=cancelFieldJob;
 const retryFieldJob=async()=>{try{const result=await api('/api/reanalysis/resume',{id:FIELDS.job.id});FIELDS.job={...FIELDS.job,...result,status:'running',message:'Повторяется сохранённый запрос'};FIELDS.pending=FIELDS.job.id;fieldsJob();await pollFields();}catch(e){fieldError(e.message);}};
 $('#fieldRetry').onclick=retryFieldJob;$('#fieldDialogRetry').onclick=retryFieldJob;
-  refreshFields().then(data=>{FIELDS.stack=data.stack.filter(s=>fieldMeta(s.id));drawFieldStack();renderFieldMaps();if(FIELDS.job.status==='running')pollFields();}).catch(e=>toast(e.message));
+  refreshFields().then(data=>{FIELDS.stack=data.stack.filter(s=>fieldMeta(s.id));drawFieldStack();renderFieldMaps();loadDerived();if(FIELDS.job.status==='running')pollFields();}).catch(e=>toast(e.message));
 }
 const baseFieldSaveAccess=saveSourceAccess;
 saveSourceAccess=async function(...args){FIELDS.accessSaving=true;try{await baseFieldSaveAccess(...args);}catch(e){FIELDS.accessSaving=false;throw e;}FIELDS.accessSaving=false;const retry=FIELDS.credentialRetry;const source=retry?.source||FIELDS.accessReturn;FIELDS.credentialRetry=null;FIELDS.accessReturn=null;if(source){window.dispatchEvent(new CustomEvent('pmc-credentials-saved',{detail:{source}}));await openFieldDialog(source);const job=FIELDS.job,action=job.needs_action,jobSource=action?.source||job.pending?.spec?.source;if(job.id&&job.resume_available&&jobSource===source){const result=await api('/api/reanalysis/resume',{id:job.id});if(result.started){FIELDS.pending=job.id;FIELDS.job={...job,status:'running',message:'Продолжается сохранённый запрос'};fieldDialog.close();fieldsJob();await pollFields();}else{FIELDS.job={...job,...result};fieldsJob();}}else if(retry)await startField(false,retry.body);}};
