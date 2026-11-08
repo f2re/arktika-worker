@@ -19,6 +19,7 @@ from .pmc_vorticity import _coordinates
 from .product_schema import product_passport
 
 MAX_DETECTOR_PROJECTION_SCALE_ERROR = 0.05
+MAX_OBSERVATION_SOURCE_PIXELS = 16_000_000
 
 
 def reproject_observation_masks(labels: Any, coverage: Any, *,
@@ -30,10 +31,9 @@ def reproject_observation_masks(labels: Any, coverage: Any, *,
     footprint stay unknown. This only harmonizes grids for a pixel comparison;
     it does not assess the observation's meteorological validity.
     """
-    from math import isfinite
-    from .pmc_archive_run import MAX_GRID_PIXELS, validate_grid
+    from .pmc_archive_run import validate_grid
 
-    source = _validate_observation_source_grid(source_grid, MAX_GRID_PIXELS)
+    source = _validate_observation_source_grid(source_grid, MAX_OBSERVATION_SOURCE_PIXELS)
     target = validate_grid(target_grid)
     label_array = np.asarray(labels)
     coverage_array = np.asarray(coverage)

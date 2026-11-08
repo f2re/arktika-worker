@@ -7,6 +7,9 @@ from unittest.mock import patch
 
 import numpy as np
 import xarray as xr
+from affine import Affine
+from rasterio.errors import RasterioError
+from rasterio.io import MemoryFile
 from rasterio.transform import from_bounds
 from rasterio.warp import transform_bounds
 
@@ -82,12 +85,7 @@ class CachedVorticity(unittest.TestCase):
         self.assertNotIn(str(self.root), json.dumps(result["passport"]))
 
     def test_cache_to_projected_single_time_candidate_pipeline(self):
-        bounds = transform_bounds("EPSG:4326", "EPSG:3413", 20.0, 68.0, 23.0, 70.0,
-                                  densify_pts=21)
-        transform = from_bounds(*bounds, 32, 32)
-        grid = {"crs": "EPSG:3413", "width": 32, "height": 32,
-                "transform": transform, "resolution_x_m": abs(transform.a),
-                "resolution_y_m": abs(transform.e)}
+        grid = self._projected_grid()
         result = self.app.experimental_pmc_candidates(self.identity, target_grid=grid)
         self.assertEqual(result["maturity"], "experimental")
         self.assertEqual(result["source"], "era5")
@@ -95,6 +93,97 @@ class CachedVorticity(unittest.TestCase):
         self.assertEqual(result["field_passport"]["grid"]["width"], 32)
         self.assertEqual(result["field_passport"]["grid"]["height"], 32)
         self.assertTrue(all(item["classification"] == "candidate" for item in result["candidates"]))
+
+    @staticmethod
+    def _projected_grid(width=32, height=32):
+        bounds = transform_bounds("EPSG:4326", "EPSG:3413", 20.0, 68.0, 23.0, 70.0,
+                                  densify_pts=21)
+        transform = from_bounds(*bounds, width, height)
+        return {"crs": "EPSG:3413", "width": width, "height": height,
+                "transform": list(transform[:6]), "resolution_x_m": abs(transform.a),
+                "resolution_y_m": abs(transform.e)}
+
+    def _register_observation(self, grid, *, valid_time, **scan):
+        def raster_bytes(values):
+            with MemoryFile() as mem:
+                with mem.open(driver="GTiff", count=1, dtype="uint8", crs=grid["crs"],
+                              transform=Affine(*grid["transform"]), width=grid["width"],
+                              height=grid["height"]) as raster:
+                    raster.write(values, 1)
+                return mem.read()
+
+        shape = (grid["height"], grid["width"])
+        coverage = np.ones(shape, dtype=np.uint8)
+        coverage[:, :shape[1] // 3] = 0
+        metadata = {
+            "schema_version": "arktika.pmc_satellite_observation.v1",
+            "observation_ref": "fixture-scene", "source": "synthetic",
+            "product": "labels", "product_version": "1",
+            "valid_time": valid_time, "grid": grid, "nodata": None,
+            "label_convention": "0=no_pmc,1=pmc_candidate",
+            "qc_status": "not_assessed", **scan,
+        }
+        return self.app.register_pmc_observation(
+            raster_bytes(np.zeros(shape, dtype=np.uint8)), raster_bytes(coverage), metadata
+        )["observation_id"]
+
+    def test_explicit_satellite_scan_reprojects_large_imported_mask(self):
+        source_grid = self._projected_grid(width=1025, height=1024)
+        observation_id = self._register_observation(
+            source_grid, valid_time="2024-01-01T00:10:00Z",
+            scan_start_utc="2023-12-31T23:55:00Z", scan_end_utc="2024-01-01T00:15:00Z",
+        )
+        target_grid = self._projected_grid()
+        with patch.object(self.app, "pmc_observations_state",
+                          side_effect=AssertionError("explicit selection must bypass catalogue")):
+            result = self.app.experimental_pmc_candidates(
+                self.identity, target_grid=target_grid, observation_id=observation_id)
+        comparison = result["satellite_comparison"]
+        self.assertEqual(comparison["status"], "comparison_only")
+        observation = comparison["observation"]
+        self.assertEqual(observation["observation_id"], observation_id)
+        self.assertEqual(observation["scan_start_utc"], "2023-12-31T23:55:00Z")
+        self.assertEqual(observation["valid_time"], "2024-01-01T00:10:00Z")
+        self.assertEqual(observation["regridding"]["method"], "nearest_neighbor")
+        self.assertEqual(observation["regridding"]["source_grid"], source_grid)
+        self.assertEqual(observation["grid"], target_grid)
+        self.assertGreater(comparison["coverage"]["observed_pixels"], 0)
+        self.assertGreater(comparison["coverage"]["unknown_pixels"], 0)
+
+    def test_explicit_satellite_outside_time_preserves_model_result(self):
+        observation_id = self._register_observation(
+            self._projected_grid(), valid_time="2024-01-01T01:00:00Z")
+        grid = self._projected_grid()
+        baseline = self.app.experimental_pmc_candidates(self.identity, target_grid=grid)
+        result = self.app.experimental_pmc_candidates(
+            self.identity, target_grid=grid, observation_id=observation_id)
+        self.assertEqual(result["candidates"], baseline["candidates"])
+        self.assertEqual(result["satellite_comparison"], {
+            "status": "unknown_no_eligible_observation",
+            "metrics": None,
+            "reason_code": "no_eligible_observation",
+        })
+        self.assertEqual(result["passport"]["quality_control"]["satellite_comparison_status"],
+                         "unknown_no_eligible_observation")
+
+    def test_explicit_satellite_spatial_alignment_error_preserves_model_result(self):
+        grid = self._projected_grid()
+        observation_id = self._register_observation(grid, valid_time=self.metadata["time"])
+        baseline = self.app.experimental_pmc_candidates(self.identity, target_grid=grid)
+        with patch("arktika.reanalysis_service.reproject_observation_masks",
+                   side_effect=RasterioError("synthetic alignment failure")):
+            result = self.app.experimental_pmc_candidates(
+                self.identity, target_grid=grid, observation_id=observation_id)
+        self.assertEqual(result["candidates"], baseline["candidates"])
+        self.assertEqual(result["satellite_comparison"], {
+            "status": "unknown_unmatched", "metrics": None,
+            "reason_code": "observation_grid_unavailable",
+        })
+
+    def test_explicit_missing_observation_id_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "не найдено"):
+            self.app.experimental_pmc_candidates(
+                self.identity, target_grid=self._projected_grid(), observation_id="b" * 24)
 
     def test_curvilinear_carra_cache_runs_single_time_experimental_path(self):
         with xr.open_dataset(self.path) as source:

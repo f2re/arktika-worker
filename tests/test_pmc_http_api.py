@@ -64,6 +64,7 @@ class PmcRunHttpTests(unittest.TestCase):
     def test_success_returns_experimental_status_provenance_and_projected_centres(self):
         fake={
             'algorithm_id':'arktika.experimental_pmc_candidates','algorithm_version':'0.1.1',
+            'method_reference':'Fang et al. (2025)',
             'maturity':'experimental','source':'era5','valid_time':'2024-01-01T00:00:00Z',
             'candidate_count':1,'candidates':[{'candidate_id':'pmc-candidate-0001',
                 'classification':'candidate','confirmation_status':'not_confirmed','pixel_count':3,
@@ -85,6 +86,7 @@ class PmcRunHttpTests(unittest.TestCase):
         self.assertEqual(result['status'],'completed')
         self.assertEqual(result['maturity'],'experimental')
         self.assertEqual(result['candidate_count'],1)
+        self.assertEqual(result['method_reference'],'Fang et al. (2025)')
         self.assertEqual(result['field_passport']['source'],'era5')
         self.assertEqual(result['detector_passport']['algorithm']['id'],
                          'arktika.experimental_pmc_candidates')
@@ -103,8 +105,7 @@ class PmcRunHttpTests(unittest.TestCase):
             self.assertEqual(cm.exception.code,400)
             run.assert_called_once()
 
-    def test_optional_observation_id_is_loaded_and_passed_with_coverage(self):
-        import numpy as np
+    def test_optional_observation_id_is_forwarded_for_alignment(self):
         fake={
             'algorithm_id':'arktika.experimental_pmc_candidates','algorithm_version':'0.1.1',
             'maturity':'experimental','source':'era5','valid_time':'2024-01-01T00:00:00Z',
@@ -114,19 +115,23 @@ class PmcRunHttpTests(unittest.TestCase):
                         'quantity_kind':'candidate_catalog'},
             'satellite_comparison':{'status':'comparison_only','metrics':None},
             'parameters':{},'limitations':['Метеорологическая точность не проверялась.']}
-        labels=np.zeros((3,4),dtype=np.uint8);coverage=np.ones((3,4),dtype=np.uint8)
-        metadata={'source':'test','product_id':'mask-v1','observation_id':'a'*24,
-                  'valid_time':'2024-01-01T00:00:00Z','grid':self.grid}
-        with patch.object(self.app,'pmc_observation',return_value=(labels,coverage,metadata)) as load, \
-             patch.object(self.app,'experimental_pmc_candidates',return_value=fake) as run:
+        with patch.object(self.app,'experimental_pmc_candidates',return_value=fake) as run:
             with self.request({'field_id':'explicit-cache-id','target_grid':self.grid,
                                'observation_id':'a'*24}) as response:
                 result=json.loads(response.read())
-        load.assert_called_once_with('a'*24)
         run.assert_called_once_with('explicit-cache-id',target_grid=self.grid,
-            satellite_observation_mask=labels,satellite_coverage_mask=coverage,
-            satellite_observation_metadata=metadata)
+                                    observation_id='a'*24)
         self.assertEqual(result['satellite_comparison']['status'],'comparison_only')
+
+    def test_endpoint_rejects_missing_or_non_string_explicit_observation_id(self):
+        for observation_id in (None, '', []):
+            with self.subTest(observation_id=observation_id), \
+                 patch.object(self.app,'experimental_pmc_candidates') as run:
+                with self.assertRaises(urllib.error.HTTPError) as cm:
+                    self.request({'field_id':'explicit-cache-id','target_grid':self.grid,
+                                  'observation_id':observation_id})
+                self.assertEqual(cm.exception.code,400)
+                run.assert_not_called()
 
     def test_multipart_import_accepts_only_named_three_part_local_package(self):
         metadata={'schema_version':'arktika.pmc_satellite_observation.v1'}

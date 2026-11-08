@@ -15,9 +15,9 @@ class PmcArchiveUiContractTests(unittest.TestCase):
         ):
             with self.subTest(element_id=element_id):
                 self.assertIn(f'id="{element_id}"', html)
-        self.assertIn("Экспериментальный план", html)
-        self.assertIn("не прогноз", html)
-        self.assertIn("совпадающей сеткой", html)
+        self.assertIn("Экспериментальная диагностика", html)
+        self.assertIn("согласует сетки", html)
+        self.assertLess(html.index('id="pmcArchiveTask"'), html.index('id="pmcArchiveRunner"'))
 
     def test_plan_is_a_plan_request_not_a_download_or_detector_run(self):
         source = (ROOT / "static/app.js").read_text(encoding="utf-8")

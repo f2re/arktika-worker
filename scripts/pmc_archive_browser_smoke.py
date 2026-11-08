@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Native-HTTP UI smoke for experimental PMC archive planning only."""
+"""Native-HTTP UI smoke for experimental PMC archive planning and diagnostics."""
 import argparse
 import json
 from pathlib import Path
@@ -16,8 +16,66 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT), str(ROOT / "tests")]
 from playwright.sync_api import sync_playwright
 
+from arktika.pmc_archive_run import build_archive_report
+from arktika.pmc_detection import ALGORITHM_VERSION, METHOD_REFERENCE, PARAMETERS
 from arktika.workstation import Workstation
 from server import LocalServer
+
+
+def synthetic_archive_report(task_id, grid, observation):
+    """Use the actual archive report builder with synthetic detector frames."""
+    start = "2024-01-01T00:00:00Z"
+    end = "2024-01-01T03:00:00Z"
+    sources = ["era5", "carra2", "merra2"]
+    equation = "(dv/dlambda - cos(phi)*du/dphi + u*sin(phi))/(a*cos(phi))"
+    comparison = {
+        "status": "comparison_only",
+        "observation": {**observation, "grid": grid},
+        "coverage": {"observed_pixels": 3, "unknown_pixels": 1},
+        "metrics": {"true_positive_pixels": 1, "false_positive_pixels": 0,
+                    "false_negative_pixels": 0, "true_negative_pixels": 2,
+                    "intersection_over_union": 1.0, "probability_of_detection": 1.0,
+                    "false_alarm_ratio": 0.0},
+    }
+    rows = []
+    for field_id, source, stamp, candidate_id in (
+        ("a" * 24, "era5", start, "e1"),
+        ("b" * 24, "merra2", start, "m1"),
+        ("c" * 24, "merra2", end, None),
+    ):
+        candidates = []
+        if candidate_id:
+            candidates.append({"candidate_id": candidate_id, "classification": "candidate",
+                               "confirmation_status": "not_confirmed", "pixel_count": 1,
+                               "peak_pixel_rc": [0, 1], "centroid_pixel_rc": [0.0, 1.0],
+                               "peak_850hpa_relative_vorticity_s-1": 1.5e-4})
+        satellite = comparison if stamp == start else {
+            "status": "unknown_no_eligible_observation",
+            "reason_code": "no_eligible_observation", "metrics": None,
+        }
+        rows.append({"field_id": field_id, "source": source, "valid_time": stamp,
+                     "status": "completed", "result": {
+                         "source": source, "valid_time": stamp, "grid": grid,
+                         "algorithm_version": ALGORITHM_VERSION, "method_reference": METHOD_REFERENCE,
+                         "candidate_count": len(candidates), "candidates": candidates,
+                         "parameters": dict(PARAMETERS),
+                         "field_passport": {"method": {"equation": equation}},
+                         "satellite_comparison": satellite,
+                     }})
+    return build_archive_report(
+        task_id=task_id,
+        plan={"sources": sources, "start": start, "end": end, "area": [80, -20, 60, 70]},
+        expected_times={"era5": [f"2024-01-01T{hour:02d}:00:00Z" for hour in range(4)],
+                        "carra2": [start, end], "merra2": [start, end]},
+        interval_hours={"era5": 1, "carra2": 3, "merra2": 3},
+        frame_records=rows,
+        cached_fields=[{"source": row["source"], "time": row["valid_time"],
+                        "variable": "wind", "level": 850} for row in rows],
+        target_grid=grid,
+        satellite_comparisons=[{"source": row["source"], "valid_time": row["valid_time"],
+                               "grid": grid, "comparison": row["result"]["satellite_comparison"]}
+                              for row in rows],
+    )
 
 
 def main():
@@ -37,6 +95,8 @@ def main():
     with tempfile.TemporaryDirectory() as temp:
         root = Path(temp)
         app = Workstation(root / "state", root / "downloads")
+        # The workstation can load ~/.cdsapirc on startup. Keep the smoke local.
+        app.era5_credentials({"clear": True})
         server = LocalServer(("127.0.0.1", 0), app)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
@@ -74,7 +134,7 @@ def main():
                     page.locator('[data-task="pmc_archive"]').click()
                     check(
                         "Форма показывает зарегистрированные источники и ограничения",
-                        '()=>document.querySelector("#pmcArchiveDialog").open&&document.querySelectorAll("[name=pmcArchiveSource]").length===3&&document.querySelector("#pmcArchiveDialog").textContent.includes("не прогноз")',
+                        '()=>document.querySelector("#pmcArchiveDialog").open&&document.querySelectorAll("[name=pmcArchiveSource]").length===3&&document.querySelector("#pmcArchiveDialog").textContent.includes("Экспериментальная диагностика")',
                     )
                     check(
                         "CARRA2 доступен для архивного запуска",
@@ -124,7 +184,7 @@ def main():
                         '()=>document.querySelector("#pmcObsStatus").textContent.includes("imported_unverified")&&document.querySelector("#pmcObservation").options.length===2')
                     check(
                         "Требования спутниковой разметки объяснены",
-                        '()=>document.querySelector("#pmcArchiveDialog").textContent.includes("размеченная маска")',
+                        '()=>document.querySelector("#pmcArchiveDialog").textContent.includes("импортируйте спутниковую разметку и маску покрытия")',
                     )
 
                     page.locator("#pmcArchivePlan").click()
@@ -204,21 +264,84 @@ def main():
                     report["checks"].append({"name": "Подготовка и детектор остаются раздельными", "passed": True})
 
                     page.evaluate("document.querySelector('#fieldDialog')?.close()")
-                    page.evaluate("""() => {
-                      api = async () => ({tracks_by_source:[{source:'era5',candidate_emergence_evidence:[{
-                        source:'era5',first_detected_time:'2024-01-01T01:00:00Z',candidate_id:'e1',
-                        prior_frame:{status:'previous_processed_frame_had_no_model_candidates'},
-                        cross_source_evidence_at_first_detection:{status:'compared_exact_utc',pairs:[{other_source:'merra2',status:'matched_candidate',matches:[{candidate_id:'m1'}]}]},
-                        satellite_evidence_at_first_detection:{status:'comparison_only',observation:{source:'manual',product_id:'labels-v1',observation_id:'o'.repeat(24)},coverage:{observed_pixels:20}}
-                      }]}]});
-                      pmcShowArchiveEvidence('synthetic-task',document.querySelector('#pmcArchiveTask'));
+                    page.locator('[name="pmcArchiveSource"][value="carra2"]').check()
+                    task_id = "e" * 32
+                    observation = app.pmc_observations_state()["observations"][0]
+                    archive = synthetic_archive_report(task_id, grid, observation)
+                    page.route("**/api/pmc/archive/state", lambda route: route.fulfill(json={
+                        "id": task_id, "status": "partial", "message": "Синтетический архив",
+                        "completed": len(archive["frames"]), "total": len(archive["frames"]),
+                    }))
+                    page.evaluate("pmcRefreshArchiveTask()")
+                    show_diagnostics = page.get_by_role("button", name="Показать диагностику и сравнение")
+                    show_diagnostics.click()
+                    check("Недоступный отчёт объясняется, повтор остаётся доступен", """() => {
+                        const task = document.querySelector('#pmcArchiveTask');
+                        const retry = [...task.querySelectorAll('button')].find(
+                            button => button.textContent === 'Показать диагностику и сравнение');
+                        return task.textContent.includes('ещё не готов') && retry && !retry.disabled;
                     }""")
-                    page.locator("#pmcArchiveTask button").click()
+                    archive_dir = app.pmc_archive_root / task_id
+                    archive_dir.mkdir()
+                    (archive_dir / "report.json").write_text(json.dumps(archive), encoding="utf-8")
+                    show_diagnostics.click()
+                    page.locator("#pmcArchiveDiagnostics").wait_for(state="visible")
+                    check("Сохранённая диагностика доступна без текущего плана",
+                          '()=>document.querySelector("#pmcArchiveRunner").hidden')
+                    check("Диагностика показывает покрытие трёх реанализов отдельно", """() => {
+                        const coverage = [...document.querySelectorAll('.pmc-source-coverage li')];
+                        return [['ERA5', '1 из 4'], ['CARRA2', '0 из 2'], ['MERRA-2', '2 из 2']]
+                            .every(([source, count]) => coverage.some(row =>
+                                row.textContent.includes(source) && row.textContent.includes(count)));
+                    }""")
+                    check("Спутниковая сводка разделяет сопоставленные и неизвестные сроки", """() => {
+                        const text = document.querySelector('#pmcArchiveDiagnostics').textContent;
+                        return text.includes('сопоставлено 2 из 8') && text.includes('неизвестно 6');
+                    }""")
+                    frame = page.locator("#pmcArchiveFrame")
+                    frame.select_option(index=0)
+                    frame_details = page.locator("#pmcArchiveFrameDetails")
+                    frame_details.get_by_text("Формула и пороги", exact=True).click()
+                    details_text = frame_details.inner_text()
+                    assert all(expected in details_text for expected in (
+                        ALGORITHM_VERSION, "dv/dlambda", "850 гПа", "60 км", "smoke-test", "reviewed-labels",
+                    )), details_text
+                    report["checks"].append({"name": "Срок показывает формулу, версию и сравнение", "passed": True})
+                    frame.select_option(index=2)
+                    check("Нулевой результат реанализа отделён от неизвестного спутникового статуса", """() => {
+                        const text = document.querySelector('#pmcArchiveFrameDetails').textContent.toLowerCase();
+                        return text.includes('кандидаты · 0') && text.includes('спутник: неизвестно') &&
+                            !text.includes('reviewed-labels');
+                    }""")
                     check(
                         "Отчёт показывает первые появления, точные сравнения и оговорку о genesis",
-                        '()=>{const t=document.querySelector("#pmcArchiveTask").textContent;return t.includes("2024-01-01T01:00:00Z")&&t.includes("merra2: совпадение m1")&&t.includes("manual / labels-v1")&&t.includes("не является физическим зарождением")}',
+                        '()=>{const t=document.querySelector(".pmc-onset-evidence").textContent;return t.includes("2024-01-01T00:00:00Z")&&t.includes("smoke-test / reviewed-labels")&&t.includes("не является физическим зарождением")}',
                     )
+                    with page.expect_download() as downloaded:
+                        page.get_by_role("link", name="Скачать текущий отчёт JSON").click()
+                    download = downloaded.value
+                    assert download.suggested_filename == f"pmc-archive-{task_id}.json"
+                    assert json.loads(download.path().read_text(encoding="utf-8")) == archive
+                    report["checks"].append({"name": "JSON экспорт сохраняет полный отчёт", "passed": True})
 
+                    frame.select_option(index=0)
+                    frame_details.get_by_role("button", name="Показать пики на карте").click()
+                    check("Карта показывает модельный пик с источником и сроком", """() => {
+                        const layer = document.querySelector('#pmcOverlay');
+                        const label = layer?.getAttribute('aria-label') || '';
+                        return !document.querySelector('#pmcArchiveDialog').open &&
+                            layer?.querySelectorAll('[data-candidate=e1]').length === 1 &&
+                            label.includes('ERA5') && label.includes('2024-01-01') && label.includes('UTC');
+                    }""")
+                    page.locator('[data-task="pmc_archive"]').click()
+                    show_diagnostics.click()
+                    page.locator("#pmcArchiveDiagnostics").wait_for(state="visible")
+                    frame_details.get_by_text("Формула и пороги", exact=True).click()
+                    page.set_viewport_size({"width": 1024, "height": 1150})
+                    page.locator("#pmcArchiveDiagnostics").screenshot(
+                        path=str(output / "pmc-diagnostics-1024.png"),
+                    )
+                    page.locator(".pmc-onset-evidence summary").click()
                     for width in (1024, 390):
                         page.set_viewport_size({"width": width, "height": 844})
                         check(

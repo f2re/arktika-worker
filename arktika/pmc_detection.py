@@ -254,12 +254,41 @@ def _peak_saddle_diagnostics(field: np.ndarray, component: np.ndarray,
     return diagnostics
 
 
+def _satellite_times(metadata: dict[str, Any], candidate_valid_time: str | None) -> dict[str, str]:
+    """Normalize the nominal UTC instant and the optional closed scan interval."""
+    nominal = _validate_time(metadata.get("valid_time"))
+    if candidate_valid_time is not None:
+        candidate_valid_time = _validate_time(candidate_valid_time)
+    start = metadata.get("scan_start_utc")
+    end = metadata.get("scan_end_utc")
+    if start is None and end is None:
+        if candidate_valid_time is not None and nominal != candidate_valid_time:
+            raise ValueError("Срок спутниковой маски без интервала съёмки должен совпадать со сроком реанализа.")
+        return {"valid_time": nominal}
+    if start is None or end is None:
+        raise ValueError("Интервал съёмки требует одновременно scan_start_utc и scan_end_utc.")
+
+    start = _validate_time(start)
+    end = _validate_time(end)
+    start_stamp = datetime.fromisoformat(start.replace("Z", "+00:00"))
+    end_stamp = datetime.fromisoformat(end.replace("Z", "+00:00"))
+    nominal_stamp = datetime.fromisoformat(nominal.replace("Z", "+00:00"))
+    if start_stamp >= end_stamp or not start_stamp <= nominal_stamp <= end_stamp:
+        raise ValueError("Интервал съёмки должен иметь положительную длительность и содержать срок маски.")
+    if candidate_valid_time is not None:
+        model_stamp = datetime.fromisoformat(candidate_valid_time.replace("Z", "+00:00"))
+        if not start_stamp <= model_stamp <= end_stamp:
+            raise ValueError("Срок реанализа должен попадать в интервал съёмки.")
+    return {"valid_time": nominal, "scan_start_utc": start, "scan_end_utc": end}
+
+
 def compare_satellite(candidate_mask: np.ndarray,
                       satellite_observation_mask: np.ndarray | None,
                       valid_mask: np.ndarray | None = None,
                       observation_metadata: dict[str, Any] | None = None,
                       candidate_grid: dict[str, Any] | None = None,
-                      coverage_mask: np.ndarray | None = None) -> dict[str, Any]:
+                      coverage_mask: np.ndarray | None = None, *,
+                      candidate_valid_time: str | None = None) -> dict[str, Any]:
     """Compare candidates only where the satellite supplied a valid observation.
 
     A missing coverage mask is rejected: a zero in a label mask means an
@@ -268,13 +297,13 @@ def compare_satellite(candidate_mask: np.ndarray,
     """
     if satellite_observation_mask is None:
         return {"status": "not_supplied", "metrics": None}
-    if coverage_mask is None:
-        raise ValueError("satellite comparison requires an explicit coverage mask")
     required_metadata = ("source", "product_id", "valid_time", "observation_id", "grid")
     if not isinstance(observation_metadata, dict) or any(
             key != "grid" and (not isinstance(observation_metadata.get(key), str) or
             not observation_metadata[key].strip()) for key in required_metadata):
         raise ValueError("satellite observations require source, product_id, valid_time, observation_id and grid provenance")
+    if coverage_mask is None:
+        raise ValueError("satellite comparison requires an explicit coverage mask")
     candidates = np.asarray(candidate_mask, dtype=bool)
     valid = np.ones(candidates.shape, dtype=bool) if valid_mask is None else np.asarray(valid_mask, dtype=bool)
     if valid.shape != candidates.shape:
@@ -294,6 +323,7 @@ def compare_satellite(candidate_mask: np.ndarray,
     observation = {key: (dict(observation_metadata[key]) if key == "grid"
                          else observation_metadata[key].strip())
                    for key in required_metadata}
+    observation.update(_satellite_times(observation_metadata, candidate_valid_time))
     regridding = observation_metadata.get("regridding")
     if isinstance(regridding, dict):
         method = regridding.get("method")
@@ -302,8 +332,12 @@ def compare_satellite(candidate_mask: np.ndarray,
         if method in {"identity", "nearest_neighbor"}:
             try:
                 from .pmc_archive_run import validate_grid
-                from .pmc_projection import _validate_observation_source_grid
-                source_grid = _validate_observation_source_grid(source_grid, 16_000_000)
+                from .pmc_projection import (
+                    MAX_OBSERVATION_SOURCE_PIXELS,
+                    _validate_observation_source_grid,
+                )
+                source_grid = _validate_observation_source_grid(
+                    source_grid, MAX_OBSERVATION_SOURCE_PIXELS)
                 target_grid = validate_grid(target_grid)
             except (TypeError, ValueError):
                 pass
@@ -418,16 +452,6 @@ def detect_candidates(vorticity_850: np.ndarray, *, grid: dict[str, Any],
             or _validate_time(source_field_metadata.get("valid_time")) != timestamp
             or not _same_grid(grid, source_field_metadata.get("grid"))):
         raise ValueError("source field passport must match source, 850-hPa relative vorticity, s-1, UTC time, and exact grid")
-    if satellite_observation_mask is not None:
-        satellite_metadata = satellite_observation_metadata or {}
-        if any(key not in satellite_metadata for key in ("source", "product_id", "valid_time", "observation_id", "grid")):
-            raise ValueError("satellite observations require source, product_id, valid_time, observation_id and grid provenance")
-        if _validate_time(satellite_metadata.get("valid_time")) != timestamp:
-            raise ValueError("satellite observation time must match the reanalysis valid time")
-        observed_grid = satellite_metadata.get("grid")
-        if not _same_grid(grid, observed_grid):
-            raise ValueError("satellite observation grid metadata must exactly match the reanalysis grid")
-
     smoothed = _smooth_uniform_radius(
         array, radius_km=PARAMETERS["uniform_radius_km"],
         resolution_x_m=dx, resolution_y_m=dy)
@@ -575,9 +599,10 @@ def detect_candidates(vorticity_850: np.ndarray, *, grid: dict[str, Any],
         "parameters": dict(PARAMETERS),
         "candidate_count": len(candidates),
         "candidates": candidates,
-        "satellite_comparison": compare_satellite(candidate_mask, satellite_observation_mask,
-                                                    np.isfinite(smoothed) & domain,
-                                                    satellite_observation_metadata,grid,
-                                                    satellite_coverage_mask),
+        "satellite_comparison": compare_satellite(
+            candidate_mask, satellite_observation_mask, np.isfinite(smoothed) & domain,
+            satellite_observation_metadata, grid, satellite_coverage_mask,
+            candidate_valid_time=timestamp,
+        ),
         "limitations": limitations,
     }

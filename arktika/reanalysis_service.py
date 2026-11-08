@@ -27,7 +27,8 @@ from .pmc_archive_run import build_archive_report
 from .pmc_archive_run import validate_grid as validate_pmc_archive_grid
 from .pmc_detection import ALGORITHM_ID as PMC_DETECTOR_ID
 from .pmc_detection import ALGORITHM_VERSION as PMC_DETECTOR_VERSION
-from .pmc_projection import reproject_observation_masks
+from .pmc_detection import _satellite_times as pmc_satellite_times
+from .pmc_projection import MAX_OBSERVATION_SOURCE_PIXELS, reproject_observation_masks
 from .reanalysis.adapters import get_runtime_adapter
 from .reanalysis.catalog import SOURCES, VERSION, catalogue, request_plan
 
@@ -54,7 +55,7 @@ class ReanalysisMixin:
             with MemoryFile(data) as mem, mem.open() as ds:
                 if ds.driver!='GTiff' or ds.count!=1:
                     raise ValueError(f'{label}: ожидается одноканальный GeoTIFF.')
-                if ds.width<1 or ds.height<1 or ds.width*ds.height>16_000_000:
+                if ds.width<1 or ds.height<1 or ds.width*ds.height>MAX_OBSERVATION_SOURCE_PIXELS:
                     raise ValueError(f'{label}: размер растра вне допустимых пределов.')
                 if ds.crs is None or not all(math.isfinite(v) for v in ds.transform[:6]):
                     raise ValueError(f'{label}: в растре отсутствует корректная сетка или CRS.')
@@ -491,76 +492,63 @@ class ReanalysisMixin:
             frame_records=records,cached_fields=self.fields_state()['fields'],
             target_grid=job.get('target_grid'),satellite_comparisons=comparisons)
 
-    def _pmc_observation_for_frame(self, valid_time, target_grid):
+    def _pmc_observation_for_frame(self, valid_time, target_grid, *, observation_id=None):
         """Return one temporally eligible observation harmonized to the target grid.
 
-        Legacy observations match exact UTC. Interval observations match only
-        when the model instant falls inside the explicitly supplied closed scan
-        interval. Grid changes use nearest-neighbour for labels and coverage;
-        temporal or spatial alignment is not meteorological validation.
+        An explicit observation ID bypasses catalogue selection, but still
+        requires temporal and spatial alignment. A missing or corrupt explicit
+        ID raises an input error.
         """
+        from rasterio.errors import RasterioError
+
         frame_time=pmc_utc_hour(valid_time,'Срок кадра').isoformat().replace('+00:00','Z')
-        frame_stamp=pmc_utc_hour(frame_time,'Срок кадра')
-        def parse_scan_instant(value, name):
-            if not isinstance(value,str) or not re.search(r'(?:Z|\+00:00)$',value):
-                raise ValueError(f'{name} должен содержать явное смещение UTC.')
+        if observation_id is not None:
+            labels,coverage,metadata=self.pmc_observation(observation_id)
+        else:
+            observations=self.pmc_observations_state().get('observations',[])
+            matching=[]
+            for item in observations:
+                try:
+                    pmc_satellite_times(item,frame_time)
+                except (AttributeError,TypeError,ValueError,OverflowError):
+                    continue
+                matching.append(item)
+            if not matching:
+                return {'unavailable_reason':'no_eligible_observation'} if observations else None
+            if len(matching)!=1:
+                exact_legacy=all(item.get('scan_start_utc') is None and item.get('scan_end_utc') is None
+                                 for item in matching)
+                reason='duplicate_exact_time_observations' if exact_legacy else 'ambiguous_eligible_observations'
+                return {'unavailable_reason':reason}
             try:
-                parsed=datetime.fromisoformat(value.replace('Z','+00:00'))
-                if parsed.utcoffset()!=timezone.utc.utcoffset(parsed):raise ValueError()
-                return parsed.astimezone(timezone.utc)
-            except (ValueError,OverflowError):
-                raise ValueError(f'Некорректное время UTC: {name}.') from None
-        observation_state=self.pmc_observations_state()
-        observations=observation_state.get('observations',[])
-        matching=[]
-        for item in observations:
-            if not isinstance(item,dict):
-                continue
-            try:
-                start=item.get('scan_start_utc');end=item.get('scan_end_utc')
-                if start is None and end is None:
-                    listed_time=parse_scan_instant(item.get('valid_time'),'Срок наблюдения')
-                    eligible=listed_time==frame_stamp
-                elif isinstance(start,str) and isinstance(end,str):
-                    start_stamp=parse_scan_instant(start,'scan_start_utc')
-                    end_stamp=parse_scan_instant(end,'scan_end_utc')
-                    eligible=start_stamp<end_stamp and start_stamp<=frame_stamp<=end_stamp
-                else:
-                    eligible=False
-                if eligible:
-                    matching.append(item)
-            except (ValueError,TypeError):
-                continue
-        if not matching:
-            return {'unavailable_reason':'no_eligible_observation'} if observations else None
-        if len(matching)!=1:
-            exact_legacy=all(item.get('scan_start_utc') is None and item.get('scan_end_utc') is None
-                             for item in matching)
-            reason='duplicate_exact_time_observations' if exact_legacy else 'ambiguous_eligible_observations'
-            return {'unavailable_reason':reason}
+                labels,coverage,metadata=self.pmc_observation(matching[0].get('observation_id'))
+            except (OSError,TypeError,ValueError):
+                return {'unavailable_reason':'observation_grid_unavailable'}
         try:
-            labels,coverage,metadata=self.pmc_observation(matching[0].get('observation_id'))
-            observation_time=parse_scan_instant(metadata.get('valid_time'),'Срок наблюдения')
-            start=metadata.get('scan_start_utc');end=metadata.get('scan_end_utc')
-            interval_match=False
-            if isinstance(start,str) and isinstance(end,str):
-                interval_match=(parse_scan_instant(start,'scan_start_utc')<=frame_stamp
-                                <=parse_scan_instant(end,'scan_end_utc'))
-            if (not (observation_time==frame_stamp or interval_match)
-                    or metadata.get('status')!='imported_unverified'):
-                return {'unavailable_reason':'no_eligible_observation'}
-            source_grid=metadata.get('grid')
+            times=pmc_satellite_times(metadata,frame_time)
+        except (TypeError,ValueError,OverflowError):
+            return {'unavailable_reason':'no_eligible_observation'}
+        try:
             labels,coverage,regridding=reproject_observation_masks(
-                labels,coverage,source_grid=source_grid,target_grid=target_grid)
-        except (ValueError,OSError,TypeError):
+                labels,coverage,source_grid=metadata.get('grid'),target_grid=target_grid)
+        except (OSError,RasterioError,TypeError,ValueError):
             return {'unavailable_reason':'observation_grid_unavailable'}
         obs_meta={'source':metadata['source'],'product_id':metadata['product_id'],
-                  'valid_time':metadata['valid_time'],'observation_id':metadata['observation_id'],
-                  'grid':target_grid,'regridding':regridding}
-        if 'scan_start_utc' in metadata and 'scan_end_utc' in metadata:
-            obs_meta['scan_start_utc']=metadata['scan_start_utc']
-            obs_meta['scan_end_utc']=metadata['scan_end_utc']
+                  'observation_id':metadata['observation_id'],'grid':regridding['target_grid'],
+                  'regridding':regridding,**times}
         return {'labels':labels,'coverage':coverage,'metadata':obs_meta}
+
+    @staticmethod
+    def _record_pmc_unknown_satellite_comparison(result, reason):
+        status={
+            'no_eligible_observation':'unknown_no_eligible_observation',
+            'ambiguous_eligible_observations':'unknown_ambiguous_observations',
+            'duplicate_exact_time_observations':'unknown_ambiguous_observations',
+        }.get(reason,'unknown_unmatched')
+        result['satellite_comparison']={'status':status,'metrics':None,'reason_code':reason}
+        quality_control=result.get('passport',{}).get('quality_control')
+        if isinstance(quality_control,dict):
+            quality_control['satellite_comparison_status']=status
 
     def pmc_archive_state(self, data=None):
         self._fields_init()
@@ -758,11 +746,8 @@ class ReanalysisMixin:
                     result=self.experimental_pmc_candidates(field_id,target_grid=job['target_grid'],
                                                            region_bounds=job['plan']['area'],**options)
                     if observation is not None and 'unavailable_reason' in observation:
-                        reason = observation['unavailable_reason']
-                        status = 'unknown_' + reason if reason in ('no_eligible_observation', 'ambiguous_eligible_observations') else 'unknown_unmatched'
-                        result['satellite_comparison']={
-                            'status': status, 'metrics': None,
-                            'reason_code': reason}
+                        self._record_pmc_unknown_satellite_comparison(
+                            result,observation['unavailable_reason'])
                     record={'field_id':field_id,'source':meta['source'],'valid_time':meta['time'],
                             'status':'completed','result':result}
                 except Cancelled:raise

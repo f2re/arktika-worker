@@ -22,7 +22,7 @@ function shiftMonth(delta){const d=new Date(Date.UTC(Number($('#year').value),Nu
 function selectScene(scene){S.scene=scene;$$('#sessions button').forEach(b=>b.classList.toggle('selected',b.dataset.key===scene.platform+'|'+scene.time));const available=new Set(scene.channels.map(c=>c.channel));$$('#channel option').forEach(o=>{o.disabled=!available.has(Number(o.value));});if(!available.has(Number($('#channel').value)))$('#channel').value=available.has(9)?9:(scene.channels[0]?.channel||9);if(!scene.channels.length&&scene.composites?.length)$('#product').value='archive_rgb';else if($('#product').value==='archive_rgb'&&!scene.composites?.length)$('#product').value='channel';$('#departure').value=scene.time.slice(0,16);$('#mapSubtitle').textContent=scene.platform+' · '+scene.time.slice(0,16).replace('T',' ')+' UTC · '+scene.channels.length+' каналов скачано'+(scene.time_assumed?' · UTC принят по правилу импорта':'');productHint();}
 function svgEl(name,attrs={}){const n=document.createElementNS('http://www.w3.org/2000/svg',name);for(const[k,v]of Object.entries(attrs))n.setAttribute(k,String(v));return n;}
 function polyline(points,klass){return svgEl('polyline',{points:points.map(p=>p.join(',')).join(' '),class:klass});}
-async function setMap(preset,width=1000,product){const c=await api('/api/map?'+qs(product?{product}:{preset,width}));S.map=c;$('#pmcOverlay')?.replaceChildren();const g=c.grid;S.view=[0,0,g.width,g.height];$('#map').setAttribute('viewBox',S.view.join(' '));for(const id of ['#ocean','#raster','#nightRaster','#clipRect']){$(id).setAttribute('width',g.width);$(id).setAttribute('height',g.height);}$('#graticule').replaceChildren(...c.graticule.map(l=>polyline(l,'graticule-line')));$('#coast').replaceChildren(...c.coast.map(l=>polyline(l,'coast-line')));$('#labels').replaceChildren(...c.labels.map(l=>{const t=svgEl('text',{x:l.x,y:l.y});t.textContent=l.text;return t;}));$('#projectionCaption').textContent=g.name+' · '+g.crs;return c;}
+async function setMap(preset,width=1000,product){const c=await api('/api/map?'+qs(product?{product}:{preset,width}));S.map=c;pmcClearOverlay();const g=c.grid;S.view=[0,0,g.width,g.height];$('#map').setAttribute('viewBox',S.view.join(' '));for(const id of ['#ocean','#raster','#nightRaster','#clipRect']){$(id).setAttribute('width',g.width);$(id).setAttribute('height',g.height);}$('#graticule').replaceChildren(...c.graticule.map(l=>polyline(l,'graticule-line')));$('#coast').replaceChildren(...c.coast.map(l=>polyline(l,'coast-line')));$('#labels').replaceChildren(...c.labels.map(l=>{const t=svgEl('text',{x:l.x,y:l.y});t.textContent=l.text;return t;}));$('#projectionCaption').textContent=g.name+' · '+g.crs;return c;}
 let PRODUCT_VIEW_REVISION=0;
 function clearMapProduct(){PRODUCT_VIEW_REVISION++;S.product=null;PRODUCT_STYLE_PROFILE=null;PRODUCT_STYLE_PRODUCT_ID=null;$('#productStyleOpen').disabled=true;if($('#productStyleDialog').open)$('#productStyleDialog').close();$('#raster').removeAttribute('href');$('#nightRaster').removeAttribute('href');$('#exportProduct').disabled=true;$('#routeLayer').replaceChildren();$('#pointLayer').replaceChildren();$('#motionLayer').replaceChildren();$('#legend').innerHTML='<p class="empty">Область изменена. Постройте продукт в новой проекции.</p>';}
 async function showProduct(p){const revision=++PRODUCT_VIEW_REVISION;await setMap(p.grid.preset,p.grid.width,p.id);if(revision!==PRODUCT_VIEW_REVISION)return;S.product=p;$('#productStyleOpen').disabled=!productStyleable(p);if($('#productStyleDialog').open)$('#productStyleDialog').close();$('#preset').value=p.grid.preset;$('#product').value=p.product;$('#channel').value=p.request.channel||9;$('#mapTitle').textContent=p.title;$('#mapSubtitle').textContent=p.platform+' · '+p.time.replace('T',' ').replace('Z',' UTC')+' · '+p.grid.name;$('#raster').setAttribute('href','/artifact/'+p.id+'/map.png');$('#nightRaster').setAttribute('href','/artifact/'+p.id+'/night.png');$('#exportProduct').disabled=false;$('#scienceBanner').textContent=p.calibration_status==='assumed'?'ИССЛЕДОВАТЕЛЬСКОЕ ДОПУЩЕНИЕ DN = K. Калибровка поставщиком не подтверждена. Цвета и пороги не являются готовыми предупреждениями.':p.calibration_status==='unknown'?'Шкала не объявлена: показаны хранимые значения DN. Физические температуры и производные не подменяются предположениями.':'Калибровка объявлена. Экспериментальные спектральные признаки не являются подтверждёнными опасными явлениями.';$('#routeLayer').replaceChildren();$('#pointLayer').replaceChildren();S.route=null;$('#routeResult').innerHTML='';drawLegend(p.legend);productHint();try{await loadProductStyle(p);if(revision!==PRODUCT_VIEW_REVISION||S.product?.id!==p.id)return;$('#productStyleOpen').disabled=!productStyleable(p);}catch(e){if(revision!==PRODUCT_VIEW_REVISION)return;$('#productStyleOpen').disabled=true;toast('Шкала этого продукта пока недоступна: '+e.message);}}
@@ -154,7 +154,10 @@ async function importPmcObservation(){
 }
 function pmcClearResult(){const root=$('#pmcRunResult');for(const link of root.querySelectorAll('a[download][href^="blob:"]'))URL.revokeObjectURL(link.href);root.replaceChildren();}
 function pmcRunMessage(message,kind='notice'){const root=$('#pmcRunResult');pmcClearResult();if(!message)return;const p=document.createElement('p');p.className=kind;p.textContent=message;root.append(p);}
-function pmcClearOverlay(){const layer=$('#pmcOverlay');if(layer)layer.replaceChildren();}
+function pmcClearOverlay(){
+  $('#pmcOverlay')?.replaceChildren();
+  const caption=$('#pmcMapCaption');caption.hidden=true;caption.textContent='';
+}
 function pmcCachedChoices(fields){
   const select=$('#pmcCachedField'),eligible=(Array.isArray(fields)?fields:[]).filter(f=>f&&['era5','carra2','merra2'].includes(f.source)&&f.variable==='wind'&&Number(f.level)===850&&!f.difference_of);
   select.replaceChildren();if(!eligible.length){const o=document.createElement('option');o.value='';o.textContent='Нет подходящего кэшированного поля';select.append(o);select.disabled=true;$('#pmcRunButton').disabled=true;return;}
@@ -171,13 +174,55 @@ function pmcGridForRun(map,area,width){
   const dx=(right-left)/w,dy=(top-bottom)/h;
   return {crs:g.crs,width:w,height:h,transform:[dx,0,left,0,-dy,top],resolution_x_m:dx,resolution_y_m:dy};
 }
+function pmcTime(value){return typeof value==='string'&&value?value.replace('T',' ').replace(/(?:Z|\+00:00)$/,' UTC'):'Срок неизвестен';}
+function pmcText(parent,tag,value,className=''){
+  const element=document.createElement(tag);element.textContent=value;
+  if(className)element.className=className;
+  parent.append(element);return element;
+}
+function pmcRenderMethod(result,root){
+  const details=document.createElement('details');details.className='pmc-method';root.append(details);
+  pmcText(details,'summary','Формула и пороги');
+  const method=result.field_passport?.method,parameters=result.parameters||{};
+  if(method?.equation){
+    pmcText(details,'code',`ζ = ${method.equation}`);
+    pmcText(details,'p','ζ — относительная завихрённость на 850 гПа, с⁻¹. u и v — восточная и северная компоненты ветра, м/с. φ и λ — широта и долгота в радианах, a — радиус Земли в метрах.','micro');
+  }else pmcText(details,'p','В сохранённом кадре нет записи формулы.','micro');
+  if(Number.isFinite(parameters.uniform_radius_km))pmcText(details,'p',`Круговое среднее по валидным ячейкам, радиус ${num(parameters.uniform_radius_km)} км.`,'micro');
+  const base=parameters['minimum_vorticity_s-1'],peak=parameters['peak_vorticity_s-1'];
+  if(Number.isFinite(base)&&Number.isFinite(peak))pmcText(details,'p',`Связная область от ${base.toExponential()} с⁻¹, пик от ${peak.toExponential()} с⁻¹.`,'micro');
+  if(Number.isFinite(parameters.peak_isolation_gamma))pmcText(details,'p',`Условие изоляции пика: (ζпик − ζседло) / ζпик > ${num(parameters.peak_isolation_gamma,3)}.`,'micro');
+  if(result.method_reference)pmcText(details,'p',`Основа параметров: ${result.method_reference}`,'micro');
+}
+function pmcRenderSatellite(comparison,root){
+  if(comparison?.status!=='comparison_only'){
+    const reasons={
+      matched_no_coverage:'Маска доступна, совместно покрытых валидных ячеек нет.',
+      unknown_ambiguous_observations:'К сроку подходят несколько спутниковых масок.',
+      unknown_ambiguous_eligible_observations:'К сроку подходят несколько спутниковых масок.',
+      unknown_no_eligible_observation:'Для срока и сетки нет подходящей спутниковой маски.',
+      unknown_unmatched:'Сопоставление по сроку и сетке недоступно.',
+      not_supplied:'Спутниковая маска не предоставлена для этого расчёта.',
+    };
+    pmcText(root,'p',`Спутник: неизвестно. ${reasons[comparison?.status]||'Для этого срока сравнение не выполнено.'}`,'hint');
+    return;
+  }
+  const observation=comparison.observation||{},coverage=comparison.coverage||{},metrics=comparison.metrics||{};
+  const provenance=[observation.source,observation.product_id,observation.observation_id].filter(Boolean).join(' · ');
+  pmcText(root,'p',`Спутниковая маска${provenance?' · '+provenance:''}`);
+  const scan=observation.scan_start_utc&&observation.scan_end_utc
+    ?`${pmcTime(observation.scan_start_utc)} — ${pmcTime(observation.scan_end_utc)}`:pmcTime(observation.valid_time);
+  pmcText(root,'p',`Съёмка: ${scan} · совместное покрытие ${num(coverage.observed_pixels,0)} пикселей`,'micro');
+  const format=value=>Number.isFinite(value)?num(value,3):'—';
+  pmcText(root,'p',`Перекрытие масок: IoU ${format(metrics.intersection_over_union)} · POD ${format(metrics.probability_of_detection)} · FAR ${format(metrics.false_alarm_ratio)}.`,'micro');
+}
 function pmcRenderRunResult(r){
   const root=$('#pmcRunResult');pmcClearResult();
   const box=document.createElement('div');box.className='pmc-run-result';
   const title=document.createElement('strong');title.textContent=`Экспериментальные кандидаты · ${Number(r.candidate_count)||0}`;box.append(title);
   const summary=document.createElement('p');summary.textContent=`${PMC_SOURCE_LABELS[r.source]||r.source} · 850 гПа · ${String(r.valid_time||'срок неизвестен').replace('T',' ').replace('Z',' UTC')} · ${r.algorithm_id||'алгоритм'} ${r.algorithm_version||''}`;box.append(summary);
-  if(r.satellite_comparison?.status==='comparison_only'&&r.satellite_comparison.metrics){const m=r.satellite_comparison.metrics,c=r.satellite_comparison.coverage;const comparison=document.createElement('p');comparison.className='notice';comparison.textContent=`Пиксельное сравнение с ${r.satellite_comparison.observation?.source||'наблюдением'} · покрыто ${c?.observed_pixels??0} пикселей · IoU ${m.intersection_over_union==null?'—':Number(m.intersection_over_union).toFixed(3)} · POD ${m.probability_of_detection==null?'—':Number(m.probability_of_detection).toFixed(3)} · FAR ${m.false_alarm_ratio==null?'—':Number(m.false_alarm_ratio).toFixed(3)}. Это не метеорологическая проверка ПМЦ.`;box.append(comparison);}
-  else if(r.satellite_comparison?.status==='matched_no_coverage'){const comparison=document.createElement('p');comparison.className='notice';comparison.textContent='Спутниковая маска выбрана, но на сетке нет совместно покрытых валидных ячеек; метрики не рассчитаны.';box.append(comparison);}
+  pmcRenderSatellite(r.satellite_comparison,box);
+  pmcRenderMethod(r,box);
   const exportLink=document.createElement('a');exportLink.className='text-button';exportLink.textContent='Скачать отчёт JSON';exportLink.download=`pmc-candidates-${String(r.valid_time||'unknown').replace(/[^0-9TZ]/g,'-')}.json`;exportLink.href=URL.createObjectURL(new Blob([JSON.stringify(r,null,2)],{type:'application/json'}));box.append(exportLink);
   if(Array.isArray(r.candidates)&&r.candidates.length){
     const wrap=document.createElement('div');wrap.className='pmc-run-table';wrap.tabIndex=0;wrap.setAttribute('role','region');wrap.setAttribute('aria-label','Таблица экспериментальных кандидатов; прокручивается по горизонтали');const table=document.createElement('table');table.innerHTML='<thead><tr><th>Кандидат</th><th>Класс</th><th>Пик завихрённости, с⁻¹</th><th>Пикселей</th><th>Разделение области</th><th>Подтверждение</th></tr></thead>';
@@ -192,14 +237,24 @@ function pmcRenderRunResult(r){
 function pmcDrawOverlay(r){
   pmcClearOverlay();const g=S.map?.grid,rg=r.grid;if(!g||!rg||g.crs!==rg.crs||!Array.isArray(g.bounds)||!Array.isArray(rg.transform))return false;
   const transform=rg.transform;if(transform.length!==6||!transform.every(Number.isFinite))return false;
-  const left=transform[2],top=transform[5],right=left+transform[0]*rg.width,bottom=top+transform[4]*rg.height;
-  const targetBounds=[left,bottom,right,top];if(g.bounds.length!==4||targetBounds.some((v,i)=>Math.abs(Number(g.bounds[i])-v)>Math.max(1,Math.abs(v))*1e-8))return false;
+  const [left,bottom,right,top]=g.bounds;
+  if(g.bounds.length!==4||!g.bounds.every(Number.isFinite)||right<=left||top<=bottom)return false;
+  const [a,b,c,d,e,f]=transform;
   let layer=$('#pmcOverlay');if(!layer){layer=svgEl('g',{id:'pmcOverlay','aria-label':'Экспериментальные точки кандидатов'});$('#mapContent').append(layer);}
-  for(const candidate of r.candidates||[]){const rc=candidate.peak_pixel_rc;if(!Array.isArray(rc)||rc.length!==2||!rc.every(Number.isFinite))continue;const x=(Number(rc[1])+.5)*g.width/rg.width,y=(Number(rc[0])+.5)*g.height/rg.height;
+  const description=`Пики модельных кандидатов · ${PMC_SOURCE_LABELS[r.source]||r.source||'источник неизвестен'} · ${pmcTime(r.valid_time)}`;
+  layer.setAttribute('aria-label',description);
+  for(const candidate of r.candidates||[]){
+    const rc=candidate.peak_pixel_rc;if(!Array.isArray(rc)||rc.length!==2||!rc.every(Number.isFinite))continue;
+    const [row,col]=rc;if(row<0||row>=rg.height||col<0||col>=rg.width)continue;
+    const dx=c+a*(col+.5)+b*(row+.5),dy=f+d*(col+.5)+e*(row+.5);
+    if(dx<left||dx>right||dy<bottom||dy>top)continue;
+    const x=(dx-left)*g.width/(right-left),y=(top-dy)*g.height/(top-bottom);
     layer.append(svgEl('circle',{cx:x,cy:y,r:8,fill:'#e879f9','fill-opacity':'.22',stroke:'#7e22ce','stroke-width':2,'vector-effect':'non-scaling-stroke','data-candidate':candidate.candidate_id||''}));
     layer.append(svgEl('circle',{cx:x,cy:y,r:2.4,fill:'#7e22ce','vector-effect':'non-scaling-stroke'}));
   }
-  return layer.childElementCount>0;
+  if(!layer.childElementCount)return false;
+  const caption=$('#pmcMapCaption');caption.textContent=description;caption.hidden=false;
+  return true;
 }
 async function runPmcCached(){
   const fieldId=$('#pmcCachedField').value;if(!fieldId)throw Error('В кэше нет подходящего ветрового поля ERA5/CARRA2/MERRA-2 850 гПа. Откройте «Пространственные поля» и подготовьте срок отдельно.');
@@ -233,7 +288,9 @@ function pmcObservationChoices(observations){
 }
 async function openPmcArchive(){
   pmcInvalidateArchivePlan();pmcRunPanel();pmcClearOverlay();pmcClearResult();pmcCachedChoices([]);$('#pmcCachedField').options[0].textContent='Загружаю список…';$('#pmcArchivePlan').disabled=true;$('#pmcArchiveSources').textContent='Проверяю зарегистрированные адаптеры…';open('#pmcArchiveDialog');
-  try{const state=await api('/api/reanalysis/state');S.pmcArchiveFields=state.fields||[];pmcRenderSources(state.catalogue?.sources||[]);pmcCachedChoices(state.fields||[]);const observations=await api('/api/pmc/observations');pmcObservationChoices(observations.observations||[]);await pmcRefreshArchiveTask();}
+  $('#pmcArchiveTask').replaceChildren();pmcText($('#pmcArchiveTask'),'p','Загружаю состояние архива…').setAttribute('role','status');
+  void pmcRefreshArchiveTask();
+  try{const state=await api('/api/reanalysis/state');S.pmcArchiveFields=state.fields||[];pmcRenderSources(state.catalogue?.sources||[]);pmcCachedChoices(state.fields||[]);const observations=await api('/api/pmc/observations');pmcObservationChoices(observations.observations||[]);}
   catch(e){$('#pmcArchiveSources').textContent='Не удалось прочитать каталог адаптеров.';pmcFeedback('Проверка архива недоступна: '+e.message,'error-text');}
 }
 function pmcArchiveBody(){
@@ -287,7 +344,7 @@ async function planPmcArchive(){
     if(Array.isArray(result.limitations))for(const item of result.limitations)if(typeof item==='string')lines.push('Ограничение: '+item);
     if(!lines.length)lines.push('Ответ сервера не содержит полного плана. Расчёт и загрузка не запускаются.');
     const list=document.createElement('ul');for(const line of lines){const li=document.createElement('li');li.textContent=line;list.append(li);}box.append(list);
-    const note=document.createElement('p');note.textContent='Это план архивной обработки, не прогноз. Все обнаружения остаются кандидатами до независимого сравнения со спутниковой разметкой.';box.append(note);$('#pmcArchiveFeedback').append(box);
+    const note=document.createElement('p');note.textContent='План задаёт архивные сроки. После расчёта будут доступны модельные кандидаты и, при наличии подходящей маски, метрики перекрытия со спутниковой разметкой.';box.append(note);$('#pmcArchiveFeedback').append(box);
     pmcRenderArchiveFields(result.plan);
   }catch(e){if(revision===S.pmcArchivePlanRevision){const message=e.message||'Не удалось составить план.';$('#pmcArchiveRunner').hidden=true;$('#pmcArchiveFields').replaceChildren();$('#pmcArchiveRun').disabled=true;pmcFeedback(message.includes('404')||message.includes('Not Found')?'Серверный API планирования архива ещё недоступен. Никакие данные не загружены.':message,'error-text');}}
   finally{if(revision===S.pmcArchivePlanRevision)$('#pmcArchivePlan').disabled=false;}
@@ -328,7 +385,7 @@ async function pmcRefreshArchivePrepare(){
     }
     $('#pmcArchivePrepare').disabled=['running','needs_action','ready'].includes(task.status);
     $('#pmcArchivePrepareResume').hidden=!(task.resume_available&&['needs_action','interrupted','cancelled','error'].includes(task.status));
-    $('#pmcArchiveCancel').hidden=!['running','needs_action'].includes(task.status);
+    $('#pmcArchiveCancel').hidden=$('#pmcArchiveTask').dataset.status!=='running'&&!['running','needs_action'].includes(task.status);
     const preparing=task.status==='running';$('#pmcArchiveRun').disabled=preparing||!$('#pmcArchiveFields').querySelector('[name="pmcArchiveField"]');
     $$('#pmcArchiveFields [name="pmcArchiveField"]').forEach(input=>{input.disabled=preparing;});
     if(task.status==='running'){if(S.pmcPrepareTimer)clearTimeout(S.pmcPrepareTimer);S.pmcPrepareTimer=setTimeout(()=>pmcRefreshArchivePrepare().catch(()=>{}),1300);}
@@ -344,6 +401,78 @@ async function pmcStartArchive(){
   if(revision!==S.pmcArchivePlanRevision||S.pmcArchivePlan!==plan)throw Error('Параметры изменились при подготовке сетки. Составьте план заново.');
   await api('/api/pmc/archive/run',{plan,field_ids,target_grid});await pmcRefreshArchiveTask();
 }
+function pmcRenderArchiveDiagnostics(report){
+  const panel=document.createElement('section');panel.id='pmcArchiveDiagnostics';
+  pmcText(panel,'h4','Диагностика архива');
+  pmcText(panel,'p','Экспериментальный поиск модельных кандидатов. Спутниковое сравнение показывает перекрытие с импортированной разметкой. Физическое зарождение ПМЦ и прогноз остаются за рамками расчёта.','hint');
+  const plan=report.plan||{};
+  if(plan.start&&plan.end)pmcText(panel,'p',`${pmcTime(plan.start)} — ${pmcTime(plan.end)}`,'micro');
+  const coverage=new Map((report.coverage||[]).map(row=>[row.source,row]));
+  const sources=pmcText(panel,'ul','','pmc-source-coverage');
+  for(const [id,name] of Object.entries(PMC_SOURCE_LABELS)){
+    const item=pmcText(sources,'li','');pmcText(item,'strong',name);
+    const row=coverage.get(id);
+    if(row){
+      pmcText(item,'span',`Обработано ${num(row.processed_steps,0)} из ${num(row.expected_steps,0)}`);
+      pmcText(item,'small',`В кэше ${num(row.cached_steps,0)} · пропусков ${num(row.unprocessed_steps,0)} · ошибок ${num(row.failed_steps,0)}`);
+    }else pmcText(item,'span',Array.isArray(plan.sources)&&!plan.sources.includes(id)?'Вне выбранного плана':'Покрытие неизвестно');
+  }
+  const satellite=report.satellite_comparison;
+  pmcText(panel,'p',Number.isInteger(satellite?.expected_frame_count)
+    ?`Спутник: сопоставлено ${satellite.matched_frame_count} из ${satellite.expected_frame_count} пар «источник — срок» · неизвестно ${satellite.unknown_frame_count}.`
+    :'Спутник: сводка покрытия в отчёте отсутствует.');
+  const frames=(report.frames||[]).filter(frame=>frame?.valid_time&&frame.source);
+  if(!frames.length){pmcText(panel,'p','В отчёте пока нет кадров диагностики.','empty');return panel;}
+
+  const label=pmcText(panel,'label','Источник и срок диагностики');
+  const select=document.createElement('select');select.id='pmcArchiveFrame';label.append(select);
+  const details=document.createElement('div');details.id='pmcArchiveFrameDetails';panel.append(details);
+  for(const [index,frame] of frames.entries()){
+    const option=new Option(`${PMC_SOURCE_LABELS[frame.source]||frame.source} · ${pmcTime(frame.valid_time)}${frame.status==='error'?' · ошибка':''}`,String(index));
+    select.add(option);
+  }
+  const firstCompleted=frames.findIndex(frame=>frame.status==='completed'&&frame.result);
+  if(firstCompleted>=0)select.selectedIndex=firstCompleted;
+  function showFrame(){
+    details.replaceChildren();
+    const frame=frames[Number(select.value)],result=frame.result;
+    if(frame.status!=='completed'||!result){pmcText(details,'p',frame.error||'Диагностика срока недоступна.','error-text');return;}
+    const grid=result.grid||{},candidates=Array.isArray(result.candidates)?result.candidates:[];
+    pmcText(details,'h5',`Кандидаты · ${num(result.candidate_count??result.candidates?.length,0)}`);
+    if(result.algorithm_id||result.algorithm_version)pmcText(details,'p',[result.algorithm_id,result.algorithm_version].filter(Boolean).join(' '),'micro');
+    if(grid.crs)pmcText(details,'p',`Сетка ${grid.crs} · ${num(grid.width,0)} × ${num(grid.height,0)} · ζ, с⁻¹`,'micro');
+    if(candidates.length){
+      const list=pmcText(details,'ul','','pmc-candidate-peaks');
+      for(const candidate of candidates){
+        const peak=candidate['peak_850hpa_relative_vorticity_s-1'];
+        pmcText(list,'li',`${candidate.candidate_id||'Кандидат'} · пик ${Number.isFinite(peak)?peak.toExponential(3)+' с⁻¹':'не указан'}`);
+      }
+      if(grid.crs){
+        const button=pmcText(details,'button','Показать пики на карте','tonal');button.type='button';
+        const status=pmcText(details,'p','','micro');status.setAttribute('role','status');
+        button.onclick=()=>{
+          if(!pmcDrawOverlay(result)){status.textContent=`Пики вне текущей карты или нужна проекция ${grid.crs}.`;return;}
+          $('#pmcArchiveDialog').close();toast(`Пики модельных кандидатов · ${PMC_SOURCE_LABELS[frame.source]||frame.source} · ${pmcTime(frame.valid_time)}`);
+        };
+      }
+    }else if(Array.isArray(result.candidates))pmcText(details,'p','В обработанной части сетки кандидаты не выделены.','hint');
+    const pair=satellite?.frames?.find(row=>row.source===frame.source&&pmcTime(row.valid_time)===pmcTime(frame.valid_time));
+    pmcRenderSatellite(pair,details);
+    const agreement=report.cross_source_candidate_agreement?.frames?.find(row=>pmcTime(row.valid_time)===pmcTime(frame.valid_time));
+    const pairs=(agreement?.pairs||[]).filter(pair=>pair.sources?.includes(frame.source));
+    for(const pair of pairs){
+      const names=pair.sources.map(source=>PMC_SOURCE_LABELS[source]||source).join(' / ');
+      pmcText(details,'p',`${names}: совпадений кандидатов ${num(pair.matches?.length,0)} · неоднозначных связей ${num(pair.unresolved_ambiguous_edges,0)}.`,'micro');
+    }
+    if(pairs.some(pair=>pair.sources.includes('era5')&&pair.sources.includes('carra2')))pmcText(details,'p','CARRA2 использует ERA5 в граничных условиях.','micro');
+    if(!pairs.length){
+      const missing=(agreement?.missing_sources||[]).map(source=>PMC_SOURCE_LABELS[source]||source);
+      pmcText(details,'p',missing.length?`Межмодельное сравнение недоступно. Нет кадра: ${missing.join(', ')}.`:'Межмодельное сравнение для этого кадра недоступно.','micro');
+    }
+    pmcRenderMethod(result,details);
+  }
+  select.addEventListener('change',showFrame);showFrame();return panel;
+}
 function pmcRenderArchiveEvidence(report,root){
   const rows=[];for(const group of Array.isArray(report?.tracks_by_source)?report.tracks_by_source:[]){
     for(const evidence of Array.isArray(group?.candidate_emergence_evidence)?group.candidate_emergence_evidence:[])rows.push(evidence);
@@ -352,28 +481,54 @@ function pmcRenderArchiveEvidence(report,root){
   const summary=document.createElement('summary');summary.textContent=`Первые появления модельных кандидатов · ${rows.length}`;panel.append(summary);
   const disclaimer=document.createElement('p');disclaimer.className='micro';disclaimer.textContent='Первая фиксация модельного кандидата не является физическим зарождением ПМЦ. Совпадения ниже показывают только точные сравнения кандидатов и спутниковых масок.';panel.append(disclaimer);
   if(rows.length){
+    const priorLabels={
+      left_censored_at_archive_window_start:'Начало архива',
+      previous_processed_frame_had_no_model_candidates:'Кандидатов не выделено',
+      previous_processed_frame_had_candidates:'Есть модельные кандидаты',
+      unknown_previous_expected_frame_failed:'Ошибка расчёта',
+      unknown_previous_expected_frame_missing:'Кадр отсутствует',
+    };
     const wrap=document.createElement('div');wrap.className='pmc-run-table';wrap.tabIndex=0;wrap.setAttribute('role','region');wrap.setAttribute('aria-label','Свидетельства первых появлений кандидатов');
     const table=document.createElement('table');table.innerHTML='<thead><tr><th>Источник</th><th>Первый срок UTC</th><th>Кандидат</th><th>Предыдущий кадр</th><th>Сравнение источников</th><th>Спутниковая маска</th></tr></thead>';
     const body=document.createElement('tbody');for(const e of rows){
-      const pairs=e.cross_source_evidence_at_first_detection?.pairs||[];
-      const cross=pairs.length?pairs.map(p=>`${p.other_source||'?'}: ${p.status==='matched_candidate'?'совпадение '+(p.matches||[]).map(m=>m.candidate_id||'?').join(', '):p.status||'неизвестно'}`).join('; '):(e.cross_source_evidence_at_first_detection?.status||'не сравнивалось');
+      const crossEvidence=e.cross_source_evidence_at_first_detection||{},pairs=crossEvidence.pairs||[];
+      const cross=pairs.length?pairs.map(p=>{
+        const name=PMC_SOURCE_LABELS[p.other_source]||p.other_source||'Источник';
+        return `${name}: ${p.status==='matched_candidate'?'совпадение '+(p.matches||[]).map(m=>m.candidate_id||'?').join(', '):'в радиусе совпадений нет'}`;
+      }).join(' · '):crossEvidence.status==='not_applicable_single_source'?'Выбран один источник':'Сравнение недоступно';
       const satellite=e.satellite_evidence_at_first_detection||{},observation=satellite.observation||{},coverage=satellite.coverage||{};
-      const sat=satellite.status==='comparison_only'?`${observation.source||'?'} / ${observation.product_id||'?'} · ${observation.observation_id||'?'} · покрыто ${coverage.observed_pixels??'?'} px`:(satellite.reason_code||satellite.status||'неизвестно');
-      const tr=document.createElement('tr');for(const value of [e.source,e.first_detected_time,e.candidate_id,e.prior_frame?.status,cross,sat]){const td=document.createElement('td');td.textContent=value===undefined||value===null?'—':String(value);tr.append(td);}body.append(tr);
+      const sat=satellite.status==='comparison_only'?`${observation.source||'?'} / ${observation.product_id||'?'} · покрыто ${num(coverage.observed_pixels,0)} пикселей`:'Неизвестно';
+      const prior=priorLabels[e.prior_frame?.status]||'Неизвестно';
+      const tr=document.createElement('tr');
+      for(const value of [PMC_SOURCE_LABELS[e.source]||e.source,e.first_detected_time,e.candidate_id,prior,cross,sat])pmcText(tr,'td',value??'—');
+      body.append(tr);
     }
     table.append(body);wrap.append(table);panel.append(wrap);
   }else{const empty=document.createElement('p');empty.className='empty';empty.textContent='Для этого отчёта нет записей о первых появлениях.';panel.append(empty);}
   root.append(panel);
 }
 async function pmcShowArchiveEvidence(id,root){
-  const button=document.createElement('button');button.type='button';button.className='tonal';button.textContent='Показать первые появления и сравнения';
-  button.onclick=async()=>{button.disabled=true;try{const report=await api('/api/pmc/archive/report?id='+encodeURIComponent(id));pmcRenderArchiveEvidence(report,root);button.remove();}catch(e){button.disabled=false;pmcFeedback('Отчёт о первых появлениях недоступен: '+e.message,'error-text');}};
+  const button=document.createElement('button');button.type='button';button.className='tonal';button.textContent='Показать диагностику и сравнение';
+  const status=pmcText(root,'p','','micro');status.setAttribute('role','status');
+  button.onclick=async()=>{
+    button.disabled=true;status.textContent='Загружаю сохранённую диагностику…';
+    try{
+      const report=await api('/api/pmc/archive/report?id='+encodeURIComponent(id));
+      if(button.parentElement!==root)return;
+      const panel=pmcRenderArchiveDiagnostics(report);pmcRenderArchiveEvidence(report,panel);root.append(panel);
+      status.remove();button.remove();
+    }catch(e){
+      if(button.parentElement!==root)return;
+      button.disabled=false;status.textContent='Не удалось прочитать отчёт: '+e.message;
+    }
+  };
   root.append(button);
 }
 async function pmcRefreshArchiveTask(){
   const root=$('#pmcArchiveTask');if(!root)return;try{const task=await api('/api/pmc/archive/state');root.replaceChildren();
-    if(task.status==='idle'){root.textContent='Архивный анализ ещё не запускался.';$('#pmcArchiveResume').hidden=true;await pmcRefreshArchivePrepare();return;}
-    const p=document.createElement('p');p.textContent=`${task.message||task.status} · обработано ${task.completed||0} из ${task.total||0}${task.failed?` · ошибок ${task.failed}`:''}`;root.append(p);
+    root.dataset.status=task.status;
+    if(task.status==='idle'){pmcText(root,'p','Архивный анализ ещё не запускался.','empty').setAttribute('role','status');$('#pmcArchiveResume').hidden=true;$('#pmcArchiveCancel').hidden=true;await pmcRefreshArchivePrepare();return;}
+    const p=pmcText(root,'p',`${task.message||task.status} · обработано ${task.completed||0} из ${task.total||0}${task.failed?` · ошибок ${task.failed}`:''}`);p.setAttribute('role','status');
     if(task.id){const report=document.createElement('a');report.className='text-button';report.href='/api/pmc/archive/report?id='+encodeURIComponent(task.id);report.download=`pmc-archive-${task.id}.json`;report.textContent='Скачать текущий отчёт JSON';root.append(report);if(task.status!=='running')pmcShowArchiveEvidence(task.id,root);}
     $('#pmcArchiveCancel').hidden=task.status!=='running';$('#pmcArchiveResume').hidden=!(task.resume_available&&['interrupted','cancelled','error','partial'].includes(task.status));
     await pmcRefreshArchivePrepare();
