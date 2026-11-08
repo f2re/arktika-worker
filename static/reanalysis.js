@@ -148,7 +148,7 @@ function renderDerived(){
   const root=$('#derivedAdapters');if(!root)return;
   const selected={};root.querySelectorAll('[data-derived-input]').forEach(el=>{selected[`${el.dataset.adapter}:${el.dataset.derivedInput}`]=el.value;});
   const openDetails=new Set([...root.querySelectorAll('details[data-derived-detail]')].filter(el=>el.open).map(el=>el.dataset.derivedDetail));
-  if(!DERIVED.adapters.length){root.innerHTML='<p class="empty">Нет зарегистрированных адаптеров производных продуктов.</p>';return;}
+  if(!DERIVED.adapters.length){root.innerHTML=`<p class="empty">Нет зарегистрированных адаптеров производных продуктов.</p><section class="derived-history"><h4>Сохранённые производные продукты · ${DERIVED.products.length}</h4>${DERIVED.products.length?DERIVED.products.map(derivedProductCard).join(''):'<p class="empty">Пока нет выполненных производных расчётов.</p>'}</section>`;return;}
   root.innerHTML=DERIVED.adapters.map(a=>{
     const maturity={implemented:'Рабочий расчёт',experimental:'Эксперимент',planned:'Планируется'}[a.maturity]||'Статус неизвестен';
     const inputHtml=a.inputs.map(input=>`<label>${escape(({u:'Восточная компонента u',v:'Северная компонента v'})[input]||input)}<select data-derived-input="${escape(input)}" data-adapter="${escape(a.id)}">${derivedFieldOptions(a,input)}</select></label>`).join('');

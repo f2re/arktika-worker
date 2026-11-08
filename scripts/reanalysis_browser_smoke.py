@@ -76,7 +76,7 @@ def main():
                 mount(page,ROOT,server,a.bridge)
                 check('Запуск без спутниковых файлов', '()=>typeof FIELDS!=="undefined"&&FIELDS.catalogue.length===3&&S.map!==null&&S.scene===null')
                 page.locator('#productRail').click()
-                check('Производные расчёты показывают пустой и недоступный вход', '()=>document.querySelector("#derivedAdapters").textContent.includes("Нет подходящих сохранённых полей")&&document.querySelector("[data-derived-run=wind_speed]").disabled')
+                check('Производные расчёты показывают пустой и недоступный вход', '()=>{const b=document.querySelector("[data-derived-run=wind_speed]");return !!b&&b.disabled&&document.querySelector("#derivedAdapters").textContent.includes("Нет подходящих сохранённых полей")}')
                 page.locator('#authOpen').click();page.locator('#sourcesDialog [data-field-source=era5]').click()
                 check('Источник ведёт непосредственно к полям', '()=>document.querySelector("#fieldDialog").open&&!document.querySelector("#calibrationDialog").open')
                 page.locator('#fieldDownload').click()
