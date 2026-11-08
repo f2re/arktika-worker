@@ -131,10 +131,11 @@ class Workstation(DerivedProductServiceMixin, ReanalysisMixin, SourceManagerMixi
   return result
  def experimental_pmc_candidates(self,identity,*,target_grid,satellite_observation_mask=None,
                                  satellite_observation_metadata=None,satellite_coverage_mask=None,
-                                 region_bounds=None):
+                                 region_bounds=None,observation_id=None,thresholds=None):
   """Run the explicitly experimental single-time detector on a chosen metric grid."""
-  from .pmc_detection import detect_candidates
+  from .pmc_detection import detect_candidates, validate_candidate_thresholds
   from .pmc_projection import MAX_DETECTOR_PROJECTION_SCALE_ERROR
+  thresholds=validate_candidate_thresholds(thresholds)
   field=self.experimental_vorticity_850(identity,target_grid=target_grid)
   passport=field['passport']
   if passport['projection_scale']['maximum_relative_error']>MAX_DETECTOR_PROJECTION_SCALE_ERROR:
@@ -142,6 +143,17 @@ class Workstation(DerivedProductServiceMixin, ReanalysisMixin, SourceManagerMixi
   coverage=passport['input_coverage']
   if coverage['valid_pixels']==0:
    raise ValueError('В целевой сетке нет валидного покрытия исходного поля; кандидаты не рассчитаны.')
+  observation=None
+  if observation_id is not None:
+   if any(value is not None for value in (satellite_observation_mask,satellite_observation_metadata,
+                                         satellite_coverage_mask)):
+    raise ValueError('Выберите ID сохранённого наблюдения или готовые маски сравнения.')
+   observation=self._pmc_observation_for_frame(passport['valid_time'],field['grid'],
+                                                observation_id=observation_id)
+   if 'unavailable_reason' not in observation:
+    satellite_observation_mask=observation['labels']
+    satellite_observation_metadata=observation['metadata']
+    satellite_coverage_mask=observation['coverage']
   domain_mask=None
   if region_bounds is not None:
    from .reanalysis.catalog import validate_area
@@ -160,7 +172,9 @@ class Workstation(DerivedProductServiceMixin, ReanalysisMixin, SourceManagerMixi
                            satellite_observation_mask=satellite_observation_mask,
                            satellite_observation_metadata=satellite_observation_metadata,
                            satellite_coverage_mask=satellite_coverage_mask,
-                           domain_mask=domain_mask)
+                           domain_mask=domain_mask,thresholds=thresholds)
+  if observation and 'unavailable_reason' in observation:
+   self._record_pmc_unknown_satellite_comparison(result,observation['unavailable_reason'])
   if region_bounds is not None:
    result['domain']={'geographic_bounds_north_west_south_east':list(region_bounds),
                      'mask':'pixel-centre lon/lat within selected rectangle'}

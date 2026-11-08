@@ -27,7 +27,9 @@ from .pmc_archive_run import build_archive_report
 from .pmc_archive_run import validate_grid as validate_pmc_archive_grid
 from .pmc_detection import ALGORITHM_ID as PMC_DETECTOR_ID
 from .pmc_detection import ALGORITHM_VERSION as PMC_DETECTOR_VERSION
-from .pmc_projection import reproject_observation_masks
+from .pmc_detection import _satellite_times as pmc_satellite_times
+from .pmc_detection import validate_candidate_thresholds
+from .pmc_projection import MAX_OBSERVATION_SOURCE_PIXELS, reproject_observation_masks
 from .reanalysis.adapters import get_runtime_adapter
 from .reanalysis.catalog import SOURCES, VERSION, catalogue, request_plan
 
@@ -54,7 +56,7 @@ class ReanalysisMixin:
             with MemoryFile(data) as mem, mem.open() as ds:
                 if ds.driver!='GTiff' or ds.count!=1:
                     raise ValueError(f'{label}: ожидается одноканальный GeoTIFF.')
-                if ds.width<1 or ds.height<1 or ds.width*ds.height>16_000_000:
+                if ds.width<1 or ds.height<1 or ds.width*ds.height>MAX_OBSERVATION_SOURCE_PIXELS:
                     raise ValueError(f'{label}: размер растра вне допустимых пределов.')
                 if ds.crs is None or not all(math.isfinite(v) for v in ds.transform[:6]):
                     raise ValueError(f'{label}: в растре отсутствует корректная сетка или CRS.')
@@ -400,6 +402,8 @@ class ReanalysisMixin:
     def _pmc_archive_frame_records(self, job):
         folder=self._pmc_archive_task_path(job.get('id'))/'frames'
         fields={item.get('id'):item for item in self.fields_state().get('fields',[])}
+        default_thresholds=validate_candidate_thresholds()
+        expected_thresholds=validate_candidate_thresholds(job.get('thresholds'))
         records=[]
         for identity in job.get('field_ids',[]):
             if not isinstance(identity,str) or not ID.fullmatch(identity):continue
@@ -422,6 +426,18 @@ class ReanalysisMixin:
                     or result.get('grid')!=job.get('target_grid')
                     or not isinstance(result.get('candidates'),list)
                     or result.get('candidate_count')!=len(result['candidates'])):continue
+            parameters=result.get('parameters',{})
+            if not isinstance(parameters,dict):continue
+            observed_thresholds={key:parameters[key] for key in default_thresholds if key in parameters}
+            if not observed_thresholds:
+                # Legacy records without parameter provenance can only be reused at the defaults.
+                if expected_thresholds!=default_thresholds:continue
+            else:
+                if observed_thresholds.keys()!=expected_thresholds.keys():continue
+                try:
+                    if validate_candidate_thresholds(observed_thresholds)!=expected_thresholds:continue
+                except ValueError:
+                    continue
             valid=True
             for candidate in result['candidates']:
                 rc=candidate.get('centroid_pixel_rc') if isinstance(candidate,dict) else None
@@ -462,6 +478,8 @@ class ReanalysisMixin:
                      'area':[float(x) for x in plan['area']]}
             build_pmc_archive_plan(request,credentials={},cached_fields=[])
             target_grid=validate_pmc_archive_grid(job.get('target_grid'))
+            if 'thresholds' in job and not isinstance(job['thresholds'],dict):raise ValueError()
+            thresholds=validate_candidate_thresholds(job.get('thresholds'))
         except (ValueError,TypeError,KeyError):
             return {'status':'idle','message':'Сохранённая архивная задача повреждена.'}
         return {'id':identity,'status':status,'message':str(job.get('message',''))[:500],
@@ -469,7 +487,7 @@ class ReanalysisMixin:
                 'updated_at':str(job.get('updated_at',''))[:64],
                 'plan':{'sources':list(plan['sources']),'start':plan['start'],'end':plan['end'],
                         'area':[float(x) for x in plan['area']]},
-                'field_ids':list(fields),'target_grid':target_grid,'total':len(fields),
+                'field_ids':list(fields),'target_grid':target_grid,'thresholds':thresholds,'total':len(fields),
                 'resume_available':bool(job.get('resume_available'))}
 
     def _pmc_archive_report_snapshot(self,job):
@@ -486,81 +504,70 @@ class ReanalysisMixin:
                     and isinstance(comparison,dict) and comparison.get('status')!='not_supplied'):
                 comparisons.append({'source':row.get('source'),'valid_time':row.get('valid_time'),
                                     'grid':result.get('grid'),'comparison':comparison})
-        return build_archive_report(task_id=identity,plan=job['plan'],expected_times=expected,
+        report=build_archive_report(task_id=identity,plan=job['plan'],expected_times=expected,
             interval_hours={source:SOURCES[source]['step_hours'] for source in job['plan']['sources']},
             frame_records=records,cached_fields=self.fields_state()['fields'],
             target_grid=job.get('target_grid'),satellite_comparisons=comparisons)
+        report['thresholds']=validate_candidate_thresholds(job.get('thresholds'))
+        return report
 
-    def _pmc_observation_for_frame(self, valid_time, target_grid):
+    def _pmc_observation_for_frame(self, valid_time, target_grid, *, observation_id=None):
         """Return one temporally eligible observation harmonized to the target grid.
 
-        Legacy observations match exact UTC. Interval observations match only
-        when the model instant falls inside the explicitly supplied closed scan
-        interval. Grid changes use nearest-neighbour for labels and coverage;
-        temporal or spatial alignment is not meteorological validation.
+        An explicit observation ID bypasses catalogue selection, but still
+        requires temporal and spatial alignment. A missing or corrupt explicit
+        ID raises an input error.
         """
+        from rasterio.errors import RasterioError
+
         frame_time=pmc_utc_hour(valid_time,'Срок кадра').isoformat().replace('+00:00','Z')
-        frame_stamp=pmc_utc_hour(frame_time,'Срок кадра')
-        def parse_scan_instant(value, name):
-            if not isinstance(value,str) or not re.search(r'(?:Z|\+00:00)$',value):
-                raise ValueError(f'{name} должен содержать явное смещение UTC.')
+        if observation_id is not None:
+            labels,coverage,metadata=self.pmc_observation(observation_id)
+        else:
+            observations=self.pmc_observations_state().get('observations',[])
+            matching=[]
+            for item in observations:
+                try:
+                    pmc_satellite_times(item,frame_time)
+                except (AttributeError,TypeError,ValueError,OverflowError):
+                    continue
+                matching.append(item)
+            if not matching:
+                return {'unavailable_reason':'no_eligible_observation'} if observations else None
+            if len(matching)!=1:
+                exact_legacy=all(item.get('scan_start_utc') is None and item.get('scan_end_utc') is None
+                                 for item in matching)
+                reason='duplicate_exact_time_observations' if exact_legacy else 'ambiguous_eligible_observations'
+                return {'unavailable_reason':reason}
             try:
-                parsed=datetime.fromisoformat(value.replace('Z','+00:00'))
-                if parsed.utcoffset()!=timezone.utc.utcoffset(parsed):raise ValueError()
-                return parsed.astimezone(timezone.utc)
-            except (ValueError,OverflowError):
-                raise ValueError(f'Некорректное время UTC: {name}.') from None
-        observation_state=self.pmc_observations_state()
-        observations=observation_state.get('observations',[])
-        matching=[]
-        for item in observations:
-            if not isinstance(item,dict):
-                continue
-            try:
-                start=item.get('scan_start_utc');end=item.get('scan_end_utc')
-                if start is None and end is None:
-                    listed_time=parse_scan_instant(item.get('valid_time'),'Срок наблюдения')
-                    eligible=listed_time==frame_stamp
-                elif isinstance(start,str) and isinstance(end,str):
-                    start_stamp=parse_scan_instant(start,'scan_start_utc')
-                    end_stamp=parse_scan_instant(end,'scan_end_utc')
-                    eligible=start_stamp<end_stamp and start_stamp<=frame_stamp<=end_stamp
-                else:
-                    eligible=False
-                if eligible:
-                    matching.append(item)
-            except (ValueError,TypeError):
-                continue
-        if not matching:
-            return {'unavailable_reason':'no_eligible_observation'} if observations else None
-        if len(matching)!=1:
-            exact_legacy=all(item.get('scan_start_utc') is None and item.get('scan_end_utc') is None
-                             for item in matching)
-            reason='duplicate_exact_time_observations' if exact_legacy else 'ambiguous_eligible_observations'
-            return {'unavailable_reason':reason}
+                labels,coverage,metadata=self.pmc_observation(matching[0].get('observation_id'))
+            except (OSError,TypeError,ValueError):
+                return {'unavailable_reason':'observation_grid_unavailable'}
         try:
-            labels,coverage,metadata=self.pmc_observation(matching[0].get('observation_id'))
-            observation_time=parse_scan_instant(metadata.get('valid_time'),'Срок наблюдения')
-            start=metadata.get('scan_start_utc');end=metadata.get('scan_end_utc')
-            interval_match=False
-            if isinstance(start,str) and isinstance(end,str):
-                interval_match=(parse_scan_instant(start,'scan_start_utc')<=frame_stamp
-                                <=parse_scan_instant(end,'scan_end_utc'))
-            if (not (observation_time==frame_stamp or interval_match)
-                    or metadata.get('status')!='imported_unverified'):
-                return {'unavailable_reason':'no_eligible_observation'}
-            source_grid=metadata.get('grid')
+            times=pmc_satellite_times(metadata,frame_time)
+        except (TypeError,ValueError,OverflowError):
+            return {'unavailable_reason':'no_eligible_observation'}
+        try:
             labels,coverage,regridding=reproject_observation_masks(
-                labels,coverage,source_grid=source_grid,target_grid=target_grid)
-        except (ValueError,OSError,TypeError):
+                labels,coverage,source_grid=metadata.get('grid'),target_grid=target_grid)
+        except (OSError,RasterioError,TypeError,ValueError):
             return {'unavailable_reason':'observation_grid_unavailable'}
         obs_meta={'source':metadata['source'],'product_id':metadata['product_id'],
-                  'valid_time':metadata['valid_time'],'observation_id':metadata['observation_id'],
-                  'grid':target_grid,'regridding':regridding}
-        if 'scan_start_utc' in metadata and 'scan_end_utc' in metadata:
-            obs_meta['scan_start_utc']=metadata['scan_start_utc']
-            obs_meta['scan_end_utc']=metadata['scan_end_utc']
+                  'observation_id':metadata['observation_id'],'grid':regridding['target_grid'],
+                  'regridding':regridding,**times}
         return {'labels':labels,'coverage':coverage,'metadata':obs_meta}
+
+    @staticmethod
+    def _record_pmc_unknown_satellite_comparison(result, reason):
+        status={
+            'no_eligible_observation':'unknown_no_eligible_observation',
+            'ambiguous_eligible_observations':'unknown_ambiguous_observations',
+            'duplicate_exact_time_observations':'unknown_ambiguous_observations',
+        }.get(reason,'unknown_unmatched')
+        result['satellite_comparison']={'status':status,'metrics':None,'reason_code':reason}
+        quality_control=result.get('passport',{}).get('quality_control')
+        if isinstance(quality_control,dict):
+            quality_control['satellite_comparison_status']=status
 
     def pmc_archive_state(self, data=None):
         self._fields_init()
@@ -570,7 +577,7 @@ class ReanalysisMixin:
             return {'status':'idle','message':'Архивная задача ещё не запускалась.'}
         records=self._pmc_archive_frame_records(job)
         return {k:copy.deepcopy(job[k]) for k in (
-            'id','status','message','created_at','updated_at','total','resume_available'
+            'id','status','message','created_at','updated_at','total','resume_available','thresholds'
         ) if k in job} | {'completed':sum(row.get('status')=='completed' for row in records),
                           'failed':sum(row.get('status')=='error' for row in records),
                           'processed':len(records)}
@@ -734,8 +741,10 @@ class ReanalysisMixin:
         return {'started':True,'id':identity,'status':'running'}
 
     def _run_pmc_archive_task(self, identity):
-        task_dir=self._pmc_archive_task_path(identity);frames_dir=task_dir/'frames';frames_dir.mkdir(parents=True,exist_ok=True)
         with self.lock:job=copy.deepcopy(self._pmc_archive_job)
+        if job.get('id')!=identity or job.get('status')!='running':
+            raise ValueError('Архивная задача больше не активна.')
+        task_dir=self._pmc_archive_task_path(identity);frames_dir=task_dir/'frames';frames_dir.mkdir(parents=True,exist_ok=True)
         try:
             completed_ids={row.get('field_id') for row in self._pmc_archive_frame_records(job)
                            if row.get('status')=='completed'}
@@ -755,14 +764,12 @@ class ReanalysisMixin:
                             options={'satellite_observation_mask':observation['labels'],
                                      'satellite_coverage_mask':observation['coverage'],
                                      'satellite_observation_metadata':observation['metadata']}
-                    result=self.experimental_pmc_candidates(field_id,target_grid=job['target_grid'],
-                                                           region_bounds=job['plan']['area'],**options)
+                    result=self.experimental_pmc_candidates(
+                        field_id,target_grid=job['target_grid'],region_bounds=job['plan']['area'],
+                        thresholds=job['thresholds'],**options)
                     if observation is not None and 'unavailable_reason' in observation:
-                        reason = observation['unavailable_reason']
-                        status = 'unknown_' + reason if reason in ('no_eligible_observation', 'ambiguous_eligible_observations') else 'unknown_unmatched'
-                        result['satellite_comparison']={
-                            'status': status, 'metrics': None,
-                            'reason_code': reason}
+                        self._record_pmc_unknown_satellite_comparison(
+                            result,observation['unavailable_reason'])
                     record={'field_id':field_id,'source':meta['source'],'valid_time':meta['time'],
                             'status':'completed','result':result}
                 except Cancelled:raise
@@ -804,8 +811,12 @@ class ReanalysisMixin:
 
     def pmc_archive_start(self,data):
         self._fields_init()
-        if not isinstance(data,dict) or set(data)!={'plan','field_ids','target_grid'}:
-            raise ValueError('Архивный запуск принимает plan, явный список field_ids и target_grid.')
+        required={'plan','field_ids','target_grid'}
+        if not isinstance(data,dict) or not required<=set(data) or set(data)-required-{'thresholds'}:
+            raise ValueError('Архивный запуск принимает plan, явный список field_ids, target_grid и необязательные thresholds.')
+        if 'thresholds' in data and not isinstance(data['thresholds'],dict):
+            raise ValueError('Пороги ПМЦ должны быть объектом thresholds.')
+        thresholds=validate_candidate_thresholds(data.get('thresholds'))
         planned=self.pmc_archive_plan(data['plan']);plan=planned['plan']
         ids=data['field_ids']
         if not isinstance(ids,list) or not ids or len(ids)>MAX_PMC_ARCHIVE_FIELDS:
@@ -834,7 +845,8 @@ class ReanalysisMixin:
             identity=uuid.uuid4().hex
             job={'id':identity,'status':'running','message':'Подготовка архивного расчёта',
                  'created_at':iso(now()),'updated_at':iso(now()),'plan':copy.deepcopy(plan),
-                 'field_ids':list(ids),'target_grid':target_grid,'total':len(ids),'resume_available':False}
+                 'field_ids':list(ids),'target_grid':target_grid,'thresholds':thresholds,
+                 'total':len(ids),'resume_available':False}
             self._pmc_archive_job=job;self._persist_pmc_archive_job()
             self.start('Архивный анализ кандидатов ПМЦ',lambda:self._run_pmc_archive_task(identity))
         return {'started':True,'id':identity,'status':'running','selected_steps':len(ids),
@@ -842,12 +854,18 @@ class ReanalysisMixin:
 
     def pmc_archive_resume(self,data):
         self._fields_init();identity=data.get('id') if isinstance(data,dict) else None
+        if isinstance(data,dict) and 'thresholds' in data:
+            raise ValueError('При возобновлении используются сохранённые пороги. Для новых порогов запустите новый архивный расчёт.')
         with self.lock:job=copy.deepcopy(self._pmc_archive_job)
         if identity!=job.get('id') or job.get('status') not in ('interrupted','cancelled','error','partial') or not job.get('resume_available'):
             raise ValueError('Эту архивную задачу нельзя возобновить.')
         for field_id in job.get('field_ids',[]):self.field(field_id)
         with self.lock:
             if self.busy:raise ValueError('Сначала завершите текущую операцию.')
+            if (self._pmc_archive_job.get('id')!=identity
+                    or self._pmc_archive_job.get('status')!=job['status']
+                    or not self._pmc_archive_job.get('resume_available')):
+                raise ValueError('Архивная задача изменилась. Проверьте её состояние перед возобновлением.')
             self._pmc_archive_job.update(status='running',message='Возобновление с последнего сохранённого срока.',resume_available=False)
             self._persist_pmc_archive_job()
             self.start('Продолжение архивного анализа ПМЦ',lambda:self._run_pmc_archive_task(identity))

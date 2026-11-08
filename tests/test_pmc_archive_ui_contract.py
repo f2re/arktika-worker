@@ -15,9 +15,9 @@ class PmcArchiveUiContractTests(unittest.TestCase):
         ):
             with self.subTest(element_id=element_id):
                 self.assertIn(f'id="{element_id}"', html)
-        self.assertIn("Экспериментальный план", html)
-        self.assertIn("не прогноз", html)
-        self.assertIn("совпадающей сеткой", html)
+        self.assertIn("Экспериментальная диагностика", html)
+        self.assertIn("согласует сетки", html)
+        self.assertLess(html.index('id="pmcArchiveTask"'), html.index('id="pmcArchiveRunner"'))
 
     def test_plan_is_a_plan_request_not_a_download_or_detector_run(self):
         source = (ROOT / "static/app.js").read_text(encoding="utf-8")
@@ -64,7 +64,8 @@ class PmcArchiveUiContractTests(unittest.TestCase):
         self.assertIn("plan.area.some((value,index)=>!Number.isFinite(Number(value))||Number(value)!==body.area[index])", planning)
         self.assertIn("area:plan.area", starting)
         self.assertIn("if(revision!==S.pmcArchivePlanRevision||S.pmcArchivePlan!==plan)throw Error", starting)
-        self.assertIn("api('/api/pmc/archive/run',{plan,field_ids,target_grid})", starting)
+        self.assertIn("const body={plan,field_ids,target_grid}", starting)
+        self.assertIn("api('/api/pmc/archive/run',body)", starting)
         # The selected region is part of the plan passed to run; the backend
         # uses that same plan area as the detector's geographic domain mask.
         service = (ROOT / "arktika/reanalysis_service.py").read_text(encoding="utf-8")

@@ -8,6 +8,8 @@ import urllib.error
 import urllib.request
 from unittest.mock import patch
 
+import numpy as np
+
 from server import LocalServer
 from arktika.workstation import Workstation
 
@@ -61,9 +63,45 @@ class PmcRunHttpTests(unittest.TestCase):
             self.request({'field_id':'wind-1','target_grid':grid})
         self.assertEqual(cm.exception.code,400)
 
+    def test_custom_peak_threshold_changes_detector_result_and_passport(self):
+        grid = dict(self.grid, width=15, height=15, resolution_x_m=60_000,
+                    resolution_y_m=60_000, transform=[60_000, 0, -450_000, 0, -60_000, 450_000])
+        values = np.zeros((15, 15))
+        values[4:11, 4:11] = 2e-4
+        passport = {
+            'source': 'era5', 'variable': 'relative_vorticity', 'level_hPa': 850,
+            'units': 's-1', 'valid_time': '2024-01-01T00:00:00Z', 'grid': grid,
+            'projection_scale': {'maximum_relative_error': 0.01},
+            'input_coverage': {'valid_pixels': 225},
+        }
+        field = {'passport': passport, 'values': values, 'grid': grid}
+        payload = {'field_id': 'synthetic-wind', 'target_grid': grid}
+        with patch.object(self.app, 'experimental_vorticity_850', return_value=field):
+            with self.request(payload) as response:
+                default = json.load(response)
+            with self.request({**payload, 'thresholds': {'peak_vorticity_s-1': 2.5e-4}}) as response:
+                custom = json.load(response)
+        self.assertEqual(default['candidate_count'], 1)
+        self.assertEqual(default['candidates'][0]['confirmation_status'], 'not_confirmed')
+        self.assertEqual(custom['candidate_count'], 0)
+        self.assertEqual(custom['parameters']['peak_vorticity_s-1'], 2.5e-4)
+        self.assertEqual(custom['detector_passport']['quality_control']['thresholds'], {
+            'minimum_vorticity_s-1': 1e-4, 'peak_vorticity_s-1': 2.5e-4,
+        })
+
+    def test_rejects_invalid_custom_thresholds_before_reading_field(self):
+        with patch.object(self.app, 'experimental_vorticity_850') as read:
+            for thresholds in (None, {'peak_vorticity_s-1': 0}, {'other': 1e-4}):
+                with self.subTest(thresholds=thresholds), self.assertRaises(urllib.error.HTTPError) as cm:
+                    self.request({'field_id': 'synthetic-wind', 'target_grid': self.grid,
+                                  'thresholds': thresholds})
+                self.assertEqual(cm.exception.code, 400)
+        read.assert_not_called()
+
     def test_success_returns_experimental_status_provenance_and_projected_centres(self):
         fake={
             'algorithm_id':'arktika.experimental_pmc_candidates','algorithm_version':'0.1.1',
+            'method_reference':'Fang et al. (2025)',
             'maturity':'experimental','source':'era5','valid_time':'2024-01-01T00:00:00Z',
             'candidate_count':1,'candidates':[{'candidate_id':'pmc-candidate-0001',
                 'classification':'candidate','confirmation_status':'not_confirmed','pixel_count':3,
@@ -85,6 +123,7 @@ class PmcRunHttpTests(unittest.TestCase):
         self.assertEqual(result['status'],'completed')
         self.assertEqual(result['maturity'],'experimental')
         self.assertEqual(result['candidate_count'],1)
+        self.assertEqual(result['method_reference'],'Fang et al. (2025)')
         self.assertEqual(result['field_passport']['source'],'era5')
         self.assertEqual(result['detector_passport']['algorithm']['id'],
                          'arktika.experimental_pmc_candidates')
@@ -103,8 +142,7 @@ class PmcRunHttpTests(unittest.TestCase):
             self.assertEqual(cm.exception.code,400)
             run.assert_called_once()
 
-    def test_optional_observation_id_is_loaded_and_passed_with_coverage(self):
-        import numpy as np
+    def test_optional_observation_id_is_forwarded_for_alignment(self):
         fake={
             'algorithm_id':'arktika.experimental_pmc_candidates','algorithm_version':'0.1.1',
             'maturity':'experimental','source':'era5','valid_time':'2024-01-01T00:00:00Z',
@@ -114,19 +152,23 @@ class PmcRunHttpTests(unittest.TestCase):
                         'quantity_kind':'candidate_catalog'},
             'satellite_comparison':{'status':'comparison_only','metrics':None},
             'parameters':{},'limitations':['Метеорологическая точность не проверялась.']}
-        labels=np.zeros((3,4),dtype=np.uint8);coverage=np.ones((3,4),dtype=np.uint8)
-        metadata={'source':'test','product_id':'mask-v1','observation_id':'a'*24,
-                  'valid_time':'2024-01-01T00:00:00Z','grid':self.grid}
-        with patch.object(self.app,'pmc_observation',return_value=(labels,coverage,metadata)) as load, \
-             patch.object(self.app,'experimental_pmc_candidates',return_value=fake) as run:
+        with patch.object(self.app,'experimental_pmc_candidates',return_value=fake) as run:
             with self.request({'field_id':'explicit-cache-id','target_grid':self.grid,
                                'observation_id':'a'*24}) as response:
                 result=json.loads(response.read())
-        load.assert_called_once_with('a'*24)
         run.assert_called_once_with('explicit-cache-id',target_grid=self.grid,
-            satellite_observation_mask=labels,satellite_coverage_mask=coverage,
-            satellite_observation_metadata=metadata)
+                                    observation_id='a'*24)
         self.assertEqual(result['satellite_comparison']['status'],'comparison_only')
+
+    def test_endpoint_rejects_missing_or_non_string_explicit_observation_id(self):
+        for observation_id in (None, '', []):
+            with self.subTest(observation_id=observation_id), \
+                 patch.object(self.app,'experimental_pmc_candidates') as run:
+                with self.assertRaises(urllib.error.HTTPError) as cm:
+                    self.request({'field_id':'explicit-cache-id','target_grid':self.grid,
+                                  'observation_id':observation_id})
+                self.assertEqual(cm.exception.code,400)
+                run.assert_not_called()
 
     def test_multipart_import_accepts_only_named_three_part_local_package(self):
         metadata={'schema_version':'arktika.pmc_satellite_observation.v1'}

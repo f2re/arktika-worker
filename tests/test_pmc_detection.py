@@ -10,6 +10,7 @@ from arktika.pmc_detection import (
     _local_peak_diagnostics,
     _smooth_uniform_radius,
     detect_candidates,
+    validate_candidate_thresholds,
 )
 
 
@@ -29,9 +30,10 @@ class PmcDetectionTests(unittest.TestCase):
         values[4:11, 4:11] = 2.0e-4
         return values
 
-    def run_detector(self, **kwargs):
+    def run_detector(self, values=None, **kwargs):
         return detect_candidates(
-            self.field(), grid=self.grid, valid_time="2025-01-02T06:00:00Z",
+            self.field() if values is None else values,
+            grid=self.grid, valid_time="2025-01-02T06:00:00Z",
             source="ERA5: test fixture", source_field_metadata={
                 "source": "ERA5: test fixture", "variable": "relative_vorticity",
                 "level_hPa": 850, "units": "s-1", "valid_time": "2025-01-02T06:00:00Z",
@@ -70,6 +72,45 @@ class PmcDetectionTests(unittest.TestCase):
         self.assertEqual("2025-01-02T06:00:00Z", result["passport"]["valid_time"])
         self.assertEqual(self.grid, result["passport"]["grid"])
         self.assertEqual("not_assessed", result["passport"]["uncertainty"]["status"])
+
+    def test_raising_peak_threshold_excludes_candidate_and_records_applied_values(self):
+        self.assertEqual(1, self.run_detector()["candidate_count"])
+        result = self.run_detector(thresholds={"peak_vorticity_s-1": 2.1e-4})
+        applied = {"minimum_vorticity_s-1": 1.0e-4, "peak_vorticity_s-1": 2.1e-4}
+        self.assertEqual(0, result["candidate_count"])
+        self.assertEqual(applied, {key: result["parameters"][key] for key in applied})
+        self.assertEqual(applied, result["passport"]["quality_control"]["thresholds"])
+        self.assertEqual(1, self.run_detector()["candidate_count"])
+
+    def test_lower_thresholds_include_faint_candidate_and_its_local_peak(self):
+        values = self.field() * 0.55
+        self.assertEqual(0, self.run_detector(values)["candidate_count"])
+        result = self.run_detector(values, thresholds={
+            "minimum_vorticity_s-1": 8e-5,
+            "peak_vorticity_s-1": 1e-4,
+        })
+        self.assertEqual(1, result["candidate_count"])
+        candidate = result["candidates"][0]
+        self.assertEqual("not_confirmed", candidate["confirmation_status"])
+        self.assertEqual(1, candidate["peak_structure"]["local_maximum_count"])
+        self.assertAlmostEqual(1.1e-4, candidate["peak_850hpa_relative_vorticity_s-1"])
+
+    def test_thresholds_reject_invalid_values_and_unrecognized_parameters(self):
+        for overrides in (
+            [],
+            {"uniform_radius_km": 60},
+            {"peak_vorticity_s-1": 1e-5},
+            {"minimum_vorticity_s-1": 0},
+            {"minimum_vorticity_s-1": -1},
+            {"peak_vorticity_s-1": True},
+            {"peak_vorticity_s-1": "0.0002"},
+            {"peak_vorticity_s-1": None},
+            {"peak_vorticity_s-1": float("inf")},
+            {"peak_vorticity_s-1": float("nan")},
+            {"peak_vorticity_s-1": 10**400},
+        ):
+            with self.subTest(overrides=overrides), self.assertRaises(ValueError):
+                validate_candidate_thresholds(overrides)
 
     def test_multiple_isolated_local_maxima_partition_candidate_area(self):
         values = np.zeros((15, 15), dtype=float)
@@ -226,6 +267,74 @@ class PmcDetectionTests(unittest.TestCase):
         self.assertGreater(comparison["metrics"]["false_positive_pixels"], 0)
         self.assertEqual(0.0, comparison["metrics"]["intersection_over_union"])
         self.assertEqual(225, comparison["coverage"]["observed_pixels"])
+
+    def run_satellite_scan(self, valid_time, **interval):
+        return self.run_detector(
+            satellite_observation_mask=np.zeros((15, 15), dtype=bool),
+            satellite_coverage_mask=np.ones((15, 15), dtype=bool),
+            satellite_observation_metadata={
+                "source": "fixture satellite archive", "product_id": "test-visible-mask",
+                "valid_time": valid_time, "observation_id": "fixture-scan",
+                "grid": dict(self.grid), **interval,
+            },
+        )
+
+    def test_satellite_scan_accepts_model_instant_inside_or_on_either_boundary(self):
+        for start, end, nominal in (
+            ("05:59:59.500000", "06:00:00.900000", "06:00:00.100000"),
+            ("06:00:00", "06:15:00", "06:01:00"),
+            ("05:45:00", "06:00:00", "05:51:00"),
+        ):
+            with self.subTest(start=start, end=end, nominal=nominal):
+                comparison = self.run_satellite_scan(
+                    f"2025-01-02T{nominal}+00:00",
+                    scan_start_utc=f"2025-01-02T{start}+00:00",
+                    scan_end_utc=f"2025-01-02T{end}+00:00",
+                )["satellite_comparison"]
+                self.assertEqual("comparison_only", comparison["status"])
+                self.assertEqual(f"2025-01-02T{start}Z", comparison["observation"]["scan_start_utc"])
+                self.assertEqual(f"2025-01-02T{end}Z", comparison["observation"]["scan_end_utc"])
+                self.assertEqual(f"2025-01-02T{nominal}Z", comparison["observation"]["valid_time"])
+
+    def test_satellite_scan_rejects_incomplete_invalid_or_ineligible_intervals(self):
+        nominal = "2025-01-02T06:02:00Z"
+        start = "2025-01-02T05:55:00Z"
+        end = "2025-01-02T06:05:00Z"
+        for valid_time, interval in (
+            (nominal, {}),  # Legacy masks require the exact model instant.
+            (nominal, {"scan_start_utc": start}),
+            (nominal, {"scan_end_utc": end}),
+            (nominal, {"scan_start_utc": end, "scan_end_utc": end}),
+            (nominal, {"scan_start_utc": end, "scan_end_utc": start}),
+            (nominal, {"scan_start_utc": "2025-01-02T08:55:00+03:00", "scan_end_utc": end}),
+            (nominal, {"scan_start_utc": nominal, "scan_end_utc": end}),
+            ("2025-01-02T06:10:00Z", {"scan_start_utc": start, "scan_end_utc": end}),
+            ("2025-01-02T06:00:00Z", {"scan_start_utc": nominal, "scan_end_utc": end}),
+        ):
+            with self.subTest(valid_time=valid_time, interval=interval), self.assertRaises(ValueError):
+                self.run_satellite_scan(valid_time, **interval)
+
+    def test_satellite_scan_survives_detector_to_archive_report(self):
+        from arktika.pmc_archive_run import build_archive_report
+
+        result = self.run_satellite_scan(
+            "2025-01-02T06:02:00Z", scan_start_utc="2025-01-02T05:55:00Z",
+            scan_end_utc="2025-01-02T06:05:00Z",
+        )
+        source, stamp = result["source"], result["valid_time"]
+        report = build_archive_report(
+            task_id="t" * 32, plan={"sources": [source]},
+            expected_times={source: [stamp]}, interval_hours={source: 1},
+            frame_records=[{"field_id": "a" * 24, "source": source, "valid_time": stamp,
+                            "status": "completed", "result": result}],
+            cached_fields=[], target_grid=self.grid,
+            satellite_comparisons=[{"source": source, "valid_time": stamp, "grid": self.grid,
+                                    "comparison": result["satellite_comparison"]}],
+        )
+        satellite = report["satellite_comparison"]
+        self.assertEqual(1, satellite["matched_frame_count"])
+        self.assertEqual(0, satellite["unknown_frame_count"])
+        self.assertEqual("2025-01-02T06:05:00Z", satellite["frames"][0]["observation"]["scan_end_utc"])
 
     def test_satellite_comparison_retains_validated_rotated_source_grid_provenance(self):
         source_grid = {

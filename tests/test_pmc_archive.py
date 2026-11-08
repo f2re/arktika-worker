@@ -13,6 +13,7 @@ from arktika.pmc_archive import build_plan
 from arktika.workstation import Workstation
 from arktika.pmc_detection import ALGORITHM_ID as PMC_DETECTOR_ID
 from arktika.pmc_detection import ALGORITHM_VERSION as PMC_DETECTOR_VERSION
+from arktika.pmc_detection import validate_candidate_thresholds
 from arktika.reanalysis.catalog import request_plan
 
 
@@ -97,7 +98,13 @@ class PmcArchivePlanTests(unittest.TestCase):
                         if state['status']!='running':break
                         time.sleep(.01)
                     self.assertEqual('completed',state['status'])
-                    self.assertTrue(app.pmc_archive_report(started['id']))
+                    defaults=validate_candidate_thresholds()
+                    self.assertEqual(defaults,state['thresholds'])
+                    report=json.loads(app.pmc_archive_report(started['id']))
+                    self.assertEqual(defaults,report['thresholds'])
+                    legacy=dict(app._pmc_archive_job)
+                    legacy.pop('thresholds')
+                    self.assertEqual(defaults,app._sanitize_pmc_archive_job(legacy)['thresholds'])
             finally:
                 app.close()
 
@@ -114,11 +121,12 @@ class PmcArchivePlanTests(unittest.TestCase):
                   'resolution_x_m':10000,'resolution_y_m':10000}
             plan=request(sources=['era5'],end='2024-01-01T02:00:00Z',access_token='must-not-persist',
                          private_uri='https://example.invalid/private?signature=secret')
+            thresholds={'minimum_vorticity_s-1':0.00015,'peak_vorticity_s-1':0.0002}
             def result_for(identity,**kwargs):
                 meta=next(field for field in fields if field['id']==identity)
                 return {'algorithm_id':PMC_DETECTOR_ID,'algorithm_version':PMC_DETECTOR_VERSION,
                         'maturity':'experimental','source':meta['source'],'valid_time':meta['time'],
-                        'grid':dict(grid),'candidate_count':1,
+                        'grid':dict(grid),'parameters':kwargs['thresholds'],'candidate_count':1,
                         'candidates':[{'candidate_id':'candidate-'+meta['time'][11:13],
                             'centroid_pixel_rc':[10.0,10.0],'classification':'candidate',
                             'confirmation_status':'not_confirmed'}]}
@@ -126,18 +134,25 @@ class PmcArchivePlanTests(unittest.TestCase):
                 with patch.object(app,'fields_state',return_value={'fields':fields}), \
                      patch.object(app,'field',side_effect=lambda identity:next(f for f in fields if f['id']==identity)), \
                      patch.object(app,'experimental_pmc_candidates',side_effect=result_for):
-                    started=app.pmc_archive_start({'plan':plan,'field_ids':ids,'target_grid':grid})
+                    start_input={'plan':plan,'field_ids':ids,'target_grid':grid}
+                    for invalid in (None, {'peak_vorticity_s-1':True}):
+                        with self.subTest(thresholds=invalid),self.assertRaises(ValueError):
+                            app.pmc_archive_start({**start_input,'thresholds':invalid})
+                    self.assertEqual('idle',app.pmc_archive_state()['status'])
+                    started=app.pmc_archive_start({**start_input,'thresholds':thresholds})
                     persisted=(root/'state'/'reanalysis'/'pmc_archive_job.json').read_text(encoding='utf-8')
                     self.assertNotIn('must-not-persist',persisted)
                     self.assertNotIn('signature=secret',persisted)
                     self.assertEqual({'sources','start','end','area','step_count'},set(json.loads(persisted)['plan']))
+                    self.assertEqual(thresholds,json.loads(persisted)['thresholds'])
                     deadline=time.monotonic()+5
                     while time.monotonic()<deadline:
                         state=app.pmc_archive_state()
                         if state['status']!='running':break
                         time.sleep(.01)
                     self.assertEqual('partial',state['status'],state)
-                    report=__import__('json').loads(app.pmc_archive_report(started['id']))
+                    report=json.loads(app.pmc_archive_report(started['id']))
+                    self.assertEqual(thresholds,report['thresholds'])
                     self.assertEqual('candidate_only',report['output_status'])
                     self.assertEqual(3,report['coverage'][0]['expected_steps'])
                     self.assertEqual(2,report['coverage'][0]['processed_steps'])
@@ -153,6 +168,7 @@ class PmcArchivePlanTests(unittest.TestCase):
                     state=reopened.pmc_archive_state()
                 self.assertEqual('partial',state['status'])
                 self.assertEqual(2,state['completed'])
+                self.assertEqual(thresholds,state['thresholds'])
             finally:
                 reopened.close()
 
@@ -160,11 +176,19 @@ class PmcArchivePlanTests(unittest.TestCase):
             persisted=json.loads(job_path.read_text(encoding='utf-8'))
             persisted.update(status='running',resume_available=False)
             atomic_json(job_path,persisted)
+            frame_path=root/'state'/'reanalysis'/'pmc-archives'/started['id']/'frames'/(ids[1]+'.json')
+            frame=json.loads(frame_path.read_text(encoding='utf-8'))
+            frame['result']['parameters']=validate_candidate_thresholds()
+            atomic_json(frame_path,frame)
             resumed=Workstation(root/'state',download_dir=root/'downloads')
             try:
                 self.assertEqual('interrupted',resumed.pmc_archive_state()['status'])
                 with patch.object(resumed,'field',side_effect=lambda identity:next(f for f in fields if f['id']==identity)), \
-                     patch.object(resumed,'fields_state',return_value={'fields':fields}):
+                     patch.object(resumed,'fields_state',return_value={'fields':fields}), \
+                     patch.object(resumed,'experimental_pmc_candidates',side_effect=result_for) as detector:
+                    self.assertEqual(1,resumed.pmc_archive_state()['completed'])
+                    with self.assertRaisesRegex(ValueError,'сохранённые пороги'):
+                        resumed.pmc_archive_resume({'id':started['id'],'thresholds':{}})
                     response=resumed.pmc_archive_resume({'id':started['id']})
                     self.assertTrue(response['started'])
                     deadline=time.monotonic()+5
@@ -174,6 +198,10 @@ class PmcArchivePlanTests(unittest.TestCase):
                         time.sleep(.01)
                     self.assertEqual('partial',state['status'])
                     self.assertEqual(2,state['completed'])
+                    detector.assert_called_once_with(ids[1],target_grid=grid,
+                                                     region_bounds=plan['area'],thresholds=thresholds)
+                    report=json.loads(resumed.pmc_archive_report(started['id']))
+                    self.assertEqual(thresholds,report['thresholds'])
             finally:
                 resumed.close()
 
