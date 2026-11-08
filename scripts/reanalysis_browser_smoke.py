@@ -42,6 +42,7 @@ def main():
         paths={}
         for source,offset in [('era5',0),('merra2',2)]:
             path=root/('SYNTHETIC-'+source+'.nc');dataset(source,offset=offset).to_netcdf(path,engine='scipy');paths[source]=path
+            wind_path=root/('SYNTHETIC-'+source+'-wind.nc');dataset(source,variable='wind',offset=offset).to_netcdf(wind_path,engine='scipy');paths[source+'_wind']=wind_path
         server=LocalServer(('127.0.0.1',0),app);thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
         base='http://127.0.0.1:'+str(server.server_address[1])
         try:
@@ -62,17 +63,21 @@ def main():
                 def check(name,expression):
                     wait(expression);report['checks'].append({'name':name,'passed':True});print(name,flush=True)
                 def screenshot(name):page.screenshot(path=str(out/name))
-                def import_field(source,count):
+                def import_field(source,count,variable='t'):
                     page.locator('#fieldSource').select_option(source)
-                    page.locator('#fieldVariable').select_option('t');page.locator('#fieldLevel').select_option('850')
+                    page.locator('#fieldVariable').select_option(variable);page.locator('#fieldLevel').select_option('850')
                     page.locator('#fieldTime').fill('2024-01-01T00:00')
                     page.locator('#fieldPath').evaluate('(e)=>e.closest("details").open=true')
-                    page.locator('#fieldPath').fill(str(paths[source]));page.locator('#fieldImport').click()
+                    path_key=source+'_wind' if variable=='wind' else source
+                    page.locator('#fieldPath').fill(str(paths[path_key]));page.locator('#fieldImport').click()
                     check('Локальное поле '+source+' прошло настоящий обработчик',f'()=>FIELDS.stack.length==={count}&&FIELDS.job.status==="done"')
                     page.locator('#fieldClose').click()
                     check('Растровое наложение '+source+' показано',f'()=>document.querySelectorAll("#reanalysisLayers>g").length==={count}')
                 mount(page,ROOT,server,a.bridge)
                 check('Запуск без спутниковых файлов', '()=>typeof FIELDS!=="undefined"&&FIELDS.catalogue.length===3&&S.map!==null&&S.scene===null')
+                page.locator('#productRail').click()
+                check('Производные расчёты показывают пустой и недоступный вход', '()=>{const b=document.querySelector("[data-derived-run=wind_speed]");return !!b&&b.disabled&&document.querySelector("#derivedAdapters").textContent.includes("Нет подходящих сохранённых полей")}')
+                page.locator('#productRail').click()
                 page.locator('#authOpen').click();page.locator('#sourcesDialog [data-field-source=era5]').click()
                 check('Источник ведёт непосредственно к полям', '()=>document.querySelector("#fieldDialog").open&&!document.querySelector("#calibrationDialog").open')
                 page.locator('#fieldDownload').click()
@@ -178,6 +183,17 @@ def main():
                     page.close();page=context.new_page();page.on('pageerror',lambda e:report['browser_errors'].append(str(e)));mount(page,ROOT,server,True)
                 else: page.reload()
                 check('Стек восстанавливается после перезагрузки страницы','()=>typeof FIELDS!=="undefined"&&FIELDS.stack.length===3&&document.querySelectorAll("#reanalysisLayers>g").length===3')
+                page.locator('#productRail').click();page.locator('#fieldAddOpen').click();import_field('era5',4,'wind')
+                check('Каталог адаптера предлагает сохранённое поле ветра','()=>document.querySelector("[data-derived-run=wind_speed]")&&!document.querySelector("[data-derived-run=wind_speed]").disabled&&document.querySelector("[data-derived-input=u]").value===document.querySelector("[data-derived-input=v]").value')
+                page.route('**/api/derived-adapters/run',lambda route:route.fulfill(status=400,content_type='application/json',body=json.dumps({'error':'Синтетическая ошибка проверки интерфейса'})))
+                page.locator('[data-derived-run="wind_speed"]').click()
+                check('Ошибка расчёта отображается без потери выбора входов','()=>document.querySelector("#derivedStatus").textContent.includes("Синтетическая ошибка")&&document.querySelector("[data-derived-input=u]").value===document.querySelector("[data-derived-input=v]").value')
+                page.unroute('**/api/derived-adapters/run')
+                page.locator('[data-derived-run="wind_speed"]').click()
+                check('Рабочий адаптер создаёт паспорт и скачиваемый числовой продукт','()=>document.querySelector(".derived-result details")&&document.querySelector(".derived-download")?.getAttribute("href").endsWith("/values.npz")&&document.querySelector(".derived-result").textContent.includes("не карта")')
+                artifact=page.request.get(base+page.locator('.derived-download').get_attribute('href'))
+                assert artifact.status==200 and len(artifact.body())>100
+                report['checks'].append({'name':'Скачивание NPZ возвращает сохранённый массив','passed':True});print(report['checks'][-1]['name'],flush=True)
                 page.locator('#authOpen').click();page.locator('#sourcesDialog [data-field-source=carra2]').click()
                 page.locator('#fieldTime').fill('2024-01-01T01:00');page.locator('#fieldDownload').click()
                 check('Промежуточный прогноз CARRA2 не подменяет анализ','()=>document.querySelector("#fieldError").textContent.includes("шагом 3")')

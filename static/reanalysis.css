@@ -21,3 +21,10 @@
 @media(max-width:600px){#fieldDialog .row{flex-wrap:wrap}#fieldDialog .row>label{min-width:130px}#fieldDialog .dialog-footer button{font-size:12px}#fieldCache article{align-items:flex-start}}
 
 .field-probe-row strong{font-size:13px;line-height:1.5}.field-probe-row b{display:block;font-size:21px;margin:5px 0}.field-probe-row span{display:block;font-size:11px;color:var(--muted)}
+#derivedProductPanel{padding-top:14px}#derivedProductPanel h3{margin:0;font-size:14px}
+.derived-adapter-card,.derived-result{border:1px solid var(--line);border-radius:12px;padding:12px;margin:10px 0;background:var(--surface)}
+.derived-adapter-card h4,.derived-history h4{margin:0;font-size:13px}.derived-maturity{font-size:11px;color:var(--muted)}
+.derived-inputs{display:grid;grid-template-columns:1fr 1fr;gap:8px}.derived-inputs label{font-size:12px}.derived-inputs select{width:100%;font-size:11px}
+.derived-result p{overflow-wrap:anywhere}.derived-result pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:10px;max-height:320px;overflow:auto;background:var(--surface);padding:8px;border-radius:6px}
+.derived-download{display:inline-block;text-decoration:none}.derived-history{border-top:1px solid var(--line);margin-top:14px;padding-top:12px}
+@media(max-width:600px){.derived-inputs{grid-template-columns:1fr}}
