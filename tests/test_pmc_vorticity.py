@@ -2,6 +2,7 @@
 import unittest
 
 import numpy as np
+from pyproj import Transformer
 
 from arktika.pmc_vorticity import EARTH_RADIUS_M, derive_relative_vorticity_850
 
@@ -105,7 +106,7 @@ class RelativeVorticityTests(unittest.TestCase):
                                    expected[2:-2, 2:-2], rtol=2e-4, atol=2e-10)
         self.assertEqual(result["passport"]["grid"]["grid_type"],
                          "curvilinear_latitude_longitude")
-        self.assertEqual(result["passport"]["algorithm_version"], "0.2.0")
+        self.assertEqual(result["passport"]["algorithm_version"], "0.3.0")
 
     def test_curvilinear_mesh_recovers_longitudinal_derivative(self):
         lat_axis = np.linspace(60, 75, 31)
@@ -150,6 +151,32 @@ class RelativeVorticityTests(unittest.TestCase):
         np.testing.assert_allclose(result["values"][2:-2, 2:-2],
                                    expected[2:-2, 2:-2], rtol=1e-3, atol=2e-12)
 
+    def test_curvilinear_arctic_crop_ignores_polar_coordinates_outside_data_support(self):
+        # A polar-stereographic native mesh has rectangular storage, while a
+        # geographic requested window leaves masked corners reaching >87°N.
+        x, y = np.meshgrid(np.linspace(-2.5e6, 3.5e6, 121),
+                           np.linspace(2e6, -4e6, 121))
+        lon, lat = Transformer.from_crs("EPSG:3413", "EPSG:4326", always_xy=True).transform(x, y)
+        valid = (lat >= 60) & (lat <= 85) & (lon >= -25) & (lon <= 70)
+        rows, cols = np.nonzero(valid)
+        crop = np.s_[rows.min():rows.max() + 1, cols.min():cols.max() + 1]
+        lat, lon, valid = lat[crop], lon[crop], valid[crop]
+        self.assertGreater(float(lat.max()), 87)
+        omega = 2e-5
+        u = np.where(valid, omega * EARTH_RADIUS_M * np.cos(np.deg2rad(lat)), np.nan)
+        v = np.where(valid, 0.0, np.nan)
+        result = derive_relative_vorticity_850(u, v, lat, lon, field_metadata=passport(source="carra2"))
+        finite = np.isfinite(result["values"])
+        self.assertGreater(int(finite.sum()), 3000)
+        self.assertTrue(np.isnan(result["values"][~valid]).all())
+        np.testing.assert_allclose(result["values"][finite],
+                                   2 * omega * np.sin(np.deg2rad(lat[finite])), rtol=2e-5, atol=1e-11)
+        # The guard still protects an actually supplied polar wind sample.
+        unsupported = np.unravel_index(np.argmax(lat), lat.shape)
+        u[unsupported] = v[unsupported] = 0.0
+        with self.assertRaisesRegex(ValueError, "87 degrees"):
+            derive_relative_vorticity_850(u, v, lat, lon, field_metadata=passport(source="carra2"))
+
     def test_rejects_folded_curvilinear_mesh(self):
         lat_axis = np.linspace(60, 70, 9)
         lon_axis = np.linspace(0, 8, 9)
@@ -164,6 +191,33 @@ class RelativeVorticityTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "reference"):
             derive_relative_vorticity_850(np.ones((31, 21)), np.zeros((31, 21)), lat, lon,
                                           field_metadata=passport(wind_reference="unknown"))
+
+    def test_southern_solid_body_rotation_has_correct_negative_sign(self):
+        lat, lon = self.axes()
+        lat = -lat
+        phi = np.deg2rad(lat)[:, None]
+        omega = 2e-5
+        u = np.broadcast_to(omega * EARTH_RADIUS_M * np.cos(phi), (lat.size, lon.size))
+        result = derive_relative_vorticity_850(u, np.zeros_like(u), lat, lon,
+                                               field_metadata=passport())
+        np.testing.assert_allclose(result["values"],
+                                   np.broadcast_to(2 * omega * np.sin(phi), u.shape),
+                                   rtol=1.1e-4, atol=2e-11)
+
+    def test_masked_coordinate_axis_is_rejected(self):
+        lat, lon = self.axes()
+        lat = np.ma.array(lat, mask=False)
+        lat.mask[10] = True
+        with self.assertRaisesRegex(ValueError, "finite"):
+            derive_relative_vorticity_850(np.ones((lat.size, lon.size)),
+                                          np.zeros((lat.size, lon.size)), lat, lon,
+                                          field_metadata=passport())
+
+    def test_unresolved_latitude_spacing_is_rejected_like_longitude_spacing(self):
+        lat, lon = np.array([40.0, 60.0, 80.0]), np.arange(3.0)
+        with self.assertRaisesRegex(ValueError, "latitude spacing"):
+            derive_relative_vorticity_850(np.ones((3, 3)), np.zeros((3, 3)), lat, lon,
+                                          field_metadata=passport())
 
     def test_requires_immutable_input_field_digest(self):
         lat, lon = self.axes()

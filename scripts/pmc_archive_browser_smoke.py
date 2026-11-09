@@ -408,7 +408,7 @@ def main():
                             layer?.querySelectorAll('[data-candidate=e1]').length === 1 &&
                             label.includes('ERA5') && label.includes('2024-01-01') && label.includes('UTC');
                     }""")
-                    page.locator('[data-task="pmc_archive"]').click()
+                    page.locator('#pmcAnalysisOpen').click()
                     show_diagnostics.click()
                     page.locator("#pmcArchiveDiagnostics").wait_for(state="visible")
                     frame_details.get_by_text("Формула и пороги", exact=True).click()

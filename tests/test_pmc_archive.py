@@ -42,7 +42,8 @@ class PmcArchivePlanTests(unittest.TestCase):
 
     def test_matching_cached_wind_fields_are_reported_but_not_treated_as_derived_results(self):
         fields = [{"source": "era5", "variable": "wind", "level": 850,
-                   "time": "2024-01-01T00:00:00Z"}]
+                   "time": "2024-01-01T00:00:00Z", "area": request()['area'],
+                   "time_kind": "instantaneous_analysis"}]
         plan = build_plan(request(sources=["era5"]), credentials={}, cached_fields=fields)
         self.assertEqual(plan["sources"][0]["cached_step_count"], 1)
         self.assertEqual(plan["sources"][0]["missing_step_count"], 6)
@@ -77,7 +78,7 @@ class PmcArchivePlanTests(unittest.TestCase):
             root=Path(temp);app=Workstation(root/'state',download_dir=root/'downloads')
             identity='c'*24
             field={'id':identity,'source':'carra2','variable':'wind','level':850,
-                   'time_kind':'instantaneous_analysis','time':'2024-01-01T00:00:00Z'}
+                   'time_kind':'instantaneous_analysis','time':'2024-01-01T00:00:00Z','area':request()['area']}
             grid={'crs':'EPSG:3413','width':20,'height':20,
                   'transform':[10000,0,-100000,0,-10000,100000],
                   'resolution_x_m':10000,'resolution_y_m':10000}
@@ -113,9 +114,9 @@ class PmcArchivePlanTests(unittest.TestCase):
             root=Path(temp);app=Workstation(root/'state',download_dir=root/'downloads')
             ids=['a'*24,'b'*24]
             fields=[{'id':ids[0],'source':'era5','variable':'wind','level':850,
-                     'time_kind':'instantaneous_analysis','time':'2024-01-01T00:00:00Z'},
+                     'time_kind':'instantaneous_analysis','time':'2024-01-01T00:00:00Z','area':request()['area']},
                     {'id':ids[1],'source':'era5','variable':'wind','level':850,
-                     'time_kind':'instantaneous_analysis','time':'2024-01-01T02:00:00Z'}]
+                     'time_kind':'instantaneous_analysis','time':'2024-01-01T02:00:00Z','area':request()['area']}]
             grid={'crs':'EPSG:3413','width':20,'height':20,
                   'transform':[10000,0,-100000,0,-10000,100000],
                   'resolution_x_m':10000,'resolution_y_m':10000}
@@ -216,7 +217,7 @@ class PmcArchivePlanTests(unittest.TestCase):
             metas=[]
             def field_process(payload,**kwargs):
                 meta={'id':payload['identity'],'source':'era5','variable':'wind','level':850,
-                      'time_kind':'instantaneous_analysis','time':payload['plan']['time']}
+                      'time_kind':'instantaneous_analysis','time':payload['plan']['time'],'area':payload['plan']['area']}
                 metas.append(meta)
                 return {'field':meta,'cached':False}
             def load_field(identity):
@@ -258,7 +259,7 @@ class PmcArchivePlanTests(unittest.TestCase):
             meta={'id':request_plan({'source':'era5','variable':'wind','level':850,
                                     'time':'2024-01-01T00:00:00Z','area':plan['area']})['key'],
                   'source':'era5','variable':'wind','level':850,
-                  'time_kind':'instantaneous_analysis','time':'2024-01-01T00:00:00Z'}
+                  'time_kind':'instantaneous_analysis','time':'2024-01-01T00:00:00Z','area':plan['area']}
             completed=[]
             def load_field(identity):
                 if completed:return meta

@@ -42,7 +42,7 @@ def trace_isolines(values: np.ndarray, level: float,
     ``incomplete_data``, ``no_contour``, or ``invalid_input``. Lines are
     included for inspection even when the overall status fails closed.
     """
-    array = np.asarray(values, dtype=float)
+    array = np.ma.asarray(values, dtype=float).filled(np.nan)
     try:
         contour_level = float(level)
     except (TypeError, ValueError):

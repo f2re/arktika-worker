@@ -17,8 +17,12 @@ def reproject_vorticity_to_grid(values, latitude, longitude, *, target_grid, sou
         "algorithm_id": "test-vorticity", "algorithm_version": "1.0.0",
         "grid": {"crs": "EPSG:4326", "grid_id": "fixture"},
     }
+    source_passport.setdefault("quantity", "relative_vorticity")
+    source_passport.setdefault("units", "s-1")
+    source_passport.setdefault("level_hPa", 850)
     if "coordinate_sha256" not in source_passport.get("grid", {}):
-        phi, lam, _ = _coordinates(latitude, longitude, np.asarray(values).shape)
+        phi, lam, _ = _coordinates(latitude, longitude, np.asarray(values).shape,
+                                   valid_mask=np.isfinite(np.ma.asarray(values, dtype=float).filled(np.nan)))
         coordinates = np.ascontiguousarray(np.stack((phi, lam), axis=0)).astype("<f8")
         source_passport["grid"]["coordinate_sha256"] = hashlib.sha256(coordinates.tobytes()).hexdigest()
     return _reproject_vorticity_to_grid(values, latitude, longitude,
@@ -79,6 +83,30 @@ class PmcProjectionTests(unittest.TestCase):
         result = reproject_vorticity_to_grid(field, self.lat, self.lon, target_grid=self.grid)
         np.testing.assert_allclose(result["values"][np.isfinite(result["values"])], 3.25, atol=1e-5)
 
+    def test_scale_check_uses_valid_window_not_native_grid_masked_extremes(self):
+        lat = np.linspace(35.0, 90.0, 111)
+        lon = np.linspace(20.0, 30.0, 21)
+        field = np.full((len(lat), len(lon)), np.nan)
+        field[(lat >= 68) & (lat <= 75), :] = 2e-4
+        target = target_grid(np.array([68.0, 75.0]), lon, crs="EPSG:3413", size=64)
+        result = reproject_vorticity_to_grid(field, lat, lon, target_grid=target)
+        self.assertTrue(np.isfinite(result["values"]).any())
+        self.assertLess(result["passport"]["projection_scale"]["maximum_relative_error"], 0.05)
+        self.assertEqual("finite_reprojected_vorticity_cells", result["passport"]["projection_scale"]["support"])
+
+    def test_scale_check_does_not_include_cached_data_outside_selected_target(self):
+        lat = np.linspace(40.0, 86.0, 93)
+        lon = np.linspace(20.0, 30.0, 21)
+        field = np.full((len(lat), len(lon)), 2e-4)
+        target = target_grid(np.array([68.0, 75.0]), lon, crs="EPSG:3413", size=64)
+        result = reproject_vorticity_to_grid(field, lat, lon, target_grid=target)
+        self.assertLess(result["passport"]["projection_scale"]["maximum_relative_error"], 0.05)
+
+    def test_no_source_support_cannot_report_zero_projection_error(self):
+        with self.assertRaisesRegex(ValueError, "нет валидного покрытия"):
+            reproject_vorticity_to_grid(np.full((51, 51), np.nan), self.lat, self.lon,
+                                         target_grid=self.grid)
+
     def test_nodata_hole_and_outside_support_remain_missing(self):
         field = np.ones((self.lat.size, self.lon.size), dtype=np.float32)
         field[25, 25] = np.nan
@@ -106,12 +134,13 @@ class PmcProjectionTests(unittest.TestCase):
     def test_unwraps_dateline_and_records_source_affine(self):
         lat = np.linspace(65, 70, 11)
         lon = np.array([178, 178.4, 178.8, 179.2, 179.6, -180, -179.6, -179.2, -178.8, -178.4, -178])
-        grid = target_grid(lat, np.array([178.0, 182.0]))
-        grid["width"] = grid["height"] = 20
-        grid["transform"] = from_bounds(*transform_bounds("EPSG:4326", "EPSG:3857", 178, 65, 182, 70), 20, 20)
-        grid["resolution_x_m"] = abs(grid["transform"].a)
-        grid["resolution_y_m"] = abs(grid["transform"].e)
+        # Polar stereographic has continuous metric support across the
+        # dateline. A 20-cell global Web-Mercator bbox had no source centres
+        # in this narrow window, yet the old test only checked metadata.
+        grid = target_grid(lat, np.array([178.0, 182.0]), crs="EPSG:3413", size=20)
         result = reproject_vorticity_to_grid(np.ones((11, 11)), lat, lon, target_grid=grid)
+        self.assertGreater(int(np.isfinite(result["values"]).sum()), 100)
+        np.testing.assert_allclose(result["values"][np.isfinite(result["values"])], 1.0)
         self.assertGreater(result["passport"]["source_grid"]["transform"][0], 0)
         self.assertAlmostEqual(result["passport"]["source_grid"]["transform"][2], 177.8)
 
@@ -176,6 +205,15 @@ class PmcProjectionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "do not match"):
             _reproject_vorticity_to_grid(source, self.lat, self.lon, target_grid=self.grid,
                                          source_passport=passport)
+
+    def test_cannot_relabel_temperature_other_level_or_wrong_units_as_vorticity(self):
+        for change in ({"quantity": "temperature"}, {"units": "K"}, {"level_hPa": 500}):
+            passport = {"source": "era5", "valid_time": "2024-01-01T00:00:00Z",
+                        "algorithm_id": "test-field", "algorithm_version": "1.0.0",
+                        "grid": {"crs": "EPSG:4326"}, **change}
+            with self.subTest(change=change), self.assertRaisesRegex(ValueError, "850-hPa relative vorticity"):
+                reproject_vorticity_to_grid(np.ones((51, 51)), self.lat, self.lon,
+                                             target_grid=self.grid, source_passport=passport)
 
     def test_binary_observation_masks_reproject_with_nearest_and_preserve_unknown_coverage(self):
         source = {"crs": "EPSG:3413", "width": 2, "height": 2,

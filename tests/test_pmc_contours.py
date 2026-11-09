@@ -89,6 +89,14 @@ class PmcContoursTests(unittest.TestCase):
         self.assertEqual("invalid_input", result["status"])
         self.assertEqual([], result["lines"])
 
+    def test_masked_backing_values_cannot_close_a_contour(self):
+        rows, cols = np.mgrid[:9, :9]
+        field = np.ma.array((rows - 4.1) ** 2 + (cols - 4.0) ** 2, mask=False)
+        field.mask[4, 2] = True
+        result = trace_isolines(field, 6.0)
+        self.assertIn(result["status"], {"open_contour", "incomplete_data"})
+        self.assertTrue(result["diagnostics"]["has_incomplete_data"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -28,7 +28,8 @@ from .product_styles import ProductStyleStore
 from .adapters import AdapterRegistry,WindSpeedAdapter
 from .saved_product_integrity import artifact_manifest,product_metadata_path,validate_saved_product
 from .derived_product_service import DerivedProductServiceMixin
-class Workstation(DerivedProductServiceMixin, ReanalysisMixin, SourceManagerMixin, AutoCalibrationMixin, ProductFlowMixin, AnalysisMixin, App):
+from .pmc_workspace import PmcWorkspaceMixin
+class Workstation(PmcWorkspaceMixin, DerivedProductServiceMixin, ReanalysisMixin, SourceManagerMixin, AutoCalibrationMixin, ProductFlowMixin, AnalysisMixin, App):
  def __init__(self,state_dir,download_dir=None,token='',config=None,client=None):
   self.config=config or {};super().__init__(state_dir,download_dir,token,client or AuthClient(token,self.config.get('oauth')))
   with self.store.lock,self.store.conn:
@@ -53,7 +54,9 @@ class Workstation(DerivedProductServiceMixin, ReanalysisMixin, SourceManagerMixi
   meta=self.field(identity)
   if meta.get('source') not in ('era5','carra2','merra2'):
    raise ValueError('Экспериментальная вихревость поддерживает только ERA5, CARRA2 и MERRA-2.')
-  if meta.get('variable')!='wind' or meta.get('unit')!='m s-1':
+  # Top-level cache units are display labels; CF units on u/v below are the
+  # physical contract. Both spellings mean m/s, never infer from magnitudes.
+  if meta.get('variable')!='wind' or meta.get('unit') not in ('m s-1','м/с'):
    raise ValueError('Нужно кэшированное поле ветра в м/с.')
   if meta.get('level')!=850 or meta.get('time_kind')!='instantaneous_analysis':
    raise ValueError('Нужно поле анализа ветра ровно на уровне 850 гПа.')
@@ -68,7 +71,7 @@ class Workstation(DerivedProductServiceMixin, ReanalysisMixin, SourceManagerMixi
      raise ValueError('Метаданные NetCDF не совпадают с карточкой кэшированного поля.')
     if ds.attrs.get('time_kind')!='instantaneous_analysis' or ds.attrs.get('wind_reference') not in ('east_north','geographic_from_direction'):
      raise ValueError('В NetCDF не подтверждены мгновенный анализ и географическая система ветра.')
-    if ds.attrs.get('unit')!='m s-1':
+    if ds.attrs.get('unit') not in ('m s-1','м/с'):
      raise ValueError('В карточке поля или NetCDF не подтверждены единицы м/с.')
     if ds.attrs.get('geolocation_crs')!='EPSG:4326':
      raise ValueError('В кэше не подтверждена географическая система координат EPSG:4326.')

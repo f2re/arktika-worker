@@ -227,6 +227,7 @@ function stackChanged(){FIELDS.probeEpoch++;$('#fieldProbe')?.replaceChildren();
 function fieldMapGroup(){let g=$('#reanalysisLayers');if(!g){g=svgEl('g',{id:'reanalysisLayers'});$('#coast').before(g);}return g;}
 async function renderFieldMaps(){
   const epoch=++FIELDS.epoch,g=fieldMapGroup();g.replaceChildren();
+  FIELDS.rendered={};
   if(!S.map)return;
   if(!S.product&&FIELDS.stack.some(s=>s.visible)){const times=[...new Set(FIELDS.stack.filter(s=>s.visible).map(s=>fieldMeta(s.id)?.time).filter(Boolean))];$('#mapTitle').textContent='Поля реанализа';$('#productTag').textContent=times.length===1?times[0].replace('T',' ').replace('Z',' UTC'):'Несколько сроков · время указано у каждого слоя';}
   const context=S.product?{product:S.product.id}:{preset:S.map.grid.preset,width:S.map.grid.width};
@@ -234,6 +235,7 @@ async function renderFieldMaps(){
     if(!layer.visible)continue;
     try{
       const r=await api('/api/reanalysis/render',{id:layer.id,...context});if(epoch!==FIELDS.epoch)return;
+      FIELDS.rendered[layer.id]=r;
       const group=svgEl('g',{id:'field-map-'+layer.id,opacity:layer.opacity,'pointer-events':'none'});
       if(layer.style.includes('fill'))group.append(svgEl('image',{href:r.image,x:0,y:0,width:r.grid.width,height:r.grid.height}));
       if(layer.style.includes('contours'))for(const [i,c] of r.contours.entries()){

@@ -28,3 +28,31 @@
 .derived-result p{overflow-wrap:anywhere}.derived-result pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:10px;max-height:320px;overflow:auto;background:var(--surface);padding:8px;border-radius:6px}
 .derived-download{display:inline-block;text-decoration:none}.derived-history{border-top:1px solid var(--line);margin-top:14px;padding-top:12px}
 @media(max-width:600px){.derived-inputs{grid-template-columns:1fr}}
+/* Рабочая наноска и воспроизводимый обзор ПМЦ. */
+.pmc-workspace-bar{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:0 0 10px;flex:none}
+.pmc-workspace-bar[hidden]{display:none}
+.pmc-workspace-bar button{white-space:nowrap;min-height:34px}
+#pmcWorkspaceStatus{flex:1 1 180px;font-size:11px;color:var(--muted);line-height:1.45}
+#pmcWorkspacePanel{min-width:0;overflow-wrap:anywhere}
+#pmcWorkspacePanel details{margin:14px 0}
+#pmcWorkspacePanel summary{font-weight:650;font-size:13px;cursor:pointer}
+#pmcWorkspacePanel .row{flex-wrap:wrap;gap:6px}
+#pmcWorkspacePanel .row button{flex:1 1 100px}
+#pmcWorkspacePanel input,#pmcWorkspacePanel textarea,#pmcWorkspacePanel select{max-width:100%;min-width:0}
+#pmcWorkspacePanel label{display:block;margin:12px 0;font-size:12px}
+.pmc-result-state{font-size:11px;padding:7px;border-radius:7px;background:#f1e9fc;color:#583579}
+.pmc-review-card{padding:9px 0;border-bottom:1px solid var(--line)}
+.pmc-review-card strong{font-size:12px}
+.pmc-review-card p{margin:5px 0}
+.pmc-annotation-select{display:block;width:100%;text-align:left;background:var(--bg);font-size:11px;padding:9px;margin:6px 0;overflow-wrap:anywhere;border:1px solid transparent}
+.pmc-annotation-select.selected{border-color:var(--primary);background:var(--tonal)}
+#pmcAnnotationForm{padding:9px;border:1px solid var(--line);border-radius:9px;margin-top:10px}
+#pmcAnnotationHeading{font-size:11px;line-height:1.5}
+.pmc-bookmark-card{padding:14px 0;border-bottom:1px solid var(--line);overflow-wrap:anywhere}
+.pmc-bookmark-card h3{font-size:16px}
+.pmc-bookmark-card p{white-space:pre-wrap;max-height:8em;overflow:auto}
+#pmcAnnotations [role=button]{cursor:pointer}
+#pmcAnnotations [role=button]:focus{outline:none;filter:drop-shadow(0 0 3px white)}
+#map.pmc-drawing{cursor:crosshair}
+#pmcDrawToggle[aria-pressed=true]{background:#fde68a;color:#713f12}
+@media(max-width:720px){.pmc-workspace-bar{gap:4px;padding-bottom:7px}.pmc-workspace-bar button{padding:6px 8px;font-size:10px;min-height:30px}#pmcWorkspaceStatus{flex-basis:100%;font-size:10px;max-height:3em;overflow:auto}.rail{overflow-y:auto;scrollbar-width:thin}#pmcWorkspacePanel .notice{font-size:11px}.pmc-bookmark-card .row{flex-wrap:wrap}}

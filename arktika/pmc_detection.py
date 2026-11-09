@@ -23,18 +23,21 @@ from math import isfinite
 from typing import Any
 
 import numpy as np
-from pyproj import CRS
+from pyproj import CRS, Transformer
 from scipy import ndimage
+from rasterio.features import shapes
+from rasterio.transform import Affine
 
 from .product_schema import product_passport
 from .pmc_partition import partition_component
 
 ALGORITHM_ID = "arktika.experimental_pmc_candidates"
-ALGORITHM_VERSION = "0.5.1"
+ALGORITHM_VERSION = "0.6.0"
 METHOD_REFERENCE = "Fang et al. (2025), IMPMCT, doi:10.5194/essd-17-6049-2025"
+MAX_CANDIDATE_GEOMETRY_VERTICES = 4096
 PARAMETERS = {
     "uniform_radius_km": 60.0,
-    "smoothing_operator": "circular uniform mean; nodata-renormalized",
+    "smoothing_operator": "circular uniform mean; nodata-renormalized; missing centre remains missing",
     "minimum_vorticity_s-1": 1.0e-4,
     "peak_vorticity_s-1": 1.2e-4,
     "peak_diagnostic": "8-neighbour local maxima with discrete max-tree saddles and experimental contour partition",
@@ -47,6 +50,7 @@ PARAMETERS = {
     "partition_rule": "bilinear marching-squares core at first 1e-6 level above discrete max-tree saddle plus nearest projected-grid remainder; candidate-only",
     "connectivity": 8,
     "quantity": "850-hPa relative vorticity",
+    "geographic_scope": "northern_hemisphere",
 }
 
 
@@ -88,12 +92,9 @@ def _validate_time(value: str) -> str:
     return parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def _smooth_uniform_radius(values: np.ndarray, *, radius_km: float,
+def _uniform_radius_kernel(*, radius_km: float,
                            resolution_x_m: float, resolution_y_m: float) -> np.ndarray:
-    """Apply a circular uniform mean in metres, renormalized over valid cells."""
-    array = np.asarray(values, dtype=float)
-    if array.ndim != 2:
-        raise ValueError("vorticity smoothing requires a 2-D array")
+    """Return the uniform disk on the declared projected grid."""
     if any(not np.isfinite(value) or value <= 0
            for value in (radius_km, resolution_x_m, resolution_y_m)):
         raise ValueError("radius and grid resolutions must be finite positive values")
@@ -102,12 +103,24 @@ def _smooth_uniform_radius(values: np.ndarray, *, radius_km: float,
     ry = int(np.ceil(radius_m / float(resolution_y_m)))
     x_m = np.arange(-rx, rx + 1, dtype=float) * float(resolution_x_m)
     y_m = np.arange(-ry, ry + 1, dtype=float) * float(resolution_y_m)
-    footprint = (y_m[:, None] ** 2 + x_m[None, :] ** 2) <= radius_m ** 2 + 1e-9
-    kernel = footprint.astype(float)
+    return ((y_m[:, None] ** 2 + x_m[None, :] ** 2) <= radius_m ** 2 + 1e-9).astype(float)
+
+
+def _smooth_uniform_radius(values: np.ndarray, *, radius_km: float,
+                           resolution_x_m: float, resolution_y_m: float) -> np.ndarray:
+    """Average valid neighbours without filling an unobserved centre cell."""
+    array = np.ma.asarray(values, dtype=float).filled(np.nan)
+    if array.ndim != 2:
+        raise ValueError("vorticity smoothing requires a 2-D array")
+    if np.isinf(array).any():
+        raise ValueError("infinite vorticity values are invalid; use NaN for nodata")
+    kernel = _uniform_radius_kernel(radius_km=radius_km,
+                                    resolution_x_m=resolution_x_m,
+                                    resolution_y_m=resolution_y_m)
     valid = np.isfinite(array)
     weights = ndimage.convolve(valid.astype(float), kernel, mode="constant", cval=0.0)
     totals = ndimage.convolve(np.where(valid, array, 0.0), kernel, mode="constant", cval=0.0)
-    return np.divide(totals, weights, out=np.full_like(array, np.nan), where=weights > 0)
+    return np.divide(totals, weights, out=np.full_like(array, np.nan), where=valid & (weights > 0))
 
 
 def _components(mask: np.ndarray) -> list[list[tuple[int, int]]]:
@@ -144,7 +157,8 @@ def _local_peak_diagnostics(field: np.ndarray, component: np.ndarray, *,
     """
     if peak_threshold is None:
         peak_threshold = PARAMETERS["peak_vorticity_s-1"]
-    neighborhood_max = ndimage.maximum_filter(field, size=3, mode="constant", cval=-np.inf)
+    neighborhood_max = ndimage.maximum_filter(
+        np.where(np.isfinite(field), field, -np.inf), size=3, mode="constant", cval=-np.inf)
     peak_cells = component & np.isfinite(field) & (field >= peak_threshold)
     peak_cells &= field == neighborhood_max
     labels, total = ndimage.label(peak_cells, structure=np.ones((3, 3), dtype=np.uint8))
@@ -427,6 +441,35 @@ def _same_grid(first: dict[str, Any] | None, second: dict[str, Any] | None) -> b
     return all(first.get(key) == second.get(key) for key in keys)
 
 
+def _candidate_geometry(mask: np.ndarray) -> dict[str, Any]:
+    """Export cell edges of the detected threshold region, without smoothing.
+
+    Rings may include holes and disconnected parts. Consumers must use an
+    even-odd fill rule. These are pixel edges, not sample centres or a cloud
+    outline; the declared affine transform is applied without a 0.5 offset.
+    """
+    base = {"coordinate_system": "pixel_edges_rc",
+            "kind": "threshold_region_pixel_outline",
+            "fill_rule": "evenodd", "vertex_limit": MAX_CANDIDATE_GEOMETRY_VERTICES}
+    rows, cols = np.nonzero(mask)
+    if not len(rows):
+        return {**base, "status": "complete", "rings": [], "vertex_count": 0}
+    top, left = int(rows.min()), int(cols.min())
+    bottom, right = int(rows.max()) + 1, int(cols.max()) + 1
+    local = np.asarray(mask[top:bottom, left:right], dtype=np.uint8)
+    rings: list[list[list[float]]] = []
+    vertex_count = 0
+    for geometry, _ in shapes(local, mask=local.astype(bool), connectivity=4,
+                              transform=Affine.translation(left, top)):
+        for ring in geometry["coordinates"]:
+            vertex_count += len(ring)
+            if vertex_count > MAX_CANDIDATE_GEOMETRY_VERTICES:
+                return {**base, "status": "omitted_complexity_limit", "rings": [],
+                        "vertex_count": None}
+            rings.append([[float(row), float(col)] for col, row in ring])
+    return {**base, "status": "complete", "rings": rings, "vertex_count": vertex_count}
+
+
 def detect_candidates(vorticity_850: np.ndarray, *, grid: dict[str, Any],
                       valid_time: str, source: str,
                       source_field_metadata: dict[str, Any],
@@ -444,9 +487,11 @@ def detect_candidates(vorticity_850: np.ndarray, *, grid: dict[str, Any],
     Threshold overrides are in s⁻¹ and do not alter the smoothing radius.
     """
     applied_thresholds = validate_candidate_thresholds(thresholds)
-    array = np.asarray(vorticity_850, dtype=float)
+    array = np.ma.asarray(vorticity_850, dtype=float).filled(np.nan)
     if array.ndim != 2 or min(array.shape, default=0) < 1:
         raise ValueError("850-hPa vorticity must be a non-empty 2-D array")
+    if np.isinf(array).any():
+        raise ValueError("infinite vorticity values are invalid; use NaN for nodata")
     if not isinstance(grid, dict):
         raise ValueError("grid metadata is required")
     required = ("crs", "width", "height", "resolution_x_m", "resolution_y_m", "transform")
@@ -478,6 +523,11 @@ def detect_candidates(vorticity_850: np.ndarray, *, grid: dict[str, Any],
         raise ValueError("grid transform must contain finite numbers") from exc
     if not np.isfinite(transform).all():
         raise ValueError("grid transform must contain finite numbers")
+    if (transform[0] == 0 or transform[4] == 0
+            or abs(transform[1]) > 1e-12 or abs(transform[3]) > 1e-12
+            or not np.isclose(abs(transform[0]), dx, rtol=1e-9, atol=1e-9)
+            or not np.isclose(abs(transform[4]), dy, rtol=1e-9, atol=1e-9)):
+        raise ValueError("grid transform must be unrotated, nonsingular and match metric resolutions")
     if (not isinstance(source_field_metadata, dict)
             or source_field_metadata.get("variable") != "relative_vorticity"
             or source_field_metadata.get("level_hPa") != 850
@@ -486,14 +536,34 @@ def detect_candidates(vorticity_850: np.ndarray, *, grid: dict[str, Any],
             or _validate_time(source_field_metadata.get("valid_time")) != timestamp
             or not _same_grid(grid, source_field_metadata.get("grid"))):
         raise ValueError("source field passport must match source, 850-hPa relative vorticity, s-1, UTC time, and exact grid")
+    domain = np.ones(array.shape, dtype=bool)
+    if domain_mask is not None:
+        raw_domain = np.ma.asarray(domain_mask)
+        if (raw_domain.shape != array.shape or raw_domain.dtype.kind not in "biu"
+                or np.ma.getmaskarray(raw_domain).any()
+                or not np.isin(raw_domain, (0, 1)).all() or not raw_domain.any()):
+            raise ValueError("domain mask must match the vorticity grid, contain only 0/1 and include at least one cell")
+        domain = np.asarray(raw_domain, dtype=bool)
+    # The published Nordic-Seas thresholds apply to positive (cyclonic)
+    # vorticity in the Northern Hemisphere. Fail closed for southern/equatorial
+    # domains rather than silently detecting southern anticyclones.
+    rows, cols = np.nonzero(domain)
+    geographic = Transformer.from_crs(crs, "EPSG:4326", always_xy=True)
+    _, latitudes = geographic.transform(
+        transform[0] * (cols + 0.5) + transform[2],
+        transform[4] * (rows + 0.5) + transform[5])
+    if not np.isfinite(latitudes).all() or np.any(np.asarray(latitudes) <= 0):
+        raise ValueError("Northern Hemisphere domain required: positive vorticity is not cyclonic south of the equator")
     smoothed = _smooth_uniform_radius(
         array, radius_km=PARAMETERS["uniform_radius_km"],
         resolution_x_m=dx, resolution_y_m=dy)
-    domain = np.ones(array.shape, dtype=bool)
-    if domain_mask is not None:
-        domain = np.asarray(domain_mask, dtype=bool)
-        if domain.shape != array.shape or not domain.any():
-            raise ValueError("domain mask must match the vorticity grid and include at least one cell")
+    # Keep incomplete 60-km neighbourhoods visible in the quality record.
+    # Renormalization is useful near a missing edge, but changes the effective
+    # filter; it must not be mistaken for the complete published disk mean.
+    complete_support = ndimage.binary_erosion(
+        np.isfinite(array), structure=_uniform_radius_kernel(
+            radius_km=PARAMETERS["uniform_radius_km"],
+            resolution_x_m=dx, resolution_y_m=dy).astype(bool), border_value=0)
     threshold = applied_thresholds["minimum_vorticity_s-1"]
     peak_threshold = applied_thresholds["peak_vorticity_s-1"]
     candidate_mask = np.zeros(array.shape, dtype=bool)
@@ -507,6 +577,12 @@ def detect_candidates(vorticity_850: np.ndarray, *, grid: dict[str, Any],
             continue
         component = np.zeros(array.shape, dtype=bool)
         component[ys, xs] = True
+        expanded = ndimage.binary_dilation(component, structure=np.ones((3, 3), dtype=bool))
+        invalid = ~np.isfinite(smoothed) | ~domain
+        boundary_censored = bool(
+            component[0, :].any() or component[-1, :].any()
+            or component[:, 0].any() or component[:, -1].any()
+            or np.any(expanded & invalid))
         component_too_large = len(cells) > PARAMETERS["peak_isolation_max_component_cells"]
         if component_too_large:
             local_peaks, local_peak_count = [], None
@@ -543,12 +619,6 @@ def detect_candidates(vorticity_850: np.ndarray, *, grid: dict[str, Any],
                                       "confirmation_status": "not_confirmed"}],
                          "coverage_conserved": True}
         else:
-            expanded = ndimage.binary_dilation(component, structure=np.ones((3, 3), dtype=bool))
-            invalid = ~np.isfinite(smoothed) | ~domain
-            boundary_censored = bool(
-                component[0, :].any() or component[-1, :].any()
-                or component[:, 0].any() or component[:, -1].any()
-                or np.any(expanded & invalid))
             partition = partition_component(
                 smoothed, component, saddle_peaks, threshold=threshold,
                 grid=grid, boundary_censored=boundary_censored)
@@ -567,6 +637,9 @@ def detect_candidates(vorticity_850: np.ndarray, *, grid: dict[str, Any],
             "regions": partition["regions"],
         }
         for region in partition["regions"]:
+            region_mask = partition["labels"] == region["label"]
+            incomplete_cells = int(np.count_nonzero(region_mask & ~complete_support))
+            projected_area_km2 = float(region["pixel_count"] * dx * dy / 1e6)
             candidates.append({
                 "candidate_id": f"pmc-candidate-{len(candidates) + 1:04d}",
                 "classification": "candidate",
@@ -577,6 +650,15 @@ def detect_candidates(vorticity_850: np.ndarray, *, grid: dict[str, Any],
                 "peak_pixel_rc": region.get("peak_pixel_rc", [int(ys[peak_index]), int(xs[peak_index])]),
                 "centroid_pixel_rc": region["centroid_pixel_rc"],
                 "partition_status": partition["status"],
+                "projected_area_km2": projected_area_km2,
+                "projected_equivalent_diameter_km": float(2 * np.sqrt(projected_area_km2 / np.pi)),
+                "geometry": _candidate_geometry(region_mask),
+                "spatial_quality": {
+                    "boundary_censored": boundary_censored,
+                    "complete_smoothing_support": incomplete_cells == 0,
+                    "incomplete_smoothing_cell_count": incomplete_cells,
+                    "area_basis": "projected_grid; not geodesic area or a physical cyclone-size criterion",
+                },
                 "peak_structure": peak_structure,
             })
     limitations = [
@@ -586,6 +668,9 @@ def detect_candidates(vorticity_850: np.ndarray, *, grid: dict[str, Any],
         "Архивный трекер использует соседство центроидов; steering flow, split/merge и опубликованные QC-процедуры отсутствуют.",
         "Спутниковое сравнение описывает только пиксельное перекрытие заданных масок и не является независимой метеорологической верификацией.",
         "Искажение масштаба конкретной проекции не оценивается; пригодность сетки для заданной широты требует отдельной проверки.",
+        "Положительная завихрённость применяется только в Северном полушарии; параметры из Норвежского, Гренландского и Баренцева морей не валидированы для всех арктических районов.",
+        "Маскированные и отсутствующие узлы остаются неизвестными после сглаживания; неполные окрестности 60 км отмечаются отдельно, их среднее не эквивалентно полному круговому фильтру.",
+        "Морская среда, суша и рельеф, термодинамическая неустойчивость, приземный ветер и облачная морфология не проверяются этим детектором.",
     ]
     valid_pixels = int(np.count_nonzero(np.isfinite(smoothed) & domain))
     source_record = {"source_id": source.strip()}
@@ -611,6 +696,9 @@ def detect_candidates(vorticity_850: np.ndarray, *, grid: dict[str, Any],
             "valid_cells": valid_pixels,
             "missing_or_outside_domain_cells": int(array.size - valid_pixels),
             "candidate_count": len(candidates),
+            "geographic_scope": "northern_hemisphere",
+            "incomplete_smoothing_cells": int(np.count_nonzero(np.isfinite(smoothed) & domain & ~complete_support)),
+            "physical_classification": "not_evaluated; vorticity_candidates_only",
             "thresholds": applied_thresholds,
             "satellite_comparison_status": "not_supplied" if satellite_observation_mask is None else "provided",
         },

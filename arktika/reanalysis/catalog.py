@@ -23,7 +23,9 @@ SOURCES = {
 }
 LEVELS = {
     'era5': [1000,975,950,925,900,875,850,825,800,775,750,700,650,600,550,500,450,400,350,300,250,225,200,175,150,125,100,70,50,30,20,10,7,5,3,2,1],
-    'carra2': [1000,950,925,900,875,850,825,800,750,700,600,500,400,300,250,200,150,100,50,30,10],
+    # CARRA2 Data User Guide, Table 4: 20 pressure levels, 1000...50 hPa.
+    # The process enum mixes model/height/pressure levels and is not this list.
+    'carra2': [1000,950,925,900,875,850,825,800,750,700,600,500,400,300,250,200,150,100,70,50],
     'merra2': [1000,975,950,925,900,875,850,825,800,775,750,725,700,650,600,550,500,450,400,350,300,250,200,150,100,70,50,40,30,20,10,7,5,4,3,2,1,.7,.5,.4,.3,.1],
 }
 
@@ -41,7 +43,7 @@ class Variable:
 
 VARIABLES = {
     't': Variable('Температура воздуха','°C','pressure','temperature',(-45,15),'temperature','temperature','T',('t','temperature','air_temperature')),
-    'q': Variable('Удельная влажность','г/кг','pressure','humidity',(0,12),'specific_humidity','specific_humidity','QV',('q','specific_humidity','qv')),
+    'q': Variable('Удельная влажность','г/кг','pressure','humidity',(0,12),'specific_humidity',None,'QV',('q','specific_humidity','qv')),
     'rh': Variable('Относительная влажность','%','pressure','humidity',(0,100),'relative_humidity','relative_humidity',None,('r','rh','relative_humidity')),
     'z': Variable('Геопотенциальная высота','м','pressure','height',(0,6000),'geopotential','geopotential','H',('z','geopotential','gh','h','geopotential_height')),
     'wind': Variable('Скорость и направление ветра','м/с','pressure','wind',(0,50),'u_component_of_wind','wind_speed','U',('u','u_component_of_wind','eastward_wind','wind_speed','ws','ff')),
@@ -51,7 +53,34 @@ VARIABLES = {
     'wind10': Variable('Ветер на 10 м','м/с','surface','wind',(0,30),'10m_u_component_of_wind','10m_wind_speed','U10M',('u10','10u','u10m','10m_u_component_of_wind','10si','si10','10m_wind_speed')),
     'sst': Variable('Температура поверхности моря','°C','surface','temperature',(-2,20),'sea_surface_temperature','sea_surface_temperature',None,('sst','sea_surface_temperature')),
     'ice': Variable('Концентрация морского льда','%','surface','humidity',(0,100),'sea_ice_cover','sea_ice_area_fraction',None,('siconc','ci','sea_ice_cover','sea_ice_area_fraction')),
+    'lsm': Variable('Доля суши в ячейке','%','surface','humidity',(0,100),'land_sea_mask','land_sea_mask',None,('lsm','land_sea_mask','land_area_fraction')),
 }
+
+# These fields provide the expert's physical context. They do not turn the
+# vorticity candidate detector into a validated polar-low classifier.
+PMC_CONTEXT_FIELDS = (
+    ('mslp', None, 'pressure_structure'),
+    ('wind10', None, 'surface_wind'),
+    ('t', 500, 'cold_air_aloft'),
+    ('sst', None, 'sea_temperature'),
+    ('ice', None, 'sea_ice_fraction'),
+    ('lsm', None, 'land_fraction'),
+)
+
+
+def pmc_context_catalogue(source: str) -> list[dict]:
+    return [{'variable': key, 'level': level, 'title': VARIABLES[key].title,
+             'role': role, 'available': supports(source, key),
+             'status': 'expert_context_only' if supports(source, key) else 'unavailable_in_adapter'}
+            for key, level, role in PMC_CONTEXT_FIELDS]
+
+
+def pmc_input_specs(source: str, time: str, area: list, *, include_context: bool = False) -> list[dict]:
+    fields = [('wind', 850)]
+    if include_context:
+        fields += [(key, level) for key, level, _ in PMC_CONTEXT_FIELDS if supports(source, key)]
+    return [{'source': source, 'variable': key, 'level': level, 'time': time, 'area': list(area)}
+            for key, level in fields]
 
 
 def supports(source: str, variable: str) -> bool:
