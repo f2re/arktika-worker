@@ -34,6 +34,9 @@ def install_synthetic_vorticity(app):
     (field_dir / "metadata.json").write_text(json.dumps({
         "id": field_id, "source": "era5", "time": stamp, "variable": "wind",
         "level": 850, "time_kind": "instantaneous_analysis",
+        # The archive validates the declared domain even in this deliberately
+        # controlled projected-field fixture. It covers the smoke's plan area.
+        "area": [80, -20, 60, 70],
         "sha256": hashlib.sha256(cached).hexdigest(),
     }), encoding="utf-8")
 
@@ -296,6 +299,10 @@ def main():
                         "Подготовку в ожидании реквизитов можно отменить и возобновить",
                         '()=>document.querySelector("#pmcArchivePrepareTask").textContent.includes("Подготовка отменена")&& !document.querySelector("#pmcArchivePrepareResume").hidden',
                     )
+                    check(
+                        "Статус отменённой подготовки заменяет сообщение пустого состояния",
+                        '()=>!document.querySelector("#pmcArchivePrepareTask").textContent.includes("ещё не запускалась")',
+                    )
                     assert not any(url.endswith("/api/pmc/archive/run") for _, url in requests)
                     report["checks"].append({"name": "Подготовка и детектор остаются раздельными", "passed": True})
 
@@ -408,7 +415,7 @@ def main():
                             layer?.querySelectorAll('[data-candidate=e1]').length === 1 &&
                             label.includes('ERA5') && label.includes('2024-01-01') && label.includes('UTC');
                     }""")
-                    page.locator('[data-task="pmc_archive"]').click()
+                    page.locator('#pmcAnalysisOpen').click()
                     show_diagnostics.click()
                     page.locator("#pmcArchiveDiagnostics").wait_for(state="visible")
                     frame_details.get_by_text("Формула и пороги", exact=True).click()

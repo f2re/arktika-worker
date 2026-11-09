@@ -21,6 +21,7 @@ from .model import iso, now
 from .network import Cancelled, redact
 from .pmc_archive import _times as pmc_archive_times
 from .pmc_archive import _utc_hour as pmc_utc_hour
+from .pmc_archive import area_contains as pmc_area_contains
 from .pmc_archive import build_plan as build_pmc_archive_plan
 from .pmc_archive_run import MAX_FIELDS as MAX_PMC_ARCHIVE_FIELDS
 from .pmc_archive_run import build_archive_report
@@ -31,11 +32,12 @@ from .pmc_detection import _satellite_times as pmc_satellite_times
 from .pmc_detection import validate_candidate_thresholds
 from .pmc_projection import MAX_OBSERVATION_SOURCE_PIXELS, reproject_observation_masks
 from .reanalysis.adapters import get_runtime_adapter
-from .reanalysis.catalog import SOURCES, VERSION, catalogue, request_plan
+from .reanalysis.catalog import SOURCES, VERSION, catalogue, pmc_input_specs, request_plan
 
 ROOT=Path(__file__).resolve().parents[1]
 ID=re.compile(r'^[0-9a-f]{24}$')
 TASK_ID=re.compile(r'^[0-9a-f]{32}$')
+MAX_PMC_PREPARE_FIELDS=MAX_PMC_ARCHIVE_FIELDS*7
 
 
 class RetryableFieldError(ValueError):
@@ -388,11 +390,24 @@ class ReanalysisMixin:
 
     def pmc_archive_plan(self, data):
         """Describe archival inputs without downloading or fabricating a result."""
+        if not isinstance(data,dict):raise ValueError('План архива должен быть объектом.')
         state=self.fields_state()
-        sources=data.get('sources',[]) if isinstance(data,dict) else []
+        sources=data.get('sources',[])
+        if not isinstance(sources,list):raise ValueError('Источники должны быть списком.')
+        start=pmc_utc_hour(data.get('start'),'Начало');end=pmc_utc_hour(data.get('end'),'Конец')
         credentials={source:bool(self.source_credential(source)) for source in sources
                      if source in ('era5','carra2','merra2')}
-        return build_pmc_archive_plan(data,credentials=credentials,cached_fields=state['fields'])
+        verified=[]
+        for item in state['fields']:
+            if (item.get('source') not in sources or item.get('variable')!='wind'
+                    or item.get('level')!=850 or not pmc_area_contains(item.get('area'),data.get('area'))):continue
+            try:
+                if not start<=pmc_utc_hour(item.get('time'),'Срок кэша')<=end:continue
+                verified.append(self.field(item.get('id')))
+            except (ValueError,OSError,KeyError,TypeError):continue
+        result=build_pmc_archive_plan(data,credentials=credentials,cached_fields=verified)
+        result['cache_verification']='sha256_and_declared_domain; nodata remains unknown'
+        return result
 
     def _pmc_archive_task_path(self, identity):
         if not isinstance(identity,str) or not TASK_ID.fullmatch(identity):
@@ -596,21 +611,25 @@ class ReanalysisMixin:
             plan=job.get('plan')
             if not isinstance(plan,dict) or set(plan)!={'sources','start','end','area','step_count'}:raise ValueError()
             build_pmc_archive_plan({k:plan[k] for k in ('sources','start','end','area')},credentials={},cached_fields=[])
+            include_context=job.get('include_context',False)
+            if not isinstance(include_context,bool):raise ValueError()
             specs=job.get('specs')
-            if not isinstance(specs,list) or not specs or len(specs)>MAX_PMC_ARCHIVE_FIELDS:raise ValueError()
+            if not isinstance(specs,list) or not specs or len(specs)>MAX_PMC_PREPARE_FIELDS:raise ValueError()
             safe_specs=[]
             for spec in specs:
                 safe=ReanalysisMixin._safe_field_spec(spec)
-                if (safe is None or set(spec)!= {'source','variable','time','level','area'}
-                        or safe['variable']!='wind' or safe['level']!=850):raise ValueError()
+                if safe is None or set(spec)!= {'source','variable','time','level','area'}:raise ValueError()
                 request_plan(safe);safe_specs.append(safe)
             expected_specs=[]
             start=pmc_utc_hour(plan['start'],'Начало');end=pmc_utc_hour(plan['end'],'Конец')
+            frame_count=0
             for source in plan['sources']:
                 for stamp in pmc_archive_times(start,end,source):
-                    expected_specs.append({'source':source,'variable':'wind','time':stamp.isoformat().replace('+00:00','Z'),
-                                           'level':850,'area':[float(x) for x in plan['area']]})
-            if safe_specs!=expected_specs or int(plan['step_count'])!=len(expected_specs):raise ValueError()
+                    frame_count+=1
+                    expected_specs.extend(pmc_input_specs(source,stamp.isoformat().replace('+00:00','Z'),
+                        [float(x) for x in plan['area']],include_context=include_context))
+            if (safe_specs!=expected_specs or int(plan['step_count'])!=frame_count
+                    or frame_count>MAX_PMC_ARCHIVE_FIELDS):raise ValueError()
             completed=job.get('completed_field_ids',[])
             if (not isinstance(completed,list) or len(completed)>len(safe_specs)
                     or any(not isinstance(item,str) or not ID.fullmatch(item) for item in completed)
@@ -624,6 +643,7 @@ class ReanalysisMixin:
                 'plan':{'sources':list(plan['sources']),'start':plan['start'],'end':plan['end'],
                         'area':[float(x) for x in plan['area']],'step_count':int(plan['step_count'])},
                 'specs':safe_specs,'completed_field_ids':list(completed),'target_grid':grid,
+                'include_context':include_context,
                 'total':len(safe_specs),'resume_available':bool(job.get('resume_available'))}
         action=job.get('needs_action')
         if status=='needs_action' and isinstance(action,dict):
@@ -635,33 +655,53 @@ class ReanalysisMixin:
         self._pmc_prepare_job=self._sanitize_pmc_prepare_job(self._pmc_prepare_job)
         atomic_json(self.fields_root/'pmc_prepare_job.json',self._pmc_prepare_job)
 
+    @staticmethod
+    def _pmc_prepared_field_matches(meta,spec):
+        return (isinstance(meta,dict)
+                and all(meta.get(key)==spec.get(key) for key in ('source','variable','time','level'))
+                and meta.get('time_kind')=='instantaneous_analysis'
+                and not meta.get('difference_of')
+                and pmc_area_contains(meta.get('area'),spec['area']))
+
     def pmc_archive_prepare_state(self):
         self._fields_init()
         with self.lock:job=copy.deepcopy(self._pmc_prepare_job)
         if job.get('status')=='idle':return {'status':'idle','message':job.get('message','Подготовка полей ещё не запускалась.')}
-        return {k:copy.deepcopy(job[k]) for k in ('id','status','message','created_at','updated_at','total','resume_available','needs_action') if k in job} | {'prepared':len(job.get('completed_field_ids',[])),'field_ids':list(job.get('completed_field_ids',[]))}
+        detector_ids={request_plan(spec)['key'] for spec in job.get('specs',[])
+                      if spec['variable']=='wind' and spec['level']==850}
+        completed=list(job.get('completed_field_ids',[]))
+        return {k:copy.deepcopy(job[k]) for k in ('id','status','message','created_at','updated_at','total','resume_available','needs_action','include_context') if k in job} | {
+            'prepared':len(completed),'field_ids':[identity for identity in completed if identity in detector_ids],
+            'context_field_ids':[identity for identity in completed if identity not in detector_ids],
+            'context_status':'expert_review_required' if job.get('include_context') else 'not_requested'}
 
     def pmc_archive_prepare(self,data):
-        """Prepare ERA5/CARRA2/MERRA2 wind@850 inputs; no detector is run here."""
+        """Prepare wind@850 and optional same-source physical context; do not classify."""
         self._fields_init()
-        if not isinstance(data,dict) or set(data)!={'plan','target_grid'}:raise ValueError('Подготовка принимает plan и target_grid.')
+        if (not isinstance(data,dict) or not {'plan','target_grid'}<=set(data)
+                or set(data)-{'plan','target_grid','include_context'}):raise ValueError('Подготовка принимает plan, target_grid и include_context.')
+        include_context=data.get('include_context',False)
+        if not isinstance(include_context,bool):raise ValueError('include_context должен быть логическим значением.')
         planned=self.pmc_archive_plan(data['plan']);plan=planned['plan'];target_grid=validate_pmc_archive_grid(data['target_grid'])
+        if not 1<=plan['step_count']<=MAX_PMC_ARCHIVE_FIELDS:
+            raise ValueError(f'Для подготовки требуется от 1 до {MAX_PMC_ARCHIVE_FIELDS} сроков; разделите период.')
         start=pmc_utc_hour(plan['start'],'Начало');end=pmc_utc_hour(plan['end'],'Конец');specs=[]
         for source in plan['sources']:
             for stamp in pmc_archive_times(start,end,source):
-                specs.append({'source':source,'variable':'wind','time':stamp.isoformat().replace('+00:00','Z'),
-                              'level':850,'area':list(plan['area'])})
-        if not specs or len(specs)>MAX_PMC_ARCHIVE_FIELDS:raise ValueError(f'Для подготовки требуется от 1 до {MAX_PMC_ARCHIVE_FIELDS} сроков.')
+                specs.extend(pmc_input_specs(source,stamp.isoformat().replace('+00:00','Z'),
+                                           plan['area'],include_context=include_context))
         with self.lock:
             if self.busy:raise ValueError('Сначала завершите текущую операцию.')
             if self._pmc_prepare_job.get('status')=='running':raise ValueError('Подготовка архива уже выполняется.')
             identity=uuid.uuid4().hex
-            self._pmc_prepare_job={'id':identity,'status':'running','message':'Подготовка полей ветра 850 гПа.',
-                'created_at':iso(now()),'updated_at':iso(now()),'plan':dict(plan,step_count=len(specs)),
+            self._pmc_prepare_job={'id':identity,'status':'running','message':('Подготовка ветра 850 гПа и полей для экспертной проверки.' if include_context else 'Подготовка полей ветра 850 гПа.'),
+                'created_at':iso(now()),'updated_at':iso(now()),'plan':dict(plan),
+                'include_context':include_context,
                 'specs':specs,'completed_field_ids':[],'target_grid':target_grid,'resume_available':False}
             self._persist_pmc_prepare_job()
             self.start('Подготовка архивных полей ПМЦ',lambda:self._run_pmc_archive_prepare(identity))
-        return {'started':True,'id':identity,'status':'running','total':len(specs),'detector_started':False}
+        return {'started':True,'id':identity,'status':'running','total':len(specs),
+                'include_context':include_context,'detector_started':False}
 
     def _run_pmc_archive_prepare(self,identity):
         with self.lock:job=copy.deepcopy(self._pmc_prepare_job)
@@ -674,9 +714,7 @@ class ReanalysisMixin:
                 if spec is None:continue
                 try:
                     meta=self.field(field_id)
-                    if (meta.get('source')==spec['source'] and meta.get('variable')=='wind'
-                            and meta.get('level')==850 and meta.get('time')==spec['time']
-                            and meta.get('time_kind')=='instantaneous_analysis'):
+                    if self._pmc_prepared_field_matches(meta,spec):
                         verified.append(field_id)
                 except (ValueError,OSError):
                     continue
@@ -705,9 +743,7 @@ class ReanalysisMixin:
                 if not isinstance(meta,dict) or meta.get('id')!=field_id:
                     raise ValueError('Подготовленное поле не совпало с идентификатором запроса.')
                 stored=self.field(field_id)
-                if (stored.get('source')!=spec['source'] or stored.get('variable')!='wind'
-                        or stored.get('level')!=850 or stored.get('time')!=spec['time']
-                        or stored.get('time_kind')!='instantaneous_analysis'):
+                if not self._pmc_prepared_field_matches(stored,spec):
                     raise ValueError('Кэшированное поле не прошло проверку источника, срока, уровня и типа времени.')
                 completed.append(field_id)
                 with self.lock:
@@ -837,6 +873,8 @@ class ReanalysisMixin:
                 raise ValueError('Каждое поле должно принадлежать выбранному источнику и сроку UTC плана.')
             if meta.get('variable')!='wind' or meta.get('level')!=850 or meta.get('time_kind')!='instantaneous_analysis':
                 raise ValueError('Архивный детектор принимает только мгновенный ветер 850 гПа.')
+            if meta.get('difference_of') or not pmc_area_contains(meta.get('area'),plan['area']):
+                raise ValueError('Область исходного поля должна покрывать область плана; разности полей не подходят.')
             if (source,time) in seen:raise ValueError('Для источника и срока выбрано несколько полей; оставьте одно поле на срок.')
             seen.add((source,time))
         with self.lock:

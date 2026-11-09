@@ -251,11 +251,12 @@ function pmcRenderRunResult(r){
   if(Array.isArray(r.candidates)&&r.candidates.length){
     const wrap=document.createElement('div');wrap.className='pmc-run-table';wrap.tabIndex=0;wrap.setAttribute('role','region');wrap.setAttribute('aria-label','Таблица экспериментальных кандидатов; прокручивается по горизонтали');const table=document.createElement('table');table.innerHTML='<thead><tr><th>Кандидат</th><th>Класс</th><th>Пик завихрённости, с⁻¹</th><th>Пикселей</th><th>Разделение области</th><th>Подтверждение</th></tr></thead>';
     const partitionLabel={partitioned_experimental:'разделён экспериментально',single_peak_expanded:'один изолированный пик · вся область',boundary_censored_unpartitioned:'граница/nodata · без разделения',no_isolated_peak_unpartitioned:'пики не изолированы · без разделения',contour_seed_unavailable_unpartitioned:'контур недоступен · без разделения',contour_level_unavailable_unpartitioned:'уровень контура недоступен · без разделения',component_complexity_limit_unpartitioned:'лимит вычислений · без разделения'};
-    const body=document.createElement('tbody');for(const c of r.candidates){const tr=document.createElement('tr');for(const value of [c.candidate_id,c.classification,c['peak_850hpa_relative_vorticity_s-1'],c.pixel_count,partitionLabel[c.partition_status]||c.partition_status,c.confirmation_status]){const td=document.createElement('td');td.textContent=value===null||value===undefined?'—':typeof value==='number'?Number(value).toExponential(3):String(value);tr.append(td);}body.append(tr);}table.append(body);wrap.append(table);box.append(wrap);
+    const body=document.createElement('tbody');for(const c of r.candidates){const tr=document.createElement('tr');const peak=c['peak_850hpa_relative_vorticity_s-1'];for(const value of [c.candidate_id,c.classification==='candidate'?'Кандидат':c.classification,Number.isFinite(peak)?peak.toExponential(3):'—',num(c.pixel_count,0),partitionLabel[c.partition_status]||c.partition_status,c.confirmation_status==='not_confirmed'?'Не подтверждён':c.confirmation_status]){const td=document.createElement('td');td.textContent=value===null||value===undefined?'—':String(value);tr.append(td);}body.append(tr);}table.append(body);wrap.append(table);box.append(wrap);
   }else{const empty=document.createElement('p');empty.className='empty';empty.textContent='В заданной сетке кандидаты не выделены. Это не означает отсутствие ПМЦ.';box.append(empty);}
   const passport=document.createElement('details');const sum=document.createElement('summary');sum.textContent='Паспорт входа и сетки';const pre=document.createElement('pre');pre.textContent=JSON.stringify({field_id:r.field_id,source:r.source,valid_time:r.valid_time,algorithm_id:r.algorithm_id,algorithm_version:r.algorithm_version,grid:r.grid,field_passport:r.field_passport,input_coverage:r.input_coverage,parameters:r.parameters},null,2);passport.append(sum,pre);box.append(passport);
   const limits=document.createElement('ul');for(const limitation of [...(Array.isArray(r.limitations)?r.limitations:[]),...(r.satellite_comparison?.note?[`Спутниковое сравнение: ${r.satellite_comparison.note}`]:[])]){const li=document.createElement('li');li.textContent=limitation;limits.append(li);}if(limits.childElementCount){const note=document.createElement('div');note.className='notice';note.append(limits);box.append(note);}
-  const overlayNote=document.createElement('p');overlayNote.className='micro';const drawn=pmcDrawOverlay(r);overlayNote.textContent=!(r.candidates||[]).length?'Кандидатов нет; точки на карту не нанесены.':drawn?'Фиолетовые точки на карте — положения пиков экспериментальных кандидатов, не места зарождения или подтверждения ПМЦ.':'Наложение не показано: текущая карта использует другую проекцию или область.';box.append(overlayNote);
+  const overlayNote=document.createElement('p');overlayNote.className='micro';const drawn=pmcDrawOverlay(r);overlayNote.textContent=!(r.candidates||[]).length?'Кандидатов нет; точки на карту не нанесены.':drawn?'Фиолетовые точки на карте — положения пиков экспериментальных кандидатов, не места зарождения или подтверждения ПМЦ. Контуры показывают модельные области выше порога, а не физические границы вихрей.':'Наложение не показано: текущая карта использует другую проекцию или область.';box.append(overlayNote);
+  const mapButton=pmcText(box,'button','Перейти к карте и наноске','primary');mapButton.type='button';mapButton.onclick=()=>{$('#pmcArchiveDialog').close();left('pmc');};
   root.append(box);
 }
 function pmcDrawOverlay(r){
@@ -268,6 +269,16 @@ function pmcDrawOverlay(r){
   const description=`Пики модельных кандидатов · ${PMC_SOURCE_LABELS[r.source]||r.source||'источник неизвестен'} · ${pmcTime(r.valid_time)}`;
   layer.setAttribute('aria-label',description);
   for(const candidate of r.candidates||[]){
+    const geometry=candidate.geometry;
+    if(geometry?.coordinate_system==='pixel_edges_rc'&&geometry.status==='complete'&&Array.isArray(geometry.rings)){
+      const paths=[];
+      for(const ring of geometry.rings){
+        if(!Array.isArray(ring)||ring.length<4||ring.length>4096||!ring.every(point=>Array.isArray(point)&&point.length===2&&point.every(Number.isFinite)))continue;
+        const points=ring.map(([row,col])=>[(c+a*col+b*row-left)*g.width/(right-left),(top-f-d*col-e*row)*g.height/(top-bottom)]);
+        paths.push(points.map((point,index)=>(index?'L':'M')+point.join(',')).join(' ')+' Z');
+      }
+      if(paths.length)layer.append(svgEl('path',{d:paths.join(' '),fill:'#c084fc','fill-opacity':'.18',stroke:'#c084fc','stroke-width':1.5,'fill-rule':'evenodd','vector-effect':'non-scaling-stroke','pointer-events':'none','data-candidate-region':candidate.candidate_id||''}));
+    }
     const rc=candidate.peak_pixel_rc;if(!Array.isArray(rc)||rc.length!==2||!rc.every(Number.isFinite))continue;
     const [row,col]=rc;if(row<0||row>=rg.height||col<0||col>=rg.width)continue;
     const dx=c+a*(col+.5)+b*(row+.5),dy=f+d*(col+.5)+e*(row+.5);
@@ -295,7 +306,7 @@ async function runPmcCached(){
     const result=await api('/api/pmc/run',body);
     if(result.status!=='completed'||result.maturity!=='experimental'||result.field_id!==fieldId)throw Error('Ответ API не соответствует контракту экспериментального расчёта.');
     if(controls.some((control,index)=>control.value!==selection[index]))throw Error('Параметры изменились во время расчёта. Запустите его снова.');
-    pmcRenderRunResult(result);
+    await pmcPresentResult(result);
   }finally{controls.forEach(control=>control.disabled=false);$('#pmcRunButton').disabled=!$('#pmcCachedField').value;}
 }
 function pmcFeedback(message,kind='notice'){$('#pmcArchiveFeedback').replaceChildren();if(!message)return;const p=document.createElement('p');p.className=kind;p.textContent=message;$('#pmcArchiveFeedback').append(p);}
@@ -313,10 +324,16 @@ function pmcObservationChoices(observations){
   $('#pmcObsStatus').textContent=items.length?`Доступны ранее импортированные маски: ${items.length}.`:'Сравнение не выбрано.';
 }
 async function openPmcArchive(){
+  const previousField=$('#pmcCachedField')?.value,previousObservation=$('#pmcObservation')?.value;
+  const previousSources=$$('[name="pmcArchiveSource"]').length?$$('[name="pmcArchiveSource"]:checked').map(input=>input.value):null;
   pmcInvalidateArchivePlan();pmcRunPanel();pmcClearOverlay();pmcClearResult();pmcCachedChoices([]);$('#pmcCachedField').options[0].textContent='Загружаю список…';$('#pmcArchivePlan').disabled=true;$('#pmcArchiveSources').textContent='Проверяю зарегистрированные адаптеры…';open('#pmcArchiveDialog');
   $('#pmcArchiveTask').replaceChildren();pmcText($('#pmcArchiveTask'),'p','Загружаю состояние архива…').setAttribute('role','status');
   void pmcRefreshArchiveTask();
-  try{const state=await api('/api/reanalysis/state');S.pmcArchiveFields=state.fields||[];pmcRenderSources(state.catalogue?.sources||[]);pmcCachedChoices(state.fields||[]);const observations=await api('/api/pmc/observations');pmcObservationChoices(observations.observations||[]);}
+  try{const state=await api('/api/reanalysis/state');S.pmcArchiveFields=state.fields||[];pmcRenderSources(state.catalogue?.sources||[]);pmcCachedChoices(state.fields||[]);const observations=await api('/api/pmc/observations');pmcObservationChoices(observations.observations||[]);
+    if(previousSources)$$('[name="pmcArchiveSource"]').forEach(input=>input.checked=previousSources.includes(input.value));
+    if(previousField&&[...$('#pmcCachedField').options].some(option=>option.value===previousField))$('#pmcCachedField').value=previousField;
+    if(previousObservation&&[...$('#pmcObservation').options].some(option=>option.value===previousObservation))$('#pmcObservation').value=previousObservation;
+  }
   catch(e){$('#pmcArchiveSources').textContent='Не удалось прочитать каталог адаптеров.';pmcFeedback('Проверка архива недоступна: '+e.message,'error-text');}
 }
 function pmcArchiveBody(){
@@ -390,7 +407,7 @@ async function pmcPrepareArchive(){
   const current=pmcArchiveBody();if(JSON.stringify(current)!==JSON.stringify({sources:plan.sources,start:plan.start,end:plan.end,area:plan.area}))throw Error('Параметры плана изменились. Составьте план заново.');
   const {target_grid}=await api('/api/pmc/archive/grid',{preset:$('#preset').value,width:$('#pmcRunWidth').value,area:plan.area});
   if(revision!==S.pmcArchivePlanRevision||S.pmcArchivePlan!==plan)throw Error('Параметры изменились при подготовке сетки. Загрузка не запускалась; составьте план заново.');
-  await api('/api/pmc/archive/prepare',{plan,target_grid});await pmcRefreshArchivePrepare();
+  await api('/api/pmc/archive/prepare',{plan,target_grid,include_context:$('#pmcIncludeContext').checked});await pmcRefreshArchivePrepare();
 }
 async function pmcRefreshArchivePrepare(){
   const root=$('#pmcArchivePrepareTask');if(!root)return;
@@ -399,7 +416,7 @@ async function pmcRefreshArchivePrepare(){
     if(task.status==='idle'){root.replaceChildren();root.textContent='Подготовка входных полей ещё не запускалась.';$('#pmcArchivePrepareResume').hidden=true;return;}
     const progress=`${task.message||task.status} · готово ${task.prepared||0} из ${task.total||0}`;
     let progressNode=root.querySelector('[data-pmc-progress]');
-    if(!progressNode){progressNode=document.createElement('p');progressNode.dataset.pmcProgress='';root.prepend(progressNode);}
+    if(!progressNode){root.replaceChildren();delete root.dataset.progress;progressNode=document.createElement('p');progressNode.dataset.pmcProgress='';root.append(progressNode);}
     if(root.dataset.progress!==progress){progressNode.textContent=progress;root.dataset.progress=progress;}
     root.querySelectorAll('[data-pmc-action]').forEach(node=>node.remove());
     if(task.status==='needs_action'&&task.needs_action){S.pmcPrepareNeedsAction=task.needs_action;const button=document.createElement('button');button.type='button';button.dataset.pmcAction='';button.className='tonal';button.textContent='Настроить доступ к '+(PMC_SOURCE_LABELS[task.needs_action.source]||task.needs_action.source);button.onclick=()=>{FIELDS.accessReturn=task.needs_action.source;openSourceAccess(task.needs_action.source);};root.append(button);}
@@ -480,12 +497,18 @@ function pmcRenderArchiveDiagnostics(report){
       if(grid.crs){
         const button=pmcText(details,'button','Показать пики на карте','tonal');button.type='button';
         const status=pmcText(details,'p','','micro');status.setAttribute('role','status');
-        button.onclick=()=>{
-          if(!pmcDrawOverlay(result)){status.textContent=`Пики вне текущей карты или нужна проекция ${grid.crs}.`;return;}
-          $('#pmcArchiveDialog').close();toast(`Пики модельных кандидатов · ${PMC_SOURCE_LABELS[frame.source]||frame.source} · ${pmcTime(frame.valid_time)}`);
+        button.onclick=async()=>{
+          try{if(!await pmcPresentResult(result))return;
+          $('#pmcArchiveDialog').close();left('pmc');toast(`Пики модельных кандидатов · ${PMC_SOURCE_LABELS[frame.source]||frame.source} · ${pmcTime(frame.valid_time)}`);
+          }catch(e){status.textContent=e.message;}
         };
       }
-    }else if(Array.isArray(result.candidates))pmcText(details,'p','В обработанной части сетки кандидаты не выделены.','hint');
+    }else if(Array.isArray(result.candidates)){
+      pmcText(details,'p','В обработанной части сетки кандидаты не выделены.','hint');
+      const button=pmcText(details,'button','Открыть результат на карте','tonal');button.type='button';
+      const status=pmcText(details,'p','','micro');status.setAttribute('role','status');
+      button.onclick=async()=>{try{if(await pmcPresentResult(result)){$('#pmcArchiveDialog').close();left('pmc');}}catch(e){status.textContent=e.message;}};
+    }
     const pair=satellite?.frames?.find(row=>row.source===frame.source&&pmcTime(row.valid_time)===pmcTime(frame.valid_time));
     pmcRenderSatellite(pair,details);
     const agreement=report.cross_source_candidate_agreement?.frames?.find(row=>pmcTime(row.valid_time)===pmcTime(frame.valid_time));

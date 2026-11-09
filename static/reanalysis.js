@@ -19,6 +19,16 @@ function fieldMeta(id){return FIELDS.fields.find(f=>f.id===id);}
 function fieldNumber(v){return num(v!==null&&Math.abs(v)<.005?0:v,2);}
 function fieldLabel(f){return `${f.source_label||f.source} · ${f.title} ${f.level===null?'':f.level+' гПа'} · ${f.time.replace('T',' ').replace('Z',' UTC')}`;}
 function fieldStyleOptions(f){return f.wind?[['fill','Заливка'],['arrows','Ветер'],['fill_arrows','Заливка и ветер']]:[['fill','Заливка'],['contours','Изолинии'],['fill_contours','Заливка и изолинии']];}
+function fieldLegendPresentation(style,render){
+  const legend=render?.legend||{},notes=[];
+  if(style.includes('contours')){
+    const levels=[...new Set((render?.contours||[]).map(c=>c.value).filter(Number.isFinite))].sort((a,b)=>a-b);
+    notes.push(levels.length?`Изолинии ${num(levels[0])}${levels.length>1?' … '+num(levels[levels.length-1]):''} ${legend.unit||''}`:'Изолиний в области нет');
+  }
+  if(style.includes('arrows'))notes.push('Стрелки: направление; длина условная');
+  return {colors:style.includes('fill')?legend.colors||[]:[],min:legend.min,max:legend.max,unit:legend.unit||'',
+    description:notes.join(' · '),symbol:style.includes('contours')?'line':style.includes('arrows')?'arrow':null};
+}
 function timeMismatch(f){const t=S.product?.time||S.scene?.time;if(!t)return FIELDS.stack.filter(s=>s.visible).some(s=>fieldMeta(s.id)?.time!==f.time)?'На карте поля разных сроков':'';if(t===f.time)return '';const gap=(Date.parse(f.time)-Date.parse(t))/3600000;return `Срок отличается от снимка: ${gap>0?'+':''}${num(gap,2)} ч`;}
 function fieldSelectors(){
   const source=FIELDS.catalogue.find(s=>s.id===$('#fieldSource').value);if(!source)return;
@@ -227,6 +237,7 @@ function stackChanged(){FIELDS.probeEpoch++;$('#fieldProbe')?.replaceChildren();
 function fieldMapGroup(){let g=$('#reanalysisLayers');if(!g){g=svgEl('g',{id:'reanalysisLayers'});$('#coast').before(g);}return g;}
 async function renderFieldMaps(){
   const epoch=++FIELDS.epoch,g=fieldMapGroup();g.replaceChildren();
+  FIELDS.rendered={};
   if(!S.map)return;
   if(!S.product&&FIELDS.stack.some(s=>s.visible)){const times=[...new Set(FIELDS.stack.filter(s=>s.visible).map(s=>fieldMeta(s.id)?.time).filter(Boolean))];$('#mapTitle').textContent='Поля реанализа';$('#productTag').textContent=times.length===1?times[0].replace('T',' ').replace('Z',' UTC'):'Несколько сроков · время указано у каждого слоя';}
   const context=S.product?{product:S.product.id}:{preset:S.map.grid.preset,width:S.map.grid.width};
@@ -234,6 +245,7 @@ async function renderFieldMaps(){
     if(!layer.visible)continue;
     try{
       const r=await api('/api/reanalysis/render',{id:layer.id,...context});if(epoch!==FIELDS.epoch)return;
+      FIELDS.rendered[layer.id]=r;
       const group=svgEl('g',{id:'field-map-'+layer.id,opacity:layer.opacity,'pointer-events':'none'});
       if(layer.style.includes('fill'))group.append(svgEl('image',{href:r.image,x:0,y:0,width:r.grid.width,height:r.grid.height}));
       if(layer.style.includes('contours'))for(const [i,c] of r.contours.entries()){
@@ -248,7 +260,9 @@ async function renderFieldMaps(){
       g.append(group);
       const row=$(`#fieldLayerRows [data-layer="${layer.id}"]`);
       if(row){row.querySelector('.field-render-error').textContent=r.valid_pixels?'':'В выбранной области карты нет данных.';
-        const legend=row.querySelector('.field-legend');legend.innerHTML=`<div class="field-colorbar"></div><div class="field-legend-numbers"><span>${num(r.legend.min)}</span><span>${escape(r.legend.unit)}</span><span>${num(r.legend.max)}</span></div>`;legend.querySelector('.field-colorbar').style.background=`linear-gradient(to right,${r.legend.colors.join(',')})`;legend.title=r.legend.sampling;}
+        const legend=row.querySelector('.field-legend'),view=fieldLegendPresentation(layer.style,r);legend.replaceChildren();
+        if(view.colors.length){legend.innerHTML=`<div class="field-colorbar"></div><div class="field-legend-numbers"><span>${num(view.min)}</span><span>${escape(view.unit)}</span><span>${num(view.max)}</span></div>`;legend.querySelector('.field-colorbar').style.background=`linear-gradient(to right,${view.colors.join(',')})`;}
+        if(view.description){const note=document.createElement('p');note.className='micro';const symbol=document.createElement('span');symbol.className='field-legend-symbol '+view.symbol;symbol.setAttribute('aria-hidden','true');if(view.symbol==='arrow')symbol.textContent='→';note.append(symbol,document.createTextNode(view.description));legend.append(note);}legend.title=r.legend.sampling;}
     }catch(e){if(epoch!==FIELDS.epoch)return;const row=$(`#fieldLayerRows [data-layer="${layer.id}"]`);if(row)row.querySelector('.field-render-error').textContent=e.message;}
   }
 }

@@ -9,12 +9,30 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from .reanalysis.catalog import SOURCES, request_plan, validate_area
+from .reanalysis.catalog import SOURCES, pmc_context_catalogue, request_plan, validate_area
 
 UTC = timezone.utc
 SUPPORTED_SOURCES = ("era5", "carra2", "merra2")
 ALGORITHM_ID = "arktika.experimental_pmc_archive_plan"
-ALGORITHM_VERSION = "0.1.0"
+ALGORITHM_VERSION = "0.2.0"
+
+
+def area_contains(outer, inner) -> bool:
+    """Whether a cached request domain contains another, including the dateline.
+
+    This verifies the declared domain, not the absence of nodata within it.
+    """
+    try:
+        n, w, s, e = validate_area(outer)
+        ni, wi, si, ei = validate_area(inner)
+    except (ValueError, TypeError):
+        return False
+    if n < ni or s > si:
+        return False
+    def parts(west, east):
+        return [(west, east)] if west < east else [(west, 180.), (-180., east)]
+    enclosing = parts(w, e)
+    return all(any(a <= c and b >= d for a, b in enclosing) for c, d in parts(wi, ei))
 
 
 def _utc_hour(value: Any, name: str) -> datetime:
@@ -58,6 +76,8 @@ def build_plan(data: dict[str, Any], *, credentials: dict[str, bool], cached_fie
     if end > datetime.now(UTC):
         raise ValueError("Архивное исследование принимает только уже наступившие сроки.")
     area = validate_area(data.get("area"))
+    if area[2] <= 0 or area[0] >= 87:
+        raise ValueError("Архивный детектор ПМЦ работает только в Северном полушарии, южнее 87° с. ш. Измените область до загрузки полей.")
     if "carra2" in sources and area[2] < 40:
         raise ValueError("CARRA2 не покрывает выбранную южную границу области.")
 
@@ -76,7 +96,9 @@ def build_plan(data: dict[str, Any], *, credentials: dict[str, bool], cached_fie
         expected[source] = dates
         cached = [field for field in cached_fields
                   if field.get("source") == source and field.get("variable") == "wind"
-                  and field.get("level") == 850 and field.get("time")]
+                  and field.get("level") == 850 and field.get("time")
+                  and field.get("time_kind") == "instantaneous_analysis"
+                  and not field.get("difference_of") and area_contains(field.get("area"), area)]
         cached_times = {str(field["time"]).replace("+00:00", "Z") for field in cached}
         matched = [stamp for stamp in dates if stamp.isoformat().replace("+00:00", "Z") in cached_times]
         source_rows.append({
@@ -89,6 +111,8 @@ def build_plan(data: dict[str, Any], *, credentials: dict[str, bool], cached_fie
             "step_count": len(dates),
             "cached_step_count": len(matched),
             "missing_step_count": len(dates) - len(matched),
+            "context_fields": pmc_context_catalogue(source),
+            "context_fields_per_step": sum(row['available'] for row in pmc_context_catalogue(source)),
         })
 
     return {
@@ -106,11 +130,13 @@ def build_plan(data: dict[str, Any], *, credentials: dict[str, bool], cached_fie
             "Планирование не запускает расчёт и не загружает данные. Для отдельного запуска нужны заранее сохранённые поля мгновенного ветра 850 гПа из ERA5, CARRA2 или MERRA-2.",
             "Нет подключения к архиву спутниковой разметки IMPMCT/AVHRR в приложении.",
             "Не реализованы steering flow, разделение пиков, слияние/распад, полный QC IMPMCT и оценка места зарождения.",
+            "Физические признаки ПМЦ автоматически не проверяются: поля давления, ветра 10 м, температуры 500 гПа, поверхности моря, льда и доли суши служат для экспертной проверки.",
         ],
         "limitations": [
             "Этот план не является детектором, прогнозом или указанием места зарождения.",
             "Опубликованный IMPMCT относится к архиву Nordic Seas 2001–2024 и построен на ERA5; перенос параметров на CARRA2/MERRA-2 требует отдельной проверки.",
             "CARRA2 использует ERA5 в граничных условиях; их согласие не является независимым подтверждением.",
             "Неизвестные и непокрытые спутниковые сроки не считаются случаями без ПМЦ.",
+            "Наличие полей физического контекста не означает прохождение порогов или подтверждение ПМЦ; отсутствующие у адаптера поля не заменяются другим реанализом.",
         ],
 }

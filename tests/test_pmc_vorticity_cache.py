@@ -94,6 +94,23 @@ class CachedVorticity(unittest.TestCase):
         self.assertEqual(result["field_passport"]["grid"]["height"], 32)
         self.assertTrue(all(item["classification"] == "candidate" for item in result["candidates"]))
 
+    def test_russian_display_units_preserve_the_cf_wind_contract(self):
+        # The real normalizer stores a localized display label at the top level
+        # and SI units on each physical component. Hand-written old fixtures
+        # used SI everywhere and hid a total failure of the real import path.
+        self.metadata["unit"] = "м/с"
+        self._edit_netcdf(unit="м/с")
+        result = self.app.experimental_vorticity_850(self.identity)
+        self.assertEqual(result["passport"]["units"], "s-1")
+        with xr.open_dataset(self.path) as source:
+            invalid = source.load()
+        invalid["u"].attrs["units"] = "knots"
+        invalid.to_netcdf(self.path, engine="scipy")
+        self.metadata["sha256"] = digest(self.path)
+        self._write_metadata()
+        with self.assertRaisesRegex(ValueError, "Единицы"):
+            self.app.experimental_vorticity_850(self.identity)
+
     @staticmethod
     def _projected_grid(width=32, height=32):
         bounds = transform_bounds("EPSG:4326", "EPSG:3413", 20.0, 68.0, 23.0, 70.0,

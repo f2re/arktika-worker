@@ -1,3 +1,4 @@
+import copy
 import unittest
 
 from arktika.pmc_archive_run import build_archive_report, target_grid_for_area, validate_grid
@@ -92,6 +93,99 @@ class PmcArchiveRunTests(unittest.TestCase):
         self.assertEqual("unknown_ambiguous_observations", result["status"])
         self.assertEqual("ambiguous_eligible_observations", result["reason_code"])
         self.assertIsNone(result["metrics"])
+
+    def test_duplicate_comparison_records_are_unknown_independent_of_order(self):
+        stamp = "2024-01-01T01:00:00Z"
+        first = {"source": "era5", "valid_time": stamp, "grid": dict(GRID),
+                 "comparison": self.observation_comparison(stamp, "2024-01-01T00:30:00Z",
+                                                            "2024-01-01T01:30:00Z")}
+        second = copy.deepcopy(first)
+        second["valid_time"] = "2024-01-01T01:00:00+00:00"
+        second["comparison"]["observation"]["observation_id"] = "other-observation"
+        second["comparison"]["metrics"]["true_positive_pixels"] = 1_000_000
+        for entries in ([first, second], [second, first], [first, copy.deepcopy(first)]):
+            result = self.interval_report(entries)
+            self.assertEqual("unknown_ambiguous_comparisons", result["status"])
+            self.assertIsNone(result["metrics"])
+
+    def test_pixel_counts_must_agree_with_observed_coverage_and_grid_size(self):
+        stamp = "2024-01-01T01:00:00Z"
+        entry = {"source": "era5", "valid_time": stamp, "grid": dict(GRID),
+                 "comparison": self.observation_comparison(stamp, "2024-01-01T00:30:00Z",
+                                                            "2024-01-01T01:30:00Z")}
+        invalid = []
+        bad = copy.deepcopy(entry); bad["comparison"]["metrics"]["true_positive_pixels"] = 1_000_000; invalid.append(bad)
+        bad = copy.deepcopy(entry); bad["comparison"]["metrics"]["false_positive_pixels"] = True; invalid.append(bad)
+        bad = copy.deepcopy(entry); bad["comparison"]["coverage"]["observed_pixels"] = 21; invalid.append(bad)
+        bad = copy.deepcopy(entry); bad["comparison"]["coverage"]["observed_pixels"] = True; invalid.append(bad)
+        bad = copy.deepcopy(entry); bad["comparison"]["coverage"]["unknown_pixels"] = 400; invalid.append(bad)
+        bad = copy.deepcopy(entry); bad["comparison"]["coverage"]["valid_model_pixels"] = 19; invalid.append(bad)
+        bad = copy.deepcopy(entry); bad["comparison"]["coverage"] = None; invalid.append(bad)
+        bad = copy.deepcopy(entry)
+        bad["comparison"]["metrics"]["true_positive_pixels"] = 402
+        bad["comparison"]["coverage"]["observed_pixels"] = 420
+        invalid.append(bad)
+        for bad in invalid:
+            with self.subTest(comparison=bad["comparison"]):
+                result = self.interval_report([bad])
+                self.assertEqual("unknown_invalid_pixel_counts", result["status"])
+                self.assertIsNone(result["metrics"])
+
+    def test_stored_ratios_are_recomputed_from_counts(self):
+        stamp = "2024-01-01T01:00:00Z"
+        entry = {"source": "era5", "valid_time": stamp, "grid": dict(GRID),
+                 "comparison": self.observation_comparison(stamp, "2024-01-01T00:30:00Z",
+                                                            "2024-01-01T01:30:00Z")}
+        entry["comparison"]["metrics"].update(intersection_over_union=1.0,
+                                               probability_of_detection=99.0, false_alarm_ratio=-1.0)
+        result = self.interval_report([entry])
+        self.assertEqual(0.5, result["metrics"]["intersection_over_union"])
+        self.assertEqual(2 / 3, result["metrics"]["probability_of_detection"])
+        self.assertEqual(1 / 3, result["metrics"]["false_alarm_ratio"])
+
+    def test_duplicate_frames_break_tracks_and_cannot_count_twice_in_comparisons(self):
+        times = [f"2024-01-01T{hour:02d}:00:00Z" for hour in range(3)]
+        records = [{"field_id": str(hour) * 24, "source": "era5", "valid_time": stamp,
+                    "status": "completed", "result": frame(hour)} for hour, stamp in enumerate(times)]
+        duplicate = copy.deepcopy(records[1])
+        duplicate["field_id"] = "d" * 24
+        duplicate["valid_time"] = times[1].replace("Z", "+00:00")
+        for rows in (records + [duplicate], [duplicate] + records):
+            report = build_archive_report(
+                task_id="t" * 32, plan={"sources": ["era5"]},
+                expected_times={"era5": times}, interval_hours={"era5": 1},
+                frame_records=rows, cached_fields=[], target_grid=GRID,
+                satellite_comparisons=[{"source": "era5", "valid_time": times[1], "grid": dict(GRID),
+                    "comparison": self.observation_comparison(times[1], times[0], times[2])}],
+            )
+            self.assertEqual("partial", report["status"])
+            self.assertEqual(2, report["coverage"][0]["processed_steps"])
+            self.assertEqual(1, report["coverage"][0]["ambiguous_steps"])
+            self.assertEqual(2, report["tracks_by_source"][0]["track_count"])
+            self.assertTrue(all(len(track["points"]) == 1 for track in report["tracks_by_source"][0]["tracks"]))
+            ambiguous_records = [row for row in report["frames"] if row["field_id"] in ("1" * 24, "d" * 24)]
+            self.assertEqual(2, len(ambiguous_records))
+            self.assertTrue(all(row["status"] == "unknown_ambiguous_frame_records" and row["result"] is None
+                                for row in ambiguous_records))
+            satellite = report["satellite_comparison"]
+            self.assertEqual(0, satellite["matched_frame_count"])
+            self.assertIsNone(satellite["metrics"])
+            ambiguous = next(row for row in satellite["frames"] if row["valid_time"] == times[1])
+            self.assertEqual("unknown_ambiguous_frame_records", ambiguous["status"])
+
+    def test_result_cannot_change_record_source_or_time(self):
+        stamp = "2024-01-01T00:00:00Z"
+        for wrong in (frame(1), frame(0, source="merra2")):
+            report = build_archive_report(
+                task_id="t" * 32, plan={"sources": ["era5"]}, expected_times={"era5": [stamp]},
+                interval_hours={"era5": 1}, frame_records=[{"source": "era5", "valid_time": stamp,
+                    "status": "completed", "result": wrong}], cached_fields=[], target_grid=GRID)
+            self.assertEqual("not_publishable", report["output_status"])
+            self.assertEqual(0, report["coverage"][0]["processed_steps"])
+            self.assertEqual(1, report["coverage"][0]["invalid_steps"])
+            self.assertIsNone(report["frames"][0]["result"])
+            self.assertEqual("unknown_invalid_frame_record", report["frames"][0]["status"])
+            self.assertIsNone(report["satellite_comparison"]["metrics"])
 
     def test_target_grid_requires_bounded_projected_metre_affine(self):
         valid = validate_grid(GRID)

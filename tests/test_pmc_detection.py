@@ -6,6 +6,7 @@ import numpy as np
 
 from arktika.pmc_detection import (
     ALGORITHM_VERSION,
+    _candidate_geometry,
     _peak_saddle_diagnostics,
     _local_peak_diagnostics,
     _smooth_uniform_radius,
@@ -49,6 +50,7 @@ class PmcDetectionTests(unittest.TestCase):
         # At this deliberately coarse synthetic grid only the center cell is valid;
         # normalized convolution must preserve it rather than dilute it with nodata.
         self.assertEqual(5.0, smoothed[2, 2])
+        self.assertEqual(1, np.isfinite(smoothed).sum())
 
         values = np.zeros((5, 5), dtype=float)
         values[2, 2] = 5.0
@@ -146,7 +148,72 @@ class PmcDetectionTests(unittest.TestCase):
         self.assertTrue(structure["coverage_conserved"])
         self.assertEqual(13, result["satellite_comparison"]["metrics"]["false_positive_pixels"])
         json.dumps(result, allow_nan=False)
-        self.assertEqual("0.5.1", result["algorithm_version"])
+        self.assertEqual("0.6.0", result["algorithm_version"])
+
+    def test_missing_and_masked_cells_do_not_acquire_candidate_evidence(self):
+        for values in (np.full((15, 15), np.nan),
+                       np.ma.array(np.full((15, 15), 0.01), mask=True)):
+            values[7, 7] = 2e-4
+            with self.subTest(masked=np.ma.isMaskedArray(values)):
+                result = self.run_detector(values)
+                self.assertEqual(1, result["passport"]["quality_control"]["valid_cells"])
+                self.assertEqual(224, result["passport"]["quality_control"]["missing_or_outside_domain_cells"])
+                self.assertEqual(1, result["candidate_count"])
+                candidate = result["candidates"][0]
+                self.assertEqual(1, candidate["pixel_count"])
+                self.assertTrue(candidate["spatial_quality"]["boundary_censored"])
+                self.assertFalse(candidate["spatial_quality"]["complete_smoothing_support"])
+                self.assertEqual(1, candidate["spatial_quality"]["incomplete_smoothing_cell_count"])
+
+    def test_complete_interior_candidate_reports_unchanged_projected_geometry(self):
+        candidate = self.run_detector()["candidates"][0]
+        self.assertTrue(candidate["spatial_quality"]["complete_smoothing_support"])
+        self.assertFalse(candidate["spatial_quality"]["boundary_censored"])
+        self.assertAlmostEqual(49 * 60 * 60, candidate["projected_area_km2"])
+        self.assertEqual("complete", candidate["geometry"]["status"])
+        self.assertEqual("pixel_edges_rc", candidate["geometry"]["coordinate_system"])
+        self.assertEqual([4.0, 4.0], candidate["geometry"]["rings"][0][0])
+        self.assertEqual(candidate["geometry"]["rings"][0][0],
+                         candidate["geometry"]["rings"][0][-1])
+
+    def test_threshold_geometry_preserves_holes_disconnected_parts_and_vertex_limit(self):
+        mask = np.zeros((9, 9), dtype=bool)
+        mask[1:6, 1:6] = True
+        mask[2:5, 2:5] = False
+        mask[7, 7] = True
+        geometry = _candidate_geometry(mask)
+        self.assertEqual("complete", geometry["status"])
+        self.assertEqual(3, len(geometry["rings"]))
+        self.assertEqual("evenodd", geometry["fill_rule"])
+        self.assertTrue(all(ring[0] == ring[-1] for ring in geometry["rings"]))
+        with patch("arktika.pmc_detection.MAX_CANDIDATE_GEOMETRY_VERTICES", 4):
+            omitted = _candidate_geometry(mask)
+        self.assertEqual("omitted_complexity_limit", omitted["status"])
+        self.assertEqual([], omitted["rings"])
+
+    def test_positive_southern_vorticity_is_not_called_cyclonic(self):
+        self.grid = dict(self.grid, crs="EPSG:3031")
+        with self.assertRaisesRegex(ValueError, "Northern Hemisphere"):
+            self.run_detector()
+
+    def test_grid_metric_mismatch_and_infinite_vorticity_are_rejected(self):
+        for transform in ([1, 0, 0, 0, -60000, 450000],
+                          [60000, 100, 0, 0, -60000, 450000],
+                          [0, 0, 0, 0, -60000, 450000]):
+            self.grid["transform"] = transform
+            with self.subTest(transform=transform), self.assertRaisesRegex(ValueError, "transform"):
+                self.run_detector()
+        self.setUp()
+        values = self.field()
+        values[0, 0] = np.inf
+        with self.assertRaisesRegex(ValueError, "infinite"):
+            self.run_detector(values)
+
+    def test_domain_masks_cannot_turn_unknown_or_nonbinary_cells_into_valid_domain(self):
+        for domain in (np.full((15, 15), np.nan), np.full((15, 15), 2),
+                       np.ma.array(np.ones((15, 15), dtype=bool), mask=True)):
+            with self.subTest(domain_type=str(domain.dtype)), self.assertRaisesRegex(ValueError, "domain mask"):
+                self.run_detector(domain_mask=domain)
 
     def test_saddle_diagnostic_does_not_change_candidate_area_for_a_single_peak(self):
         result = self.run_detector()

@@ -55,7 +55,9 @@ def dataset(source='era5',variable='t',offset=0):
         data[name]=(dims,values,{'units':unit,'standard_name':first_name})
         second={'era5':'v' if variable=='wind' else 'v10','merra2':'V' if variable=='wind' else 'V10M','carra2':'wind_direction' if variable=='wind' else '10m_wind_direction'}[source]
         data[second]=(dims,np.full_like(values,270 if source=='carra2' else 0),{'units':'degrees' if source=='carra2' else 'm s-1','standard_name':'wind_from_direction' if source=='carra2' else 'northward_wind'})
-    return xr.Dataset(data,coords=coords,attrs={'title':'SYNTHETIC SOFTWARE TEST, NOT OBSERVATIONS'})
+    # Metadata-neutral analytic fixture: production rejects explicit synthetic
+    # source labels; that refusal is checked separately from unit arithmetic.
+    return xr.Dataset(data,coords=coords,attrs={'title':'Analytic unit-test fixture; not observations'})
 
 
 class RequestPlans(unittest.TestCase):

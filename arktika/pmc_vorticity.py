@@ -16,7 +16,7 @@ import numpy as np
 from .product_schema import product_passport
 
 ALGORITHM_ID = "arktika.experimental_spherical_relative_vorticity"
-ALGORITHM_VERSION = "0.2.0"
+ALGORITHM_VERSION = "0.3.0"
 EARTH_RADIUS_M = 6_371_000.0
 
 
@@ -32,9 +32,12 @@ def _utc(value: Any) -> str:
     return parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def _coordinates(latitude: Any, longitude: Any, shape: tuple[int, int]):
-    lat = np.asarray(latitude, dtype=np.float64)
-    lon = np.asarray(longitude, dtype=np.float64)
+def _coordinates(latitude: Any, longitude: Any, shape: tuple[int, int], *, valid_mask=None):
+    lat = np.ma.asarray(latitude, dtype=np.float64).filled(np.nan)
+    lon = np.ma.asarray(longitude, dtype=np.float64).filled(np.nan)
+    support = np.ones(shape, dtype=bool) if valid_mask is None else np.asarray(valid_mask, dtype=bool)
+    if support.shape != shape:
+        raise ValueError("coordinate support mask must match the field")
     if lat.ndim == lon.ndim == 1 and (lat.size, lon.size) == shape:
         lat1, lon1 = lat, lon
     elif lat.ndim == lon.ndim == 2 and lat.shape == lon.shape == shape:
@@ -45,21 +48,22 @@ def _coordinates(latitude: Any, longitude: Any, shape: tuple[int, int]):
         if rectilinear:
             lat1, lon1 = lat[:, 0], lon[0, :]
         else:
-            if (not np.isfinite(lat).all() or not np.isfinite(lon).all()
-                    or np.any(np.abs(lat) >= 87.0)):
-                raise ValueError("curvilinear coordinates must be finite and remain below 87 degrees latitude")
+            if (np.any(np.abs(lat) > 90.0) or np.any((np.abs(lat) >= 87.0) & support)):
+                raise ValueError("curvilinear coordinates must be physical; valid data must remain below 87 degrees latitude")
             phi = np.deg2rad(lat)
             # Unwrap across columns and rows so row-specific 2π branches do not
             # create artificial cross-row longitude gradients at the dateline.
             lam = np.unwrap(np.unwrap(np.deg2rad(lon), axis=1), axis=0)
-            if (np.max(np.abs(np.diff(lam, axis=0))) >= np.pi
-                    or np.max(np.abs(np.diff(lam, axis=1))) >= np.pi):
+            row_support = support[:-1, :] | support[1:, :]
+            col_support = support[:, :-1] | support[:, 1:]
+            if (np.any((np.abs(np.diff(lam, axis=0)) >= np.pi) & row_support)
+                    or np.any((np.abs(np.diff(lam, axis=1)) >= np.pi) & col_support)):
                 raise ValueError("curvilinear longitude mesh has an ambiguous dateline discontinuity")
-            if np.max(np.hypot(np.diff(phi, axis=0),
-                               np.cos(phi[:-1, :]) * np.diff(lam, axis=0))) > np.deg2rad(5.0):
+            if np.any((np.hypot(np.diff(phi, axis=0),
+                               np.cos(phi[:-1, :]) * np.diff(lam, axis=0)) > np.deg2rad(5.0)) & row_support):
                 raise ValueError("curvilinear row spacing exceeds the supported local-grid limit")
-            if np.max(np.hypot(np.diff(phi, axis=1),
-                               np.cos(phi[:, :-1]) * np.diff(lam, axis=1))) > np.deg2rad(5.0):
+            if np.any((np.hypot(np.diff(phi, axis=1),
+                               np.cos(phi[:, :-1]) * np.diff(lam, axis=1)) > np.deg2rad(5.0)) & col_support):
                 raise ValueError("curvilinear column spacing exceeds the supported local-grid limit")
             return phi, lam, "curvilinear_latitude_longitude"
     else:
@@ -68,8 +72,8 @@ def _coordinates(latitude: Any, longitude: Any, shape: tuple[int, int]):
         raise ValueError("at least three rows and columns are required for centered derivatives")
     if not np.isfinite(lat1).all() or not np.isfinite(lon1).all():
         raise ValueError("latitude/longitude axes must be finite")
-    if np.any(np.abs(lat1) >= 87.0):
-        raise ValueError("grid too close to the pole for this regular lat/lon stencil")
+    if np.any(np.abs(lat1) > 90.0) or np.any((np.abs(lat1[:, None]) >= 87.0) & support):
+        raise ValueError("valid data too close to the pole for this regular lat/lon stencil")
     lat_rad = np.deg2rad(lat1)
     lon_rad = np.unwrap(np.deg2rad(lon1))
     if np.any(np.diff(lat_rad) == 0) or not (np.all(np.diff(lat_rad) > 0) or np.all(np.diff(lat_rad) < 0)):
@@ -80,33 +84,47 @@ def _coordinates(latitude: Any, longitude: Any, shape: tuple[int, int]):
         spacing = np.diff(axis)
         if not np.allclose(spacing, spacing[0], rtol=1e-6, atol=1e-12):
             raise ValueError(f"{name} axis must have uniform spacing")
-    # Refuse large gaps and global wrap ambiguity; this method is for a local native window.
-    if np.max(np.abs(np.diff(lon_rad))) > np.deg2rad(5.0):
-        raise ValueError("longitude spacing exceeds the supported local-window limit")
+        if np.max(np.abs(spacing)) > np.deg2rad(5.0) + 1e-12:
+            raise ValueError(f"{name} spacing exceeds the supported local-window limit")
     lat2, lon2 = np.meshgrid(lat_rad, lon_rad, indexing="ij")
     return lat2, lon2, "regular_latitude_longitude"
 
 
-def _curvilinear_derivatives(values: np.ndarray, phi: np.ndarray, lam: np.ndarray):
+def _curvilinear_derivatives(values: np.ndarray, phi: np.ndarray, lam: np.ndarray, *, required_mask=None):
     """Convert row/column derivatives to geographic derivatives using the mesh Jacobian."""
     dphi_dr, dphi_dc = np.gradient(phi, axis=(0, 1), edge_order=2)
     dlam_dr, dlam_dc = np.gradient(lam, axis=(0, 1), edge_order=2)
     jacobian = dphi_dr * dlam_dc - dphi_dc * dlam_dr
     scale = np.abs(dphi_dr * dlam_dc) + np.abs(dphi_dc * dlam_dr)
     relative_area = np.divide(np.abs(jacobian), scale, out=np.zeros_like(jacobian), where=scale > 0)
-    if (not np.isfinite(jacobian).all() or np.any(relative_area < 1e-5)
-            or not (np.all(jacobian > 0) or np.all(jacobian < 0))):
+    required = np.ones(values.shape, dtype=bool) if required_mask is None else required_mask
+    if (not np.isfinite(jacobian[required]).all() or np.any(relative_area[required] < 1e-5)
+            or not (np.all(jacobian[required] > 0) or np.all(jacobian[required] < 0))):
         raise ValueError("curvilinear grid Jacobian is singular, ill-conditioned, or changes orientation")
     dvalue_dr, dvalue_dc = np.gradient(values, axis=(0, 1), edge_order=2)
-    dvalue_dphi = (dvalue_dr * dlam_dc - dvalue_dc * dlam_dr) / jacobian
-    dvalue_dlam = (dphi_dr * dvalue_dc - dphi_dc * dvalue_dr) / jacobian
+    dvalue_dphi = np.divide(dvalue_dr * dlam_dc - dvalue_dc * dlam_dr, jacobian,
+                            out=np.full_like(values, np.nan), where=required)
+    dvalue_dlam = np.divide(dphi_dr * dvalue_dc - dphi_dc * dvalue_dr, jacobian,
+                            out=np.full_like(values, np.nan), where=required)
     return dvalue_dphi, dvalue_dlam
+
+
+def _curvilinear_stencil_support(valid: np.ndarray) -> np.ndarray:
+    """Cells whose two second-order row/column stencils contain only data."""
+    support = valid.copy()
+    for axis in (0, 1):
+        v = np.moveaxis(valid, axis, 0)
+        s = np.moveaxis(support, axis, 0)
+        s[1:-1] &= v[:-2] & v[2:]
+        s[0] &= v[1] & v[2]
+        s[-1] &= v[-2] & v[-3]
+    return support
 
 
 def derive_relative_vorticity_850(u: Any, v: Any, latitude: Any, longitude: Any, *,
                                   field_metadata: dict[str, Any],
                                   grid_id: str | None = None) -> dict[str, Any]:
-    """Return ζ = dv/dx − du/dy using a spherical regular-lat/lon stencil.
+    """Return ζ = (∂v/∂λ − ∂(u cosφ)/∂φ)/(a cosφ) on a sphere.
 
     ``field_metadata`` must carry source, variable, units, level_hPa, valid_time,
     time_kind, wind_reference, and source_version. The returned passport covers
@@ -141,7 +159,8 @@ def derive_relative_vorticity_850(u: Any, v: Any, latitude: Any, longitude: Any,
         raise ValueError("u/v must be same-shape 2-D arrays, at least 3×3")
     if np.isinf(eastward).any() or np.isinf(northward).any():
         raise ValueError("infinite wind values are invalid; use NaN for nodata")
-    phi, lam, grid_type = _coordinates(latitude, longitude, eastward.shape)
+    input_support = np.isfinite(eastward) & np.isfinite(northward)
+    phi, lam, grid_type = _coordinates(latitude, longitude, eastward.shape, valid_mask=input_support)
     lat2, lon2 = phi, lam
     cos_lat = np.cos(phi)
     if grid_type == "regular_latitude_longitude":
@@ -149,8 +168,9 @@ def derive_relative_vorticity_850(u: Any, v: Any, latitude: Any, longitude: Any,
         d_u_cos_d_lat = np.gradient(eastward * cos_lat, phi[:, 0], axis=0, edge_order=2)
         zeta = (d_v_d_lon - d_u_cos_d_lat) / (EARTH_RADIUS_M * cos_lat)
     else:
-        d_u_d_phi, _ = _curvilinear_derivatives(eastward, phi, lam)
-        _, d_v_d_lam = _curvilinear_derivatives(northward, phi, lam)
+        stencil_support = _curvilinear_stencil_support(input_support)
+        d_u_d_phi, _ = _curvilinear_derivatives(eastward, phi, lam, required_mask=stencil_support)
+        _, d_v_d_lam = _curvilinear_derivatives(northward, phi, lam, required_mask=stencil_support)
         zeta = (d_v_d_lam - cos_lat * d_u_d_phi + eastward * np.sin(phi)) / (EARTH_RADIUS_M * cos_lat)
     zeta[~np.isfinite(zeta)] = np.nan
 
@@ -204,7 +224,7 @@ def derive_relative_vorticity_850(u: Any, v: Any, latitude: Any, longitude: Any,
             "Экспериментальная диагностика, не прогноз и не подтверждение ПМЦ.",
             "Хэш исходного файла передан вызывающим кодом; этот чистый численный модуль не подтверждает привязку файла к массивам.",
             "Криволинейная сетка поддерживается только как структурированная 2-D географическая mesh с невырожденным согласованным Jacobian; реальная геометрия CARRA2 здесь не проверялась.",
-            "Полярные широты |latitude| >= 87° отклоняются из-за вырожденности регулярной lat/lon метрики.",
+            "Узлы с данными на широтах |latitude| >= 87° отклоняются из-за вырожденности географической метрики; координаты за пределами маски данных не расширяют область расчёта.",
             "Эта функция только выводит поле вихревости; перепроецирование и детектор выполняются отдельно и не означают метеорологическую проверку.",
         ] + (["CARRA2 использует ERA5 в граничных условиях; их согласие не является независимым подтверждением."]
              if field_metadata["source"] == "carra2" else []),

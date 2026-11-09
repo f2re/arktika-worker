@@ -6,10 +6,11 @@ import json
 import re
 import numpy as np
 from .catalog import VARIABLES, VERSION
+from ..source_validation import reject_explicit_synthetic_metadata
 
 MAX_POINTS = 9_000_000
-CF_UNITS={'t':'degC','t2m':'degC','sst':'degC','q':'g kg-1','rh':'%','ice':'%','z':'m','wind':'m s-1','wind10':'m s-1','omega':'Pa s-1','mslp':'hPa'}
-CF_NAMES={'t':'air_temperature','t2m':'air_temperature','sst':'sea_surface_temperature','q':'specific_humidity','rh':'relative_humidity','ice':'sea_ice_area_fraction','z':'geopotential_height','wind':'wind_speed','wind10':'wind_speed','omega':'lagrangian_tendency_of_air_pressure','mslp':'air_pressure_at_mean_sea_level'}
+CF_UNITS={'t':'degC','t2m':'degC','sst':'degC','q':'g kg-1','rh':'%','ice':'%','lsm':'%','z':'m','wind':'m s-1','wind10':'m s-1','omega':'Pa s-1','mslp':'hPa'}
+CF_NAMES={'t':'air_temperature','t2m':'air_temperature','sst':'sea_surface_temperature','q':'specific_humidity','rh':'relative_humidity','ice':'sea_ice_area_fraction','lsm':'land_area_fraction','z':'geopotential_height','wind':'wind_speed','wind10':'wind_speed','omega':'lagrangian_tendency_of_air_pressure','mslp':'air_pressure_at_mean_sea_level'}
 
 
 def _coord(ds, names, standard=None):
@@ -51,21 +52,27 @@ def convert(v, kind):
     elif kind=='q':
         if u in ('kgkg-1','kg/kg','1'): a*=1000.
         elif u not in ('gkg-1','g/kg'): raise ValueError('Неизвестные единицы удельной влажности: '+u)
-    elif kind in ('rh','ice'):
-        if u in ('1','fraction','(0-1)'): a*=100.
+    elif kind in ('rh','ice','lsm'):
+        if u in ('1','fraction','(0-1)','dimensionless'): a*=100.
         elif u not in ('%','percent','percentage'): raise ValueError('Неизвестные единицы доли/влажности: '+u)
+        # Unlike relative humidity, land and ice fractions cannot exceed 100%.
+        if kind in ('ice','lsm') and np.any(np.isfinite(a)&((a<0)|(a>100))):
+            raise ValueError('Доля суши/морского льда должна находиться в пределах 0…100%.')
     elif kind in ('wind','wind10','u','v'):
         if u not in ('ms-1','m/s','metersecond-1','metrespersecond'): raise ValueError('Ветер должен иметь единицы м/с, не узлы и не градусы.')
     elif kind=='omega':
         if u not in ('pas-1','pa/s'): raise ValueError('Для ω нужны Па/с; геометрическая скорость м/с не эквивалентна ω.')
     elif kind=='direction':
-        if u not in ('degree','degrees','deg','degrees_true','degree_true','°'): raise ValueError('Неизвестные единицы направления ветра.')
+        if u not in ('degree','degrees','deg','degrees_true','degree_true','degreetrue','degreestrue','degreesfromnorth','degreefromnorth','°'): raise ValueError('Неизвестные единицы направления ветра.')
     a[~np.isfinite(a)]=np.nan
     return a.astype('float32')
 
 
-def _geographic_wind_frame(variable, expected_standard_name):
+def _geographic_wind_frame(variable, expected_standard_name, *, source=None):
     """Require evidence that a wind input is referenced to true east/north."""
+    declared = variable.attrs.get('standard_name')
+    if declared and declared != expected_standard_name:
+        raise ValueError('Метаданные компоненты ветра противоречат географической ориентации.')
     frame = variable.attrs.get('GRIB_uvRelativeToGrid')
     if frame is not None:
         try:
@@ -74,7 +81,12 @@ def _geographic_wind_frame(variable, expected_standard_name):
         except (TypeError, ValueError) as exc:
             raise ValueError('Не удалось подтвердить географическую ориентацию ветра.') from exc
         return
-    if variable.attrs.get('standard_name') != expected_standard_name:
+    # NASA MERRA-2 ASM uses these exact CF-like names in long_name instead of
+    # standard_name. Do not generalize this exception to arbitrary datasets.
+    nasa_name = str(variable.attrs.get('long_name', '')).strip()
+    nasa_expected=('10-meter_'+expected_standard_name
+                   if str(variable.name).upper() in ('U10M','V10M') else expected_standard_name)
+    if declared != expected_standard_name and not (source == 'merra2' and nasa_name == nasa_expected):
         raise ValueError('У компоненты ветра нет признака географической ориентации; расчёт остановлен.')
 
 
@@ -126,6 +138,10 @@ def spatial_slice(ds, area):
 
 def normalize(ds, plan, area=None):
     import xarray as xr
+    # Do not erase an explicit artificial-data label when building a passport.
+    reject_explicit_synthetic_metadata(ds.attrs)
+    for variable in ds.data_vars.values():
+        reject_explicit_synthetic_metadata(variable.attrs)
     ds=spatial_slice(exact_slice(ds,plan),area or plan['area'])
     key=plan['variable'];spec=VARIABLES[key];source=plan['source']
     native_export=ds.attrs.get('version')==VERSION and ds.attrs.get('source')==source and ds.attrs.get('variable')==key and not ds.attrs.get('difference_of')
@@ -159,7 +175,8 @@ def normalize(ds, plan, area=None):
             except (TypeError, ValueError):
                 raise ValueError('Не удалось подтвердить географическую ориентацию направления CARRA2.') from None
         else:
-            direction_is_grid = direction_var.attrs.get('standard_name') != 'wind_from_direction'
+            true_units = unit_text(direction_var) in ('degrees_true','degree_true','degreetrue','degreestrue','degreesfromnorth','degreefromnorth')
+            direction_is_grid = direction_var.attrs.get('standard_name') != 'wind_from_direction' and not true_units
         if direction_is_grid or 'grid' in str(direction_var.attrs.get('standard_name','')).lower():
             raise ValueError('Направление CARRA2 объявлено относительно сетки, а не географического севера.')
         direction=convert(direction_var,'direction')
@@ -171,8 +188,8 @@ def normalize(ds, plan, area=None):
         uvar=take([spec.merra if source=='merra2' else spec.cds,*spec.aliases])
         vnames=['V','v','northward_wind','v_component_of_wind'] if key=='wind' else ['V10M','v10','10v','10m_v_component_of_wind']
         vvar=take(vnames)
-        _geographic_wind_frame(uvar, 'eastward_wind')
-        _geographic_wind_frame(vvar, 'northward_wind')
+        _geographic_wind_frame(uvar, 'eastward_wind', source=source)
+        _geographic_wind_frame(vvar, 'northward_wind', source=source)
         u=convert(uvar,'u');v=convert(vvar,'v');values=np.hypot(u,v);vectors={'u':u,'v':v};attrs['wind_reference']='east_north'
     else:
         values=convert(take(['value'] if native_export else [spec.merra if source=='merra2' else spec.carra if source=='carra2' else spec.cds,*spec.aliases]),key)

@@ -694,10 +694,17 @@ async function inspectAt(x,y,keep=false) {
 }
 
 function drawPoint(r) {
+  const profileKind=r.profile_kind||r.profile_snapshot?.data_kind;
+  if([r.profile_kind,r.profile_snapshot?.data_kind].some(kind=>['synthetic_demo','synthetic','demo'].includes(kind))){
+    UI.analysis=null;$('#analysisExport').hidden=true;$('#analysisExport').removeAttribute('href');
+    $('#profilePointResult').replaceChildren();$('#pointControls').hidden=true;
+    $('#pixel').replaceChildren();const message=document.createElement('p');message.className='notice';
+    message.textContent='Сохранённый результат использует искусственный профиль и не может применяться для диагностики. Выберите реальный профиль и рассчитайте точку заново.';
+    $('#pixel').append(message);return;
+  }
   const p=r.pixel,a=r.analysis;
   const coordinates=`${num(Math.abs(p.lat),3)}° ${p.lat>=0?'с.':'ю.'} ш. · ${num(Math.abs(p.lon),3)}° ${p.lon>=0?'в.':'з.'} д.`;
-  const profileKind=r.profile_kind||r.profile_snapshot?.data_kind;
-  const profileBadge=profileKind==='synthetic_demo'?'<span class="pill pill-auto" title="Синтетический профиль для демонстрации интерфейса">Демонстрационный профиль</span>':profileKind==='era5'?'<span class="pill pill-auto" title="Профиль получен из ERA5">ERA5</span>':profileKind==='provided_profile'?'<span class="pill pill-auto" title="Использован предоставленный профиль">Профиль</span>':'';
+  const profileBadge=profileKind==='era5'?'<span class="pill pill-auto" title="Профиль получен из ERA5">ERA5</span>':profileKind==='provided_profile'?'<span class="pill pill-auto" title="Использован предоставленный профиль">Профиль</span>':'';
   let html=`<div class="point-heading"><h3>${coordinates}</h3><div class="heading-badges">${profileBadge}<span class="pill" data-tip="${escape(sourceCal[a.calibration])}">${escape(displayCal[a.calibration]||'K')}</span></div></div>`;
 
   const cth = r.profile_result?.candidate_cloud_top || (r.profile_result?.height?.candidate_heights_m?.length ? r.profile_result.height : null);

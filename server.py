@@ -99,11 +99,11 @@ class Handler(BaseHTTPRequestHandler):
                 self.send(303,b'',extra={'Location':'/'})
             except Exception as e:self.error(e)
             return
-        if path in ('/','/app.js','/style.css','/icon.svg','/favicon.ico','/studio.js','/catalog.js','/catalog.css','/product_flow.js','/era5.js','/reanalysis.js','/reanalysis.css'):
+        if path in ('/','/app.js','/style.css','/icon.svg','/favicon.ico','/studio.js','/catalog.js','/catalog.css','/product_flow.js','/era5.js','/reanalysis.js','/reanalysis.css','/pmc_workspace.js'):
             if not self.gate(False):return
-            names={'/reanalysis.js':'reanalysis.js','/reanalysis.css':'reanalysis.css','/era5.js':'era5.js','/':'index.html','/app.js':'app.js','/style.css':'style.css','/icon.svg':'icon.svg','/favicon.ico':'icon.svg','/studio.js':'studio.js','/product_flow.js':'product_flow.js','/catalog.js':'catalog.js','/catalog.css':'catalog.css'}
+            names={'/pmc_workspace.js':'pmc_workspace.js','/reanalysis.js':'reanalysis.js','/reanalysis.css':'reanalysis.css','/era5.js':'era5.js','/':'index.html','/app.js':'app.js','/style.css':'style.css','/icon.svg':'icon.svg','/favicon.ico':'icon.svg','/studio.js':'studio.js','/product_flow.js':'product_flow.js','/catalog.js':'catalog.js','/catalog.css':'catalog.css'}
             p=ROOT/'static'/names[path]
-            ctype={'reanalysis.js':'application/javascript; charset=utf-8','reanalysis.css':'text/css; charset=utf-8','era5.js':'application/javascript; charset=utf-8','index.html':'text/html; charset=utf-8','app.js':'application/javascript; charset=utf-8','studio.js':'application/javascript; charset=utf-8','product_flow.js':'application/javascript; charset=utf-8','catalog.js':'application/javascript; charset=utf-8','catalog.css':'text/css; charset=utf-8','style.css':'text/css; charset=utf-8','icon.svg':'image/svg+xml'}[p.name]
+            ctype={'pmc_workspace.js':'application/javascript; charset=utf-8','reanalysis.js':'application/javascript; charset=utf-8','reanalysis.css':'text/css; charset=utf-8','era5.js':'application/javascript; charset=utf-8','index.html':'text/html; charset=utf-8','app.js':'application/javascript; charset=utf-8','studio.js':'application/javascript; charset=utf-8','product_flow.js':'application/javascript; charset=utf-8','catalog.js':'application/javascript; charset=utf-8','catalog.css':'text/css; charset=utf-8','style.css':'text/css; charset=utf-8','icon.svg':'image/svg+xml'}[p.name]
             self.send(200,p.read_bytes(),ctype);return
         if path=='/health':
             if self.gate(False):self.send(200,{'app':'arktika-web','version':__version__})
@@ -117,6 +117,8 @@ class Handler(BaseHTTPRequestHandler):
             elif path=='/api/sources':result=app.source_state()
             elif path=='/api/reanalysis/state':result=app.fields_state()
             elif path=='/api/pmc/observations':result=app.pmc_observations_state()
+            elif path=='/api/pmc/bookmarks':result=app.pmc_bookmarks()
+            elif path=='/api/pmc/bookmark':result=app.pmc_bookmark(q.get('id',''))
             elif path=='/api/pmc/archive/state':result=app.pmc_archive_state()
             elif path=='/api/pmc/archive/prepare/state':result=app.pmc_archive_prepare_state()
             elif path=='/api/pmc/archive/report':
@@ -207,6 +209,8 @@ class Handler(BaseHTTPRequestHandler):
             if path=='/api/era5/credentials':result=app.era5_credentials(data)
             elif path=='/api/sources/credentials':result=app.source_credentials(data)
             elif path=='/api/reanalysis/add':result=app.fields_add(data)
+            elif path=='/api/pmc/bookmarks/save':result=app.pmc_bookmark_save(data)
+            elif path=='/api/pmc/bookmarks/delete':result=app.pmc_bookmark_delete(data)
             elif path=='/api/pmc/archive/plan':result=app.pmc_archive_plan(data)
             elif path=='/api/pmc/archive/grid':
                 if set(data)!={'preset','width','area'}:raise ValueError('Нужны preset, width и выбранный регион area.')

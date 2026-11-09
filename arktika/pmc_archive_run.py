@@ -5,6 +5,7 @@ evidence that a cyclone was absent, and it never infers a genesis location.
 """
 from __future__ import annotations
 
+from collections import Counter
 from datetime import datetime, timezone
 from math import isfinite
 from numbers import Real
@@ -23,7 +24,7 @@ from .product_schema import product_passport
 
 
 ALGORITHM_ID = "arktika.experimental_pmc_archive_run"
-ALGORITHM_VERSION = "0.5.0"
+ALGORITHM_VERSION = "0.6.0"
 MAX_FIELDS = 128
 MAX_GRID_PIXELS = 1_048_576
 
@@ -316,6 +317,48 @@ def _onset_satellite_evidence(
     elif isinstance(row.get("reason_code"), str):
         result["reason_code"] = row["reason_code"]
     return result
+
+
+def _frame_key(row: Any) -> tuple[str, str] | None:
+    """Canonical source/UTC identity, shared by frames and comparison records."""
+    if not isinstance(row, dict) or not isinstance(row.get("source"), str) or not row["source"].strip():
+        return None
+    try:
+        return row["source"], _utc(row.get("valid_time")).isoformat().replace("+00:00", "Z")
+    except (TypeError, ValueError):
+        return None
+
+
+def _contingency_metrics(counts: dict[str, int]) -> dict[str, Any]:
+    """Always derive ratios from validated integer pixel counts."""
+    tp, fp, fn = (counts["true_positive_pixels"], counts["false_positive_pixels"],
+                  counts["false_negative_pixels"])
+    return {**counts, "intersection_over_union": tp / (tp + fp + fn) if tp + fp + fn else None,
+            "probability_of_detection": tp / (tp + fn) if tp + fn else None,
+            "false_alarm_ratio": fp / (tp + fp) if tp + fp else None}
+
+
+def _valid_comparison_counts(counts: dict[str, Any], coverage: Any, total_cells: int) -> bool:
+    def integer(value):
+        return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+    if not isinstance(coverage, dict) or not all(integer(value) for value in counts.values()):
+        return False
+    observed = coverage.get("observed_pixels")
+    if not integer(observed) or not 0 < observed <= total_cells or sum(counts.values()) != observed:
+        return False
+    for key in ("valid_model_pixels", "unknown_pixels", "candidate_pixels_outside_coverage"):
+        if key in coverage and (not integer(coverage[key]) or coverage[key] > total_cells):
+            return False
+    unknown = coverage.get("unknown_pixels")
+    model = coverage.get("valid_model_pixels")
+    outside = coverage.get("candidate_pixels_outside_coverage")
+    return not ((unknown is not None and observed + unknown > total_cells)
+                or (model is not None and model < observed)
+                or (model is not None and unknown is not None and observed + unknown != model)
+                or (outside is not None and unknown is not None and outside > unknown))
+
+
 def build_archive_report(*, task_id: str, plan: dict[str, Any],
                          expected_times: dict[str, list[str]],
                          interval_hours: dict[str, int],
@@ -324,9 +367,28 @@ def build_archive_report(*, task_id: str, plan: dict[str, Any],
                          target_grid: dict[str, Any] | None = None,
                          satellite_comparisons: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     """Summarize completed cached frames and link only contiguous sequences."""
-    successful = [row for row in frame_records if row.get("status") == "completed"
-                  and isinstance(row.get("result"), dict)]
-    errors = [row for row in frame_records if row.get("status") == "error"]
+    # Duplicate source/UTC records are ambiguous even when byte-identical or
+    # when one is an error. Never let ordering pick a scientific observation.
+    record_counts = Counter(key for row in frame_records if (key := _frame_key(row)) is not None)
+    ambiguous_frames = {key for key, count in record_counts.items() if count > 1}
+    successful, errors = [], []
+    invalid_frames = set()
+    for row in frame_records:
+        key = _frame_key(row)
+        if key is None or key in ambiguous_frames or key[0] not in plan["sources"]:
+            continue
+        if row.get("status") == "error":
+            errors.append(row)
+        elif row.get("status") == "completed" and _frame_key(row.get("result")) == key:
+            frame = {**row["result"], "valid_time": key[1]}
+            if isinstance(frame.get("candidates"), list) and frame.get("candidate_count") == len(frame["candidates"]):
+                successful.append({**row, "valid_time": key[1], "result": frame})
+            else:
+                invalid_frames.add(key)
+        else:
+            invalid_frames.add(key)
+    evidence_records = [({**row, "status": "invalid"} if _frame_key(row) in invalid_frames else row)
+                        for row in frame_records if isinstance(row, dict)]
     frame_by_source: dict[str, list[dict[str, Any]]] = {}
     for row in successful:
         frame = row["result"]
@@ -350,9 +412,11 @@ def build_archive_report(*, task_id: str, plan: dict[str, Any],
             "source": source,
             "expected_steps": len(expected),
             "cached_steps": len(cached_times),
-            "selected_steps": sum(1 for row in frame_records if row.get("source") == source),
+            "selected_steps": sum(1 for row in frame_records if isinstance(row, dict) and row.get("source") == source),
             "processed_steps": len(completed_times),
             "failed_steps": source_errors,
+            "ambiguous_steps": sum(key[0] == source for key in ambiguous_frames),
+            "invalid_steps": sum(key[0] == source for key in invalid_frames),
             "unprocessed_steps": len(missing),
             "unprocessed_preview_utc": missing[:24],
             "unprocessed_preview_truncated": len(missing) > 24,
@@ -392,7 +456,7 @@ def build_archive_report(*, task_id: str, plan: dict[str, Any],
         emergence_evidence = [
             _candidate_emergence_evidence(
                 track, source=source, expected_times=expected,
-                frame_records=frame_records,
+                frame_records=evidence_records,
             )
             for track in tracks
         ]
@@ -401,7 +465,8 @@ def build_archive_report(*, task_id: str, plan: dict[str, Any],
                            "candidate_emergence_evidence": emergence_evidence,
                            "limitations": linked["limitations"] if segments else []})
 
-    incomplete = any(item["unprocessed_steps"] or item["failed_steps"] for item in coverage)
+    incomplete = any(item["unprocessed_steps"] or item["failed_steps"] or item["ambiguous_steps"]
+                     or item["invalid_steps"] for item in coverage)
     source_agreement = None
     if len(plan["sources"]) > 1:
         agreement_frames = []
@@ -442,23 +507,24 @@ def build_archive_report(*, task_id: str, plan: dict[str, Any],
     observed_count = 0
     listed_pairs: set[tuple[str, str]] = set()
     comparisons_by_frame: dict[tuple[str, str], dict[str, Any]] = {}
+    ambiguous_comparisons: set[tuple[str, str]] = set()
     for entry in satellite_comparisons or []:
-        if not isinstance(entry, dict):
+        key = _frame_key(entry)
+        if key is None:
             continue
-        source = entry.get("source")
-        try:
-            stamp = _utc(entry.get("valid_time")).isoformat().replace("+00:00", "Z")
-        except (TypeError, ValueError):
-            continue
-        if isinstance(source, str):
-            comparisons_by_frame[(source, stamp)] = entry
-    for row in frame_records:
-        if row.get("status") != "completed" or not isinstance(row.get("result"), dict):
-            continue
+        if key in comparisons_by_frame:
+            ambiguous_comparisons.add(key)
+        else:
+            comparisons_by_frame[key] = entry
+    for row in successful:
         result = row["result"]
-        try:
-            stamp = _utc(row.get("valid_time") or result.get("valid_time")).isoformat().replace("+00:00", "Z")
-        except (TypeError, ValueError):
+        stamp = row["valid_time"]
+        key = (row["source"], stamp)
+        if key in ambiguous_comparisons:
+            listed_pairs.add(key)
+            satellite_frames.append({"source": key[0], "valid_time": stamp,
+                                     "status": "unknown_ambiguous_comparisons",
+                                     "reason_code": "duplicate_comparison_records", "metrics": None})
             continue
         entry = comparisons_by_frame.get((row.get("source"), stamp))
         if entry is None:
@@ -510,17 +576,18 @@ def build_archive_report(*, task_id: str, plan: dict[str, Any],
             satellite_frames.append(frame)
             continue
         counts = {key: metrics.get(key) for key in aggregate}
-        if any(isinstance(value, bool) or not isinstance(value, int) or value < 0
-               for value in counts.values()):
+        comparison_coverage = comparison.get("coverage")
+        if not _valid_comparison_counts(counts, comparison_coverage,
+                                         target_grid["width"] * target_grid["height"]):
             satellite_frames.append({"source": row.get("source"), "valid_time": row.get("valid_time"),
-                                     "status": "unknown_unmatched", "metrics": None})
+                                     "status": "unknown_invalid_pixel_counts", "metrics": None})
             continue
         for key, value in counts.items():
             aggregate[key] += value
         observed_count += 1
         satellite_frames.append({"source": row.get("source"), "valid_time": row.get("valid_time"),
                                  "status": "comparison_only", "observation": observation,
-                                 "metrics": dict(metrics), "coverage": comparison.get("coverage")})
+                                 "metrics": _contingency_metrics(counts), "coverage": comparison_coverage})
     for source, stamps in expected_times.items():
         for expected_stamp in stamps:
             try:
@@ -529,19 +596,14 @@ def build_archive_report(*, task_id: str, plan: dict[str, Any],
                 continue
             pair = (source, stamp)
             if pair not in listed_pairs:
+                status = ("unknown_ambiguous_frame_records" if pair in ambiguous_frames else
+                          "unknown_invalid_frame_record" if pair in invalid_frames else "unknown_not_compared")
                 satellite_frames.append({"source": source, "valid_time": stamp,
-                                         "status": "unknown_not_compared", "metrics": None})
+                                         "status": status, "metrics": None})
     expected_pair_count = sum(len(stamps) for stamps in expected_times.values())
     if observed_count:
         satellite_status = "comparison_only" if observed_count == expected_pair_count else "partial_comparison"
-        tp, fp, fn = (aggregate["true_positive_pixels"], aggregate["false_positive_pixels"],
-                      aggregate["false_negative_pixels"])
-        satellite_metrics = {
-            **aggregate,
-            "intersection_over_union": tp / (tp + fp + fn) if tp + fp + fn else None,
-            "probability_of_detection": tp / (tp + fn) if tp + fn else None,
-            "false_alarm_ratio": fp / (tp + fp) if tp + fp else None,
-        }
+        satellite_metrics = _contingency_metrics(aggregate)
     else:
         satellite_status = "not_supplied"
         satellite_metrics = None
@@ -640,6 +702,8 @@ def build_archive_report(*, task_id: str, plan: dict[str, Any],
             quality_control={"status": "partial" if incomplete else "processed",
                               "processed_frames": len(successful),
                               "failed_frames": len(errors),
+                              "ambiguous_source_time_groups": len(ambiguous_frames),
+                              "invalid_source_time_groups": len(invalid_frames),
                               "track_count": sum(item["track_count"] for item in track_rows)},
             sources=source_refs,
             calibration_version="not_applicable",
@@ -665,7 +729,13 @@ def build_archive_report(*, task_id: str, plan: dict[str, Any],
         "status": "partial" if incomplete else "completed",
         "plan": plan,
         "coverage": coverage,
-        "frames": frame_records,
+        "frames": [
+            {**row, "status": "unknown_ambiguous_frame_records", "result": None,
+             "reason_code": "duplicate_source_time_records"} if _frame_key(row) in ambiguous_frames else
+            {**row, "status": "unknown_invalid_frame_record", "result": None,
+             "reason_code": "invalid_frame_record"} if _frame_key(row) in invalid_frames else row
+            for row in frame_records
+        ],
         "tracks_by_source": track_rows,
         "cross_source_candidate_agreement": source_agreement or {
             "status": "not_applicable_single_source",
