@@ -9,6 +9,7 @@ Numerical candidates are never presented as independently confirmed polar lows.
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import hashlib
 import json
 from pathlib import Path
@@ -22,6 +23,49 @@ sys.path[:0] = [str(ROOT), str(ROOT / "tests"), str(ROOT / "scripts")]
 from arktika.geo import grid
 from arktika.workstation import Workstation
 from server import LocalServer
+
+
+@contextmanager
+def browser_failure_artifacts(get_page, output, report):
+    """Capture evidence before Playwright tears down a failed browser session."""
+    try:
+        yield
+    except Exception as error:
+        failure = {"error_type": type(error).__name__, "error": str(error),
+                   "active_check": report.get("active_check"),
+                   "last_passed_check": report["checks"][-1]["name"] if report["checks"] else None}
+        page = get_page()
+        if page is not None and not page.is_closed():
+            try:
+                failure["state"] = page.evaluate("""()=>{
+                    const text=id=>document.querySelector(id)?.textContent||'',
+                      calendar=document.querySelector('#calendar'),
+                      state=typeof S==='undefined'?null:S,
+                      workspace=typeof PMCW==='undefined'?null:PMCW;
+                    return {url:location.origin+location.pathname,day:state?.day,month:state?.month,
+                      server_state_ready:!!state?.serverState,server_last_date:state?.serverState?.last_date,
+                      map:state?.map?.grid,calendar_children:calendar?.children.length,
+                      calendar_first_date:calendar?.querySelector('[data-date]')?.dataset.date,
+                      calendar_selected_date:calendar?.querySelector('.selected[data-date]')?.dataset.date,
+                      date_value:document.querySelector('#date')?.value,date_caption:text('#dateCaption'),
+                      pmc_current_analysis:text('#pmcCurrentAnalysis'),pmc_status:text('#pmcWorkspaceStatus'),
+                      run_result:text('#pmcRunResult'),annotation_error:text('#pmcAnnotationError'),
+                      status:text('#status'),toast:text('#toast'),
+                      pmc:workspace?{restoring:workspace.restoring,restored:workspace.restored,
+                        candidate_count:workspace.result?.candidate_count,valid_time:workspace.result?.valid_time,
+                        annotation_count:workspace.annotations.length,bookmark_id:workspace.bookmarkId}:null};
+                }""")
+            except Exception as diagnostic_error:
+                failure["state_error"] = str(diagnostic_error)
+            try:
+                page.screenshot(path=str(output / "failure.png"), timeout=10000)
+                failure["screenshot"] = "failure.png"
+            except Exception as screenshot_error:
+                failure["screenshot_error"] = str(screenshot_error)
+        report["failure"] = failure
+        (output / "failure.json").write_text(json.dumps(failure, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(json.dumps(failure, ensure_ascii=False), flush=True)
+        raise
 
 
 def install_input_fields(app, args):
@@ -108,6 +152,9 @@ def main():
         root = Path(temp)
         app = Workstation(root / "state", root / "downloads")
         app.era5_credentials({"clear": True})
+        # boot() restores this date after its asynchronous /api/state request.
+        # Seed it before navigation instead of racing that restore with setDate().
+        app.store.set_setting("last_date", args.time[:10])
         server = None
         try:
             identities, report["inputs"], report["provenance"] = install_input_fields(app, args)
@@ -127,7 +174,8 @@ def main():
             server = LocalServer(("127.0.0.1", 0), app)
             threading.Thread(target=server.serve_forever, daemon=True).start()
             base = f"http://127.0.0.1:{server.server_port}"
-            with sync_playwright() as pw:
+            page = None
+            with sync_playwright() as pw, browser_failure_artifacts(lambda: page, output, report):
                 launch = {"headless": True}
                 if args.executable: launch["executable_path"] = args.executable
                 browser = pw.chromium.launch(**launch)
@@ -137,12 +185,13 @@ def main():
                 requests = []
                 page.on("request", lambda request: requests.append((request.method, request.url)))
                 def check(name, expression):
+                    report["active_check"] = name
                     page.wait_for_function(expression, timeout=60000)
                     report["checks"].append({"name": name, "passed": True})
+                    report.pop("active_check", None)
                     print(name, flush=True)
                 page.goto(base + "/#" + server.key)
-                check("Запуск с реальными полями и новым рабочим местом ПМЦ", f"()=>S.map&&FIELDS.fields.length==={field_count}&&document.querySelector('#pmcWorkspacePanel')")
-                page.evaluate("day=>setDate(day)", args.time[:10])
+                check("Запуск с реальными полями и новым рабочим местом ПМЦ", f"()=>S.map&&S.serverState&&S.day==={json.dumps(args.time[:10])}&&FIELDS.fields.length==={field_count}&&document.querySelector('#pmcWorkspacePanel')")
                 page.locator("#pmcWorkspaceOpen").click()
                 check("Пустое состояние и календарь реального срока доступны", f"()=>S.day==={json.dumps(args.time[:10])}&&document.querySelector('#calendar').children.length>20&&document.querySelector('#pmcCurrentAnalysis').textContent.includes('ещё не открыт')")
                 page.locator("#pmcBookmarksOpen").click()

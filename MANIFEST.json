@@ -128,7 +128,7 @@
     "scripts/fetch_pmc_real_case.py": "4ca248c17fb72e07e1799dcc6a95fc4fc102f88830942e8ada1831362237a5f2",
     "scripts/manifest.py": "966f6ac187ee8966218380a80673e7a527bf891a37a847b04dd46d3f6bec2cf7",
     "scripts/pmc_archive_browser_smoke.py": "8a31106f5041dc8cfaad6096e83f2f6615038e613c515af58bc450d388bec70f",
-    "scripts/pmc_workspace_browser_smoke.py": "fe5dfed2a75c051e2ccd9c40e4dbc6aa22bab6695b813a51c0db7b2423d4e9b5",
+    "scripts/pmc_workspace_browser_smoke.py": "2e533b86ac66abd40d6a28c40e86b28d8cd1d429eebbd4e0eb500b21cc86fa16",
     "scripts/pmc_workspace_state_check.js": "94ff437dcc18dda0847ad12f293ec8460ffafc2de1748f57800b33ece9b2541e",
     "scripts/product_browser_smoke.py": "2d8815dc1b3e71ce0d6d7acb65dd0fb3d75311f6e4531d1dfef7743a1d948a71",
     "scripts/publish.py": "61357a10f32f8589a5b3be29a78e368afc2e5bc3e883e76dd646a5b99acd9e23",
