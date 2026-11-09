@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Сквозные проверки на синтетических данных, не метеорологическая верификация.
+"""Техническая сцена для UI и обязательный реальный профиль из внешнего файла.
+
+Синтетический профиль используется только для проверки отказа при импорте.
+Сценарий не является метеорологической верификацией спутниковых алгоритмов.
 
 По умолчанию настоящий localhost, cookies и CSP. --bridge нужен только для
 изолированных сред и не проверяет браузерную защиту Origin.
@@ -23,6 +26,8 @@ sys.path[:0] = [str(ROOT), str(ROOT / 'tests')]
 from server import LocalServer
 from browser_support import mount
 from arktika.workstation import Workstation
+from arktika.interpretation import parse_profile, utc
+from arktika.source_validation import reject_explicit_synthetic_metadata
 from test_science import fixture
 from test_interpretation import profile
 from playwright.sync_api import sync_playwright
@@ -33,12 +38,28 @@ def main():
     parser.add_argument('--bridge', action='store_true')
     parser.add_argument('--executable')
     parser.add_argument('--output', default='browser-results')
+    parser.add_argument('--real-profile', type=Path, required=True,
+                        help='JSON реального профиля с исходными source, valid_time, lat/lon и уровнями')
     args = parser.parse_args()
+    real_path = args.real_profile.expanduser().resolve(strict=True)
+    real_bytes = real_path.read_bytes()
+    if len(real_bytes) > 1_000_000:
+        parser.error('Реальный профиль должен содержать не более 1 МБ.')
+    real_input = json.loads(real_bytes.decode('utf-8-sig'))
+    reject_explicit_synthetic_metadata(real_input)
+    real_profile = parse_profile(real_input)
+    profile_gap_hours = abs((utc(real_profile['valid_time']) - utc('2026-01-01T00:00:00Z')).total_seconds())/3600
+    if profile_gap_hours <= real_profile['max_hours']:
+        parser.error('Для проверки временной неприменимости нужен реальный профиль вне допуска к технической сцене 2026-01-01 00:00 UTC. Время файла не изменяется.')
+    expected_profile = {key: real_profile[key] for key in ('source', 'valid_time', 'lat', 'lon')}
     out = Path(args.output).resolve()
     out.mkdir(parents=True, exist_ok=True)
     source_names = ['static/studio.js', 'scripts/browser_smoke.py', 'docs/QUICKSTART.html', 'docs/profile-template.csv']
     report = {'mode': 'explicit-http-bridge' if args.bridge else 'native-http',
               'fixture': 'SYNTHETIC SOFTWARE TEST; NOT WEATHER OBSERVATIONS',
+              'real_profile': dict(expected_profile, sha256=hashlib.sha256(real_bytes).hexdigest(),
+                                   filename=real_path.name, levels=len(real_profile['height']),
+                                   fixture_time_gap_hours=profile_gap_hours),
               'source_sha256': {name: hashlib.sha256((ROOT/name).read_bytes()).hexdigest() for name in source_names},
               'checks': [], 'browser_errors': []}
     print(json.dumps({'source_sha256': report['source_sha256']}), flush=True)
@@ -78,8 +99,8 @@ def main():
                         page.wait_for_timeout(100)
                     raise TimeoutError('Не выполнено условие: ' + expression + (f': {last_error}' if last_error else ''))
 
-                def check(name, expression):
-                    wait_js(expression)
+                def check(name, expression, arg=None):
+                    wait_js(expression, arg)
                     report['checks'].append({'name': name, 'passed': True})
 
                 def loaded(product=None, channel=None):
@@ -171,18 +192,36 @@ def main():
                 naive_path.write_text(json.dumps(naive),encoding='utf-8')
                 choose_profile(naive_path)
                 check('Время без часового пояса не угадывается', '()=>document.querySelector("#profileTime").value===""&&document.querySelector("#importProfile").disabled')
-                path=data/'synthetic-profile.json'
+                synthetic_path=data/'synthetic-profile.json'
                 prof=profile();prof['source']='SYNTHETIC BROWSER TEST; NOT OBSERVATIONS';prof['valid_time']='2026-01-01T03:00:23+03:00'
-                path.write_text(json.dumps(prof),encoding='utf-8')
-                choose_profile(path)
-                check('JSON подставляет UTC, секунды и координаты', '()=>document.querySelector("#profileTime").value==="2026-01-01T00:00:23"&&!document.querySelector("#profileMetadata").open&&!document.querySelector("#importProfile").disabled')
+                synthetic_path.write_text(json.dumps(prof),encoding='utf-8')
+                choose_profile(synthetic_path)
+                check('Форма распознаёт UTC и секунды отрицательного примера', '()=>document.querySelector("#profileTime").value==="2026-01-01T00:00:23"&&!document.querySelector("#importProfile").disabled')
+                page.locator('#importProfile').click()
+                check('Синтетический профиль отклоняется без сохранения и выбора', '()=>!UI.profileImportBusy&&UI.profiles.length===0&&!document.querySelector("#profileImportError").hidden&&document.querySelector("#profileImportError").textContent.includes("Синтетические")&&document.querySelector("#routeProfile").value===""&&document.querySelector("#analysisProfile").value===""')
+                choose_profile(real_path)
+                check('Реальный JSON сохраняет исходный UTC, источник и координаты', '''p=>{
+                    const value=document.querySelector('#profileTime').value;
+                    return new Date(value+'Z').getTime()===new Date(p.valid_time).getTime()
+                        && document.querySelector('#profileSource').value===p.source
+                        && Number(document.querySelector('#profileLat').value)===p.lat
+                        && Number(document.querySelector('#profileLon').value)===p.lon
+                        && !document.querySelector('#profileMetadata').open
+                        && !document.querySelector('#importProfile').disabled;
+                }''', expected_profile)
                 screenshot('profile-ready.png')
                 broken=data/'broken.json';broken.write_text('{bad',encoding='utf-8')
                 page.locator('#profileFile').set_input_files(str(broken))
                 check('Неверный файл снимает предыдущий импорт', '()=>UI.profileText===""&&document.querySelector("#importProfile").disabled&&!document.querySelector("#profileImportError").hidden')
-                choose_profile(path)
+                choose_profile(real_path)
                 page.locator('#importProfile').click()
-                check('Профиль сохранён с секундами и выбран для маршрута', '()=>UI.profiles.length===1&&!UI.profileImportBusy&&UI.profiles[0].valid_time.endsWith("00:00:23Z")&&document.querySelector("#routeProfile").value!==""&&document.querySelector("#analysisProfile").value===""')
+                check('Реальный профиль сохранён со своим сроком и выбран для маршрута', 'p=>UI.profiles.length===1&&!UI.profileImportBusy&&UI.profiles[0].valid_time===p.valid_time&&UI.profiles[0].source===p.source&&document.querySelector("#routeProfile").value===UI.profiles[0].id&&document.querySelector("#analysisProfile").value===""', expected_profile)
+                saved_profile = app.get_profile(page.evaluate('UI.profiles[0].id'))
+                for key in ('source', 'valid_time', 'lat', 'lon', 'height', 'temperature', 'pressure'):
+                    if key in real_profile:
+                        assert saved_profile[key] == real_profile[key], 'Импорт изменил '+key+' реального профиля'
+                assert real_path.read_bytes() == real_bytes, 'Исходный профиль изменился во время проверки'
+                report['checks'].append({'name': 'Уровни и фактические метаданные реального профиля сохранены без подмены', 'passed': True})
                 page.locator('#routeProfile').select_option('')
                 page.locator('#calibrationOpen').click()
                 page.locator('#calMode').select_option('assumed')
@@ -201,6 +240,7 @@ def main():
                 screenshot('point.png')
                 page.locator('#analysisProfile').select_option(page.evaluate('UI.profiles[0].id'))
                 check('Выбор профиля точки не меняет профиль маршрута', '()=>UI.analysis?.profile_result!==undefined&&document.querySelector("#routeProfile").value===""')
+                check('Реальный профиль другого срока не используется для ВГО и слоя', 'p=>UI.analysis?.profile_snapshot?.valid_time===p.valid_time&&UI.analysis.profile_result.profile.applicable===false&&UI.analysis.profile_result.height.status==="outside"&&UI.analysis.profile_result.layer.status==="outside"&&!UI.analysis.profile_result.candidate_cloud_top', expected_profile)
                 page.locator('#routeRail').click()
                 coordinates('30,70\n31,71')
                 page.locator('#calculateRoute').click()

@@ -73,19 +73,9 @@ class AnalysisHTTPTests(unittest.TestCase):
         self.assertNotIn('profile_result',a)
         self.assertNotIn('profile_snapshot',a)
 
-    def test_demo_profile_is_explicit_and_marked_synthetic(self):
+    def test_demo_profile_is_rejected_by_working_http_api(self):
         x,y=project_points(self.app.product_grid(self.product),[(30,70)])[0]
-        a=json.loads(self.request('/api/analyse',dict(product=self.product['id'],x=x,y=y,demo_profile=True))[2])
-        self.assertTrue(a.get('profile_auto'))
-        self.assertEqual(a.get('profile_kind'),'synthetic_demo')
-        self.assertEqual(a['profile_snapshot']['data_kind'],'synthetic_demo')
-        self.assertIn('Не является наблюдением или данными модели',a['profile_snapshot']['note'])
-        self.assertIn('profile_result',a)
-        self.assertIn('candidate_cloud_top',a['profile_result'])
-        ct=a['profile_result']['candidate_cloud_top']
-        self.assertTrue(ct.get('has_solution'))
-        self.assertTrue(len(ct.get('candidate_heights_m',[]))>0)
-        self.assertIn('viewing_geometry',a['pixel'])
-        if a['pixel']['viewing_geometry']:
-            self.assertIn('zenith_deg',a['pixel']['viewing_geometry'])
-            self.assertIn('azimuth_deg',a['pixel']['viewing_geometry'])
+        with self.assertRaises(urllib.error.HTTPError) as cm:
+            self.request('/api/analyse',dict(product=self.product['id'],x=x,y=y,demo_profile=True))
+        self.assertEqual(cm.exception.code,400)
+        self.assertIn('реальный профиль',json.loads(cm.exception.read())['error'])

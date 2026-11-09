@@ -6,6 +6,7 @@ import json
 import re
 import numpy as np
 from .catalog import VARIABLES, VERSION
+from ..source_validation import reject_explicit_synthetic_metadata
 
 MAX_POINTS = 9_000_000
 CF_UNITS={'t':'degC','t2m':'degC','sst':'degC','q':'g kg-1','rh':'%','ice':'%','lsm':'%','z':'m','wind':'m s-1','wind10':'m s-1','omega':'Pa s-1','mslp':'hPa'}
@@ -137,6 +138,10 @@ def spatial_slice(ds, area):
 
 def normalize(ds, plan, area=None):
     import xarray as xr
+    # Do not erase an explicit artificial-data label when building a passport.
+    reject_explicit_synthetic_metadata(ds.attrs)
+    for variable in ds.data_vars.values():
+        reject_explicit_synthetic_metadata(variable.attrs)
     ds=spatial_slice(exact_slice(ds,plan),area or plan['area'])
     key=plan['variable'];spec=VARIABLES[key];source=plan['source']
     native_export=ds.attrs.get('version')==VERSION and ds.attrs.get('source')==source and ds.attrs.get('variable')==key and not ds.attrs.get('difference_of')

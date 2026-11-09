@@ -1,21 +1,20 @@
 #!/usr/bin/env python3
-"""Real local HTTP/browser workflow on explicitly synthetic numerical wind.
+"""Local HTTP/browser acceptance using attributed real reanalysis files.
 
-No detector monkeypatches, provider downloads, or meteorological validation.
-Imports NetCDF, runs the real derivative/detector, annotates, exports PNG and
-restores a persistent bookmark after a browser reload.
+Requires existing NetCDF inputs and a provenance manifest with SHA256 hashes.
+Does not generate or substitute weather values. Imports the real fields, runs
+the numerical detector, annotates, exports PNG and restores a persistent bookmark.
+Numerical candidates are never presented as independently confirmed polar lows.
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 import sys
 import tempfile
 import threading
-
-import numpy as np
-import xarray as xr
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT), str(ROOT / "tests"), str(ROOT / "scripts")]
@@ -25,77 +24,105 @@ from arktika.workstation import Workstation
 from server import LocalServer
 
 
-def install_numerical_vortex(app, root):
-    """Gaussian cyclonic wind with known positive centre, not observed weather."""
-    latitude = np.arange(60., 84.01, .25)
-    longitude = np.arange(-25., 70.01, .25)
-    lat, lon = np.meshgrid(latitude, longitude, indexing="ij")
-    earth_radius = 6371000.
-    x = earth_radius * np.cos(np.deg2rad(72.)) * np.deg2rad(lon - 25.)
-    y = earth_radius * np.deg2rad(lat - 72.)
-    envelope = np.exp(-(x*x + y*y)/(2*200000.**2))
-    u, v = -2e-4*y*envelope, 2e-4*x*envelope
-    coords = {"time": np.array(["2024-01-01T00:00:00"], dtype="datetime64[ns]"),
-              "latitude": ("latitude", latitude, {"units": "degrees_north"}),
-              "longitude": ("longitude", longitude, {"units": "degrees_east"})}
-    pressure = dict(coords, pressure_level=("pressure_level", [850.], {"units": "hPa"}))
-    wind = xr.Dataset({
-        "u": (("time", "pressure_level", "latitude", "longitude"), u[None, None].astype("float32"),
-              {"units": "m s-1", "standard_name": "eastward_wind"}),
-        "v": (("time", "pressure_level", "latitude", "longitude"), v[None, None].astype("float32"),
-              {"units": "m s-1", "standard_name": "northward_wind"})}, coords=pressure,
-        attrs={"title": "SYNTHETIC NUMERICAL VORTEX; NOT WEATHER OBSERVATIONS"})
-    mslp = xr.Dataset({"msl": (("time", "latitude", "longitude"),
-                    (101500.-2000.*envelope)[None].astype("float32"), {"units": "Pa"})},
-                    coords=coords, attrs={"title": "SYNTHETIC PRESSURE FOR SOFTWARE TEST"})
-    identities = {}
-    for variable, data, level in (("wind", wind, 850), ("mslp", mslp, None)):
-        path = root / ("synthetic-" + variable + ".nc")
-        data.to_netcdf(path, engine="scipy")
-        app.fields_add({"source": "era5", "variable": variable, "level": level,
-                        "time": "2024-01-01T00:00:00Z", "area": [84, -25, 60, 70],
+def install_input_fields(app, args):
+    """Validate the attribution/hash manifest, then use the normal importer."""
+    provenance = json.loads(Path(args.provenance).read_text(encoding="utf-8"))
+    if (provenance.get("schema_version") != "arktika.real_reanalysis_case.v1"
+            or provenance.get("data_kind") != "analysis"
+            or provenance.get("source") != args.source
+            or provenance.get("time") != args.time
+            or provenance.get("area") != args.area):
+        raise ValueError("Паспорт реального реанализа не соответствует источнику, сроку или области запроса.")
+    if not provenance.get("upstream_objects"):
+        raise ValueError("В паспорте отсутствуют исходные объекты публичного архива.")
+    fields = [("wind", Path(args.input_netcdf), 850)]
+    if args.pressure_netcdf:
+        fields.append(("mslp", Path(args.pressure_netcdf), None))
+    available = {"t500": ("t", 500), "wind10": ("wind10", None),
+                 "sst": ("sst", None), "ice": ("ice", None), "lsm": ("lsm", None)}
+    for item in args.field:
+        key, separator, filename = item.partition("=")
+        if not separator or key not in available or not filename:
+            raise ValueError("Поле задаётся как t500=FILE, wind10=FILE, sst=FILE, ice=FILE или lsm=FILE.")
+        variable, level = available[key]
+        if any(field[0] == variable for field in fields):
+            raise ValueError("Поле задано повторно: " + variable)
+        fields.append((variable, Path(filename), level))
+    identities, verified, hashes = {}, [], {}
+    for variable, path, level in fields:
+        path = path.resolve()
+        if path not in hashes:
+            with path.open("rb") as stream:
+                hashes[path] = hashlib.file_digest(stream, "sha256").hexdigest()
+        records = [item for item in provenance.get("fields", [])
+                   if item.get("variable") == variable and item.get("level") == level
+                   and item.get("time") == args.time and item.get("area") == args.area
+                   and item.get("sha256") == hashes[path]]
+        if len(records) != 1:
+            raise ValueError("Файл не совпадает с единственной записью реального поля в паспорте: " + variable)
+        app.fields_add({"source": args.source, "variable": variable, "level": level,
+                        "time": args.time, "area": args.area,
                         "path": str(path)}, local=True)
-        app.task.join(60)
+        app.task.join(120)
         state = app.fields_state()
         assert state["job"]["status"] == "done", state["job"]
         identities[variable] = state["job"]["field_id"]
-    return identities
+        verified.append({"variable": variable, "level": level, "filename": path.name,
+                         "sha256": hashes[path], "field_id": identities[variable]})
+    return identities, verified, provenance
 
 
-def numerical_check(app, identity):
-    g = grid("barents", 512)
+def numerical_check(app, identity, preset, width):
+    g = grid(preset, width)
     target = {"crs": g["crs"], "width": g["width"], "height": g["height"],
               "transform": list(g["transform"][:6]),
               "resolution_x_m": g["transform"].a, "resolution_y_m": -g["transform"].e}
     result = app.experimental_pmc_candidates(identity, target_grid=target)
-    assert result["candidate_count"] >= 1, result["candidate_count"]
+    assert result["candidate_count"] == len(result["candidates"])
     assert all(c["confirmation_status"] == "not_confirmed" for c in result["candidates"])
-    assert any(c["geometry"]["status"] == "complete" for c in result["candidates"])
-    return result["candidate_count"]
+    assert all(c["geometry"]["status"] in ("complete", "omitted_complexity_limit") for c in result["candidates"])
+    return result
 
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument("--input-netcdf", required=True, help="Existing real u/v 850 hPa NetCDF")
+    parser.add_argument("--pressure-netcdf", help="Existing real mean sea-level pressure NetCDF")
+    parser.add_argument("--field", action="append", default=[], help="Additional real field: t500=FILE, wind10=FILE, sst=FILE, ice=FILE, lsm=FILE")
+    parser.add_argument("--source", choices=("era5", "carra2", "merra2"), required=True)
+    parser.add_argument("--time", required=True, help="Exact analysis UTC, e.g. 2020-01-01T00:00:00Z")
+    parser.add_argument("--area", type=float, nargs=4, required=True, metavar=("N", "W", "S", "E"))
+    parser.add_argument("--provenance", required=True, help="Real-data source/time/area and SHA256 manifest")
+    parser.add_argument("--preset", choices=("barents", "arctic", "kara"), default="barents")
+    parser.add_argument("--width", type=int, choices=(512, 768, 1024), default=512)
     parser.add_argument("--output", default="browser-results/pmc-workspace")
     parser.add_argument("--executable")
-    parser.add_argument("--fixture-only", action="store_true", help="Run real numerical path without a browser")
+    parser.add_argument("--numerical-only", action="store_true", help="Import and calculate the real fields without a browser")
     args = parser.parse_args()
     output = Path(args.output).resolve(); output.mkdir(parents=True, exist_ok=True)
-    report = {"mode": "numerical-only" if args.fixture_only else "native-http",
-              "fixture": "SYNTHETIC NUMERICAL VORTEX; NOT WEATHER OBSERVATIONS",
+    report = {"mode": "real-data-numerical" if args.numerical_only else "real-data-native-http",
+              "source": args.source, "valid_time": args.time, "area": args.area,
               "checks": [], "browser_errors": [],
-              "network": "localhost only; no CDS/Earthdata/provider requests"}
+              "network": "localhost only; real inputs fetched separately and verified against provenance.json"}
     with tempfile.TemporaryDirectory() as temp:
         root = Path(temp)
         app = Workstation(root / "state", root / "downloads")
         app.era5_credentials({"clear": True})
         server = None
         try:
-            identities = install_numerical_vortex(app, root)
-            count = numerical_check(app, identities["wind"])
+            identities, report["inputs"], report["provenance"] = install_input_fields(app, args)
+            numerical = numerical_check(app, identities["wind"], args.preset, args.width)
+            count = numerical["candidate_count"]
+            regions = sum(candidate["geometry"]["status"] == "complete" for candidate in numerical["candidates"])
+            field_count = len(identities)
+            context_count = 1 + int("mslp" in identities)
+            source_label = {"era5": "ERA5", "carra2": "CARRA2", "merra2": "MERRA-2"}[args.source]
+            analysis_title = f"{source_label} · {args.time[:10]} {args.time[11:16]} UTC · анализ ПМЦ"
+            analysis_notes = "Поля реанализа из публичного архива; источник и SHA256 сохранены в паспорте. Кандидаты требуют независимой проверки; ПМЦ не подтверждены."
+            report["result"] = numerical
             report["checks"].append({"name": "NetCDF → реальная завихрённость → кандидаты и контуры", "passed": True, "candidate_count": count})
-            if args.fixture_only:
-                print(json.dumps(report, ensure_ascii=False, indent=2)); return
+            if args.numerical_only:
+                print(json.dumps({"source": args.source, "time": args.time, "candidate_count": count, "fields": len(identities)}, ensure_ascii=False)); return
             from playwright.sync_api import sync_playwright
             server = LocalServer(("127.0.0.1", 0), app)
             threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -114,25 +141,27 @@ def main():
                     report["checks"].append({"name": name, "passed": True})
                     print(name, flush=True)
                 page.goto(base + "/#" + server.key)
-                check("Запуск с новым рабочим местом ПМЦ", "()=>S.map&&FIELDS.fields.length===2&&document.querySelector('#pmcWorkspacePanel')")
+                check("Запуск с реальными полями и новым рабочим местом ПМЦ", f"()=>S.map&&FIELDS.fields.length==={field_count}&&document.querySelector('#pmcWorkspacePanel')")
+                page.evaluate("day=>setDate(day)", args.time[:10])
                 page.locator("#pmcWorkspaceOpen").click()
-                check("Пустое состояние и календарь доступны", "()=>document.querySelector('#calendar').children.length>20&&document.querySelector('#pmcCurrentAnalysis').textContent.includes('ещё не открыт')")
+                check("Пустое состояние и календарь реального срока доступны", f"()=>S.day==={json.dumps(args.time[:10])}&&document.querySelector('#calendar').children.length>20&&document.querySelector('#pmcCurrentAnalysis').textContent.includes('ещё не открыт')")
                 page.locator("#pmcBookmarksOpen").click()
                 check("Пустой список закладок объяснён", "()=>document.querySelector('#pmcBookmarkList').textContent.includes('пока нет')")
                 page.locator("#pmcBookmarksClose").click()
                 page.locator("#pmcPanelAnalysis").click()
                 page.locator("#pmcCachedField").select_option(identities["wind"])
-                page.locator("#pmcRunCrs").select_option("barents")
-                page.locator("#pmcRunWidth").select_option("512")
+                page.locator("#pmcRunCrs").select_option(args.preset)
+                page.locator("#pmcRunWidth").select_option(str(args.width))
                 page.locator("#pmcRunButton").click()
-                check("Численный расчёт автоматически выбирает проекцию и наносит область", "()=>PMCW.result?.candidate_count>0&&S.map.grid.crs==='EPSG:3995'&&document.querySelector('#pmcOverlay [data-candidate-region]')")
+                check("Численный расчёт совпадает с результатом реального поля и выбирает проекцию", f"()=>PMCW.result?.candidate_count==={count}&&PMCW.result?.source==={json.dumps(args.source)}&&PMCW.result?.valid_time==={json.dumps(args.time)}&&S.map.grid.preset==={json.dumps(args.preset)}&&document.querySelectorAll('#pmcOverlay [data-candidate-region]').length==={regions}")
                 page.locator("#pmcRunResult button").filter(has_text="Перейти к карте").click()
                 page.locator("#pmcReviewFields summary").click()
                 page.locator("#pmcContextMap").click()
-                check("Поля того же срока нанесены штатным рендером", "()=>FIELDS.stack.length===2&&document.querySelectorAll('#reanalysisLayers>g').length===2")
-                # Include a real raster in PNG, not only vector contours/arrows.
+                check("Поля того же срока нанесены штатным рендером", f"()=>FIELDS.stack.length==={context_count}&&document.querySelectorAll('#reanalysisLayers>g').length==={context_count}")
+                # Export the actual wind-speed raster together with vector layers.
                 page.evaluate("async()=>{FIELDS.stack.find(s=>fieldMeta(s.id).variable==='wind').style='fill_arrows';await saveFieldStack();drawFieldStack();await renderFieldMaps();}")
-                check("Изобары видны над заливкой, их легенда без ложной цветовой шкалы", """()=>{
+                if "mslp" in identities:
+                    check("Изобары видны над заливкой, их легенда без ложной цветовой шкалы", """()=>{
                     const layers=[...document.querySelector('#reanalysisLayers').children],
                       wind=FIELDS.stack.find(s=>fieldMeta(s.id).variable==='wind'),
                       pressure=FIELDS.stack.find(s=>fieldMeta(s.id).variable==='mslp'),
@@ -141,20 +170,32 @@ def main():
                       pressureLegend=document.querySelector('[data-layer="'+pressure.id+'"] .field-legend');
                     return layers.indexOf(windMap)<layers.indexOf(pressureMap)&&pressureMap.querySelector('.field-contour')
                       &&!pressureLegend.querySelector('.field-colorbar')&&pressureLegend.textContent.includes('Изолинии');
-                }""")
-                page.locator("#pmcCandidateList button").first.click()
+                    }""")
+                if count:
+                    page.locator("#pmcCandidateList button").first.click()
+                else:
+                    # Zero detections is a valid outcome. Put a manual marker at an
+                    # actual sampled wind vector without altering data or thresholds.
+                    page.evaluate("""async()=>{const wind=FIELDS.stack.find(s=>fieldMeta(s.id).variable==='wind'),
+                        vectors=FIELDS.rendered[wind.id].vectors;
+                        if(!vectors.length)throw Error('В области нет доступной точки ветра для ручной пометки.');
+                        const point=vectors[Math.floor(vectors.length/2)];await pmcAddAnnotation(point.x,point.y);}""")
                 page.locator("#pmcAnnotationStatus").select_option("expert_supported")
                 page.locator("#pmcAnnotationForm button[type=submit]").click()
                 check("Экспертная оценка требует основания", "()=>document.querySelector('#pmcAnnotationError').textContent.includes('основание')&&PMCW.annotations[0].status==='manual_candidate'")
-                page.locator("#pmcAnnotationLabel").fill("СИНТЕТИЧЕСКИЙ СЛУЧАЙ <img src=x onerror=alert(1)>")
-                page.locator("#pmcAnnotationNote").fill("Только проверка интерфейса на синтетических полях; метеорологическая точность не оценивалась.")
+                page.locator("#pmcAnnotationLabel").fill("Проверка подписи <img src=x onerror=alert(1)>")
+                page.locator("#pmcAnnotationNote").fill("Проверка сохранения экспертной пометки. Подтверждение атмосферного случая здесь не выполнялось.")
                 page.locator("#pmcAnnotationForm button[type=submit]").click()
-                check("Наноска отделена от научного результата и безопасна как текст", "()=>PMCW.annotations[0].status==='expert_supported'&&PMCW.result.candidates[0].confirmation_status==='not_confirmed'&&!document.querySelector('#pmcAnnotations img')&&document.querySelector('#pmcAnnotations').textContent.includes('<img src=x onerror=alert(1)>')")
-                page.locator("#pmcAnnotationLabel").fill("Синтетический вихрь")
+                check("Наноска отделена от научного результата и безопасна как текст", "()=>PMCW.annotations[0].status==='expert_supported'&&PMCW.result.candidates.every(candidate=>candidate.confirmation_status==='not_confirmed')&&!document.querySelector('#pmcAnnotations img')&&document.querySelector('#pmcAnnotations').textContent.includes('<img src=x onerror=alert(1)>')")
+                page.locator("#pmcAnnotationStatus").select_option("manual_candidate")
+                page.locator("#pmcAnnotationLabel").fill(("Кандидат " if count else "Область данных ") + source_label)
+                page.locator("#pmcAnnotationNote").fill(
+                    "Вихревой кандидат; нужна проверка облачности, морской поверхности, ветра 10 м и SST − T500. ПМЦ не подтверждён."
+                    if count else "Реальное поле реанализа. Автоматические кандидаты не найдены; это не доказывает отсутствие ПМЦ.")
                 page.locator("#pmcAnnotationForm button[type=submit]").click()
                 check("Кнопки панели читаемы, пустая ошибка не занимает места", "()=>[...document.querySelectorAll('#pmcWorkspacePanel .row button')].every(button=>button.scrollWidth<=button.clientWidth+1)&&document.querySelector('#pmcAnnotationError').getBoundingClientRect().height===0")
-                page.locator("#pmcWorkspaceTitle").fill("СИНТЕТИЧЕСКИЙ ТЕСТ — ПМЦ и закладка")
-                page.locator("#pmcWorkspaceNotes").fill("Пример не является реальным атмосферным случаем.")
+                page.locator("#pmcWorkspaceTitle").fill(analysis_title)
+                page.locator("#pmcWorkspaceNotes").fill(analysis_notes)
                 page.locator("#zoomIn").click()
                 original_view = page.evaluate("S.view")
                 page.evaluate("""()=>{const prototype=CanvasRenderingContext2D.prototype;
@@ -166,14 +207,16 @@ def main():
                 with page.expect_download() as download_info:
                     page.locator("#pmcPngExport").click()
                 downloaded = download_info.value
-                png_path = output / "01-synthetic-analysis.png"
+                png_path = output / f"01-{args.source}-analysis.png"
                 downloaded.save_as(png_path)
                 assert png_path.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
                 from PIL import Image
                 with Image.open(png_path) as image:
                     assert image.width == 1600 and image.height > 1000
                     assert len(image.convert("RGB").getcolors(image.width*image.height)) > 100
-                assert page.evaluate("window.__pmcLegendGradients===1&&window.__pmcExportText.some(text=>text.startsWith('Изолинии '))"), "PNG must distinguish wind fill from pressure contours"
+                assert page.evaluate("window.__pmcLegendGradients===1"), "PNG must show a gradient only for the wind fill"
+                if "mslp" in identities:
+                    assert page.evaluate("window.__pmcExportText.some(text=>text.startsWith('Изолинии '))"), "PNG must distinguish pressure contours from the wind fill"
                 page.evaluate("()=>{CanvasRenderingContext2D.prototype.createLinearGradient=window.__pmcGradient;CanvasRenderingContext2D.prototype.fillText=window.__pmcFillText;}")
                 report["checks"].append({"name": "PNG действительно скачан, содержит карту, растр и легенду", "passed": True})
                 page.locator("#pmcBookmarkSave").click()
@@ -194,14 +237,17 @@ def main():
                 assert saved_notes == "Сохранённый снимок до задержанного ответа"
                 page.locator("#pmcBookmarkSave").click()
                 check("Новые изменения сохраняются отдельным действием", "()=>!PMCW.dirty&&!document.querySelector('#pmcBookmarkSave').disabled")
+                page.locator("#pmcWorkspaceNotes").fill(analysis_notes)
+                page.locator("#pmcBookmarkSave").click()
+                check("Закладка сохраняет реальный анализ без экспертного подтверждения", "()=>!PMCW.dirty&&PMCW.annotations[0].status==='manual_candidate'")
                 page.screenshot(path=str(output / "02-workspace-desktop.png"))
                 before = len([url for method, url in requests if method == "POST" and url.endswith("/api/pmc/run")])
                 page.reload()
-                check("Повторная загрузка приложения завершена", "()=>S.map&&FIELDS.fields.length===2")
+                check("Повторная загрузка приложения завершена", f"()=>S.map&&FIELDS.fields.length==={field_count}")
                 page.locator("#pmcWorkspaceOpen").click()
                 page.locator("#pmcBookmarksOpen").click()
                 page.locator("#pmcBookmarkList button").filter(has_text="Открыть анализ").click()
-                check("Закладка восстанавливает результат и ручную оценку", "()=>PMCW.restored&&PMCW.annotations.length===1&&PMCW.annotations[0].status==='expert_supported'&&document.querySelector('#pmcOverlay [data-candidate-region]')&&FIELDS.stack.length===2")
+                check("Закладка восстанавливает реальный результат и ручную пометку", f"()=>PMCW.restored&&PMCW.annotations.length===1&&PMCW.annotations[0].status==='manual_candidate'&&document.querySelectorAll('#pmcOverlay [data-candidate-region]').length==={regions}&&FIELDS.stack.length==={context_count}")
                 assert page.evaluate("S.view") == original_view
                 assert page.evaluate("PMCW.bookmarkId") == bookmark_id
                 assert before == len([url for method, url in requests if method == "POST" and url.endswith("/api/pmc/run")])

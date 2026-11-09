@@ -20,7 +20,8 @@ def pixel(values=None, unit='K', sun=-15, time='2026-01-01T00:00:00Z'):
 
 
 def profile(**overrides):
-    result=dict(source='SYNTHETIC UNIT TEST ONLY',valid_time='2026-01-01T00:00:00Z',lat=70,lon=30,
+    # Analytic values exercise arithmetic in tests; this is not a supplied example.
+    result=dict(source='Analytic unit-test fixture; not observations',valid_time='2026-01-01T00:00:00Z',lat=70,lon=30,
                 height_units='m',temperature_units='K',height=[0,1000,2000,3000],temperature=[280,274,268,262],
                 pressure=[100000,89000,79000,70000],pressure_units='Pa',humidity_units='kg/kg',
                 specific_humidity=[.004,.003,.002,.001],cloud_liquid=[0,.0001,.0002,0],
@@ -156,13 +157,13 @@ class AnalysisIntegrationTests(unittest.TestCase):
         self.assertNotIn('profile_result',r)
         self.assertNotIn('profile_snapshot',r)
         self.assertNotIn('profile_auto',r)
-    def test_synthetic_profile_requires_explicit_demo_and_is_marked(self):
+    def test_demo_profile_request_is_rejected_without_saved_analysis(self):
         pixel=self.app.pixel(self.query)
         self.assertIsNone(self.app.resolve_auto_profile(pixel['lat'],pixel['lon'],pixel['time']))
-        r=self.app.analyse(dict(self.query,demo_profile=True))
-        self.assertEqual(r['profile_kind'],'synthetic_demo')
-        self.assertEqual(r['profile_snapshot']['data_kind'],'synthetic_demo')
-        self.assertIn('Не является наблюдением или данными модели',r['profile_snapshot']['note'])
+        with self.assertRaisesRegex(ValueError,'Демонстрационный профиль отключён'):
+            self.app.analyse(dict(self.query,demo_profile=True))
+        self.assertFalse(list((self.app.store.root/'analyses').glob('*.json')))
+        self.assertFalse(hasattr(self.app,'_standard_arctic_profile'))
     def test_profile_persisted_selected_by_id(self):
         p=self.app.import_profile(profile());r=self.app.analyse(dict(self.query,profile_id=p['id'],altitude_m=2000))
         self.assertEqual(len(self.app.profiles()),1);self.assertEqual(r['profile_id'],p['id'])

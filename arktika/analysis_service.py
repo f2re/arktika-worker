@@ -6,7 +6,18 @@ import re
 import math
 from pathlib import Path
 from .download import atomic_json
-from .interpretation import parse_profile, spectral, profile_diagnostics, applicability, VERSION
+from .interpretation import parse_profile, spectral, profile_diagnostics, applicability, utc, VERSION
+from .source_validation import reject_explicit_synthetic_metadata
+
+
+def _require_real_profile_input(data):
+    """Check the original declaration before profile normalization drops keys."""
+    reject_explicit_synthetic_metadata(data)
+    if isinstance(data, dict):
+        reject_explicit_synthetic_metadata(data.get('metadata'))
+        text = data.get('text')
+        if isinstance(text, str) and text.lstrip('\ufeff \t\r\n').startswith('{'):
+            reject_explicit_synthetic_metadata(json.loads(text.lstrip('\ufeff')))
 
 
 class AnalysisMixin:
@@ -16,6 +27,7 @@ class AnalysisMixin:
         return root
 
     def import_profile(self, data):
+        _require_real_profile_input(data)
         profile = parse_profile(data)
         profile['id'] = hashlib.sha256(json.dumps(profile,sort_keys=True).encode()).hexdigest()[:24]
         atomic_json(self._analysis_root('profiles')/(profile['id']+'.json'), profile)
@@ -27,6 +39,10 @@ class AnalysisMixin:
             if not re.fullmatch('[0-9a-f]{24}', path.stem):
                 continue
             data = json.loads(path.read_text(encoding='utf-8'))
+            try:
+                _require_real_profile_input(data)
+            except ValueError:
+                continue
             result.append({k:data[k] for k in ('id','source','valid_time','lat','lon','radius_km','max_hours')})
         return sorted(result,key=lambda r:r['valid_time'],reverse=True)
 
@@ -36,17 +52,43 @@ class AnalysisMixin:
         path = self._analysis_root('profiles')/(identity+'.json')
         if not path.is_file():
             raise ValueError('Профиль не найден.')
-        return json.loads(path.read_text(encoding='utf-8'))
+        data = json.loads(path.read_text(encoding='utf-8'))
+        _require_real_profile_input(data)
+        return data
 
     def _extract_era5_profile(self, nc_path, lat, lon, time_str):
         try:
             import xarray as xr
             import numpy as np
             with xr.open_dataset(nc_path) as ds:
+                reject_explicit_synthetic_metadata(ds.attrs)
+                for variable in ds.data_vars.values():
+                    reject_explicit_synthetic_metadata(variable.attrs)
+                time_name = next((name for name in ('valid_time', 'time') if name in ds.coords), None)
+                if time_name is None:
+                    return None
+                time_coord = ds[time_name]
+                if time_coord.ndim > 1 or not np.issubdtype(time_coord.dtype, np.datetime64):
+                    return None
+                wanted = np.datetime64(utc(time_str).replace(tzinfo=None), 'ns')
+                times = np.asarray(time_coord.values).reshape(-1).astype('datetime64[ns]')
+                hits = np.flatnonzero(times == wanted)
+                if hits.size != 1:
+                    return None
+                actual_time = times[int(hits[0])]
+                if time_coord.dims:
+                    ds = ds.isel({time_coord.dims[0]: int(hits[0])})
                 ds_lons = ds.longitude.values
                 target_lon = (lon % 360) if ds_lons.min() >= 0 else lon
                 pt = ds.sel(latitude=lat, longitude=target_lon, method='nearest').squeeze()
-                z = np.asarray(pt.z, float) / 9.80665
+                # ECMWF's spherical geometric-height approximation. Phi/g0 is
+                # geopotential height and must not be labelled geometric AMSL.
+                geopotential_height = np.asarray(pt.z, float) / 9.80665
+                earth_radius = 6371229.0
+                z = np.divide(earth_radius * geopotential_height,
+                              earth_radius - geopotential_height,
+                              out=np.full_like(geopotential_height, np.nan),
+                              where=np.isfinite(geopotential_height) & (np.abs(geopotential_height) < earth_radius))
                 t = np.asarray(pt.t, float)
                 p_hpa = np.asarray(pt.pressure_level, float)
                 valid = np.isfinite(z) & np.isfinite(t) & (t > 120) & (t < 340) & (z >= -500) & (z <= 35000)
@@ -61,10 +103,10 @@ class AnalysisMixin:
                 z, t, p_pa = z[good], t[good], p_pa[good]
                 if len(z) < 2:
                     return None
-                time_iso = time_str if 'Z' in time_str else time_str + 'Z'
+                time_iso = np.datetime_as_string(actual_time, unit='us') + 'Z'
                 actual_lon = float(pt.longitude if pt.longitude <= 180 else pt.longitude - 360)
                 prof_data = {
-                    'source': f"ERA5 Reanalysis (ECMWF, {time_iso[:16].replace('T', ' ')} UTC)",
+                    'source': f"ERA5 Reanalysis (ECMWF, {time_iso[:16].replace('T', ' ')} UTC); геометрическая высота — сферическое приближение",
                     'data_kind': 'era5',
                     'valid_time': time_iso,
                     'lat': float(pt.latitude),
@@ -78,51 +120,23 @@ class AnalysisMixin:
                     'vertical_reference': 'AMSL',
                     'pressure': p_pa.tolist(),
                     'pressure_units': 'Pa',
-                    'note': 'Автоматический профиль реанализа ERA5 (ECMWF) из проверенного кэша.'
+                    'note': 'Профиль ERA5 из локального кэша; фактический срок CF совпадает с метаданными кэша. '
+                            'Геометрическая высота приближена по ECMWF: h=Φ/9.80665, z=R·h/(R−h), R=6371229 м; '
+                            'горизонтальные изменения ускорения тяжести не учтены.'
                 }
                 if 'q' in pt.data_vars:
                     q = np.asarray(pt.q, float)[valid][idx][good]
                     if np.all(np.isfinite(q)) and np.all(q >= 0):
                         prof_data['specific_humidity'] = q.tolist()
                         prof_data['humidity_units'] = 'kg/kg'
-                return parse_profile(prof_data)
+                result = parse_profile(prof_data)
+                result['data_kind'] = 'era5'
+                result['note'] = prof_data['note']
+                return result
         except Exception:
             return None
 
-    def _standard_arctic_profile(self, lat, lon, time_str):
-        heights = [0.0, 111.0, 540.0, 762.0, 988.0, 1457.0, 1949.0, 2466.0, 3012.0, 3591.0, 4206.0,
-                   4865.0, 5574.0, 6344.0, 7185.0, 8117.0, 9164.0, 10363.0, 11784.0, 12500.0,
-                   13608.0, 16180.0, 18440.0, 20580.0, 23850.0, 26400.0, 31100.0]
-        pressures = [101325.0, 100000.0, 95000.0, 92500.0, 90000.0, 85000.0, 80000.0, 75000.0, 70000.0,
-                     65000.0, 60000.0, 55000.0, 50000.0, 45000.0, 40000.0, 35000.0, 30000.0,
-                     25000.0, 20000.0, 17500.0, 15000.0, 10000.0, 7000.0, 5000.0, 3000.0, 2000.0, 1000.0]
-        temps = [288.15, 287.4, 284.6, 283.2, 281.7, 278.7, 275.5, 272.1, 268.6, 264.8, 260.8,
-                 256.5, 251.9, 246.9, 241.4, 235.4, 228.0, 220.2, 213.5, 213.15, 213.8,
-                 216.7, 218.0, 220.0, 223.5, 226.5, 231.0]
-        time_iso = time_str if 'Z' in time_str else time_str + 'Z'
-        prof_data = {
-            'source': 'Демонстрационный синтетический профиль (ICAO/COESA)',
-            'valid_time': time_iso,
-            'lat': float(lat),
-            'lon': float(lon),
-            'radius_km': 500.0,
-            'max_hours': 12.0,
-            'height': heights,
-            'temperature': temps,
-            'pressure': pressures,
-            'height_units': 'm',
-            'temperature_units': 'K',
-            'pressure_units': 'Pa',
-            'vertical_reference': 'AMSL',
-            'note': 'Синтетическая иллюстрация для демонстрации интерфейса. Не является наблюдением или данными модели и не предназначена для метеорологической диагностики.',
-            'data_kind': 'synthetic_demo'
-        }
-        profile = parse_profile(prof_data)
-        profile['data_kind'] = 'synthetic_demo'
-        profile['note'] = prof_data['note']
-        return profile
-
-    def resolve_auto_profile(self, lat, lon, time_str, demonstration=False):
+    def resolve_auto_profile(self, lat, lon, time_str):
         for p_meta in self.profiles():
             try:
                 p = self.get_profile(p_meta['id'])
@@ -153,8 +167,8 @@ class AnalysisMixin:
                     c_lon = (west + east) / 2.0
                     dist = math.hypot(lat - c_lat, (lon - c_lon) * math.cos(math.radians(lat))) * 111.0
                     if dist < best_dist:
-                        prof = self._extract_era5_profile(nc_path, lat, lon, item.get('time', time_str))
-                        if prof:
+                        prof = self._extract_era5_profile(nc_path, lat, lon, item.get('time'))
+                        if prof and applicability(prof, lon, lat, time_str)['applicable']:
                             best_prof = prof
                             best_dist = dist
                             if dist < 300:
@@ -165,13 +179,11 @@ class AnalysisMixin:
                 best_prof['id'] = hashlib.sha256(json.dumps(best_prof, sort_keys=True).encode()).hexdigest()[:24]
                 return best_prof
 
-        if demonstration is True:
-            prof = self._standard_arctic_profile(lat, lon, time_str)
-            prof['id'] = hashlib.sha256(json.dumps(prof, sort_keys=True).encode()).hexdigest()[:24]
-            return prof
         return None
 
     def analyse(self, data):
+        if data.get('demo_profile') is True:
+            raise ValueError('Демонстрационный профиль отключён. Загрузите реальный профиль наблюдений или модели.')
         product = self.product(data['product'])
         scene = self.frozen_scene(product)
         snapshot = self.sample_provenance(scene)
@@ -187,8 +199,7 @@ class AnalysisMixin:
             profile = self.get_profile(data['profile_id'])
         else:
             try:
-                profile = self.resolve_auto_profile(pixel['lat'], pixel['lon'], pixel['time'],
-                                                    demonstration=data.get('demo_profile') is True)
+                profile = self.resolve_auto_profile(pixel['lat'], pixel['lon'], pixel['time'])
                 is_auto = True
             except Exception:
                 profile = None
@@ -217,7 +228,11 @@ class AnalysisMixin:
         path = self._analysis_root('analyses')/(identity+'.json')
         if not path.is_file():
             raise ValueError('Анализ не найден.')
-        return path.read_bytes()
+        content = path.read_bytes()
+        saved = json.loads(content)
+        reject_explicit_synthetic_metadata(saved)
+        _require_real_profile_input(saved.get('profile_snapshot'))
+        return content
 
     def sample_provenance(self, scene):
         from .download import digest

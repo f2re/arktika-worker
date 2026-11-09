@@ -78,15 +78,30 @@ jobs:
       - run: python -m playwright install --with-deps chromium
       - run: node --check static/app.js && node --check static/studio.js && node --check static/catalog.js && node --check static/product_flow.js && node --check static/era5.js && node --check static/reanalysis.js && node --check static/pmc_workspace.js
       - run: node scripts/pmc_workspace_state_check.js
-      - run: python scripts/browser_smoke.py --output browser-results
+      - name: Download the documented real ERA5 case
+        run: |
+          python -m pip install 'numcodecs==0.17.1'
+          python scripts/fetch_pmc_real_case.py --output "${{ runner.temp }}/pmc-era5-real"
+      - run: python scripts/browser_smoke.py --real-profile "${{ runner.temp }}/pmc-era5-real/profile.json" --output browser-results
       - run: python scripts/catalog_browser_smoke.py --output browser-results/catalog
       - run: python scripts/archive_browser_smoke.py --output browser-results/archive
       - run: python scripts/product_browser_smoke.py --output browser-results/products
       - run: python scripts/era5_browser_smoke.py --output browser-results/era5
       - run: python scripts/reanalysis_browser_smoke.py --output browser-results/reanalysis
       - run: python scripts/pmc_archive_browser_smoke.py --output browser-results/pmc-archive
-      - run: python scripts/pmc_workspace_browser_smoke.py --output browser-results/pmc-workspace
-        if: success() || failure()
+      - name: Verify PMC analysis, PNG and bookmarks on real ERA5
+        run: |
+          python scripts/pmc_workspace_browser_smoke.py \
+            --input-netcdf "${{ runner.temp }}/pmc-era5-real/wind850.nc" \
+            --pressure-netcdf "${{ runner.temp }}/pmc-era5-real/surface.nc" \
+            --field "t500=${{ runner.temp }}/pmc-era5-real/t500.nc" \
+            --field "wind10=${{ runner.temp }}/pmc-era5-real/surface.nc" \
+            --field "sst=${{ runner.temp }}/pmc-era5-real/surface.nc" \
+            --field "ice=${{ runner.temp }}/pmc-era5-real/surface.nc" \
+            --field "lsm=${{ runner.temp }}/pmc-era5-real/surface.nc" \
+            --source era5 --time 2020-01-01T00:00:00Z --area 85 -25 60 70 --preset barents \
+            --provenance "${{ runner.temp }}/pmc-era5-real/provenance.json" \
+            --output browser-results/pmc-workspace
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -141,5 +156,5 @@ jobs:
           cp dist/RELEASE_NOTES.md "$RUNNER_TEMP/release-notes.md"
           printf '\nПроверенный коммит: `%s`. [Журнал CI](https://github.com/%s/actions/runs/%s).\n' "$GITHUB_SHA" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" >> "$RUNNER_TEMP/release-notes.md"
           gh release create "$tag" dist/*.zip dist/SHA256SUMS.txt dist/build-info.json dist/RELEASE_NOTES.md \
-            --target "$GITHUB_SHA" --title "Арктика-М $tag — исправления калибровки и продукции" \
+            --target "$GITHUB_SHA" --title "Арктика-М $tag" \
             --notes-file "$RUNNER_TEMP/release-notes.md" --latest
