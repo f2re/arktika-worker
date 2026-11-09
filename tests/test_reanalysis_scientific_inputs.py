@@ -165,7 +165,7 @@ class ContextPreparation(unittest.TestCase):
                     self.assertEqual(state['context_status'], 'expert_review_required')
                     self.assertFalse(start['detector_started'])
                     detector.assert_not_called()
-                    persisted = (app.fields_root/'pmc_prepare_job.json').read_text()
+                    persisted = (app.fields_root/'pmc_prepare_job.json').read_text(encoding='utf-8')
                     self.assertNotIn('TEST-ONLY', persisted)
                     self.assertEqual(json.loads(persisted)['plan']['step_count'], 1)
                     app._pmc_prepare_job['status'] = 'interrupted'

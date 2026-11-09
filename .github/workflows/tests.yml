@@ -86,6 +86,7 @@ jobs:
       - run: python scripts/reanalysis_browser_smoke.py --output browser-results/reanalysis
       - run: python scripts/pmc_archive_browser_smoke.py --output browser-results/pmc-archive
       - run: python scripts/pmc_workspace_browser_smoke.py --output browser-results/pmc-workspace
+        if: success() || failure()
       - uses: actions/upload-artifact@v4
         if: always()
         with:

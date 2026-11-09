@@ -416,7 +416,7 @@ async function pmcRefreshArchivePrepare(){
     if(task.status==='idle'){root.replaceChildren();root.textContent='Подготовка входных полей ещё не запускалась.';$('#pmcArchivePrepareResume').hidden=true;return;}
     const progress=`${task.message||task.status} · готово ${task.prepared||0} из ${task.total||0}`;
     let progressNode=root.querySelector('[data-pmc-progress]');
-    if(!progressNode){progressNode=document.createElement('p');progressNode.dataset.pmcProgress='';root.prepend(progressNode);}
+    if(!progressNode){root.replaceChildren();delete root.dataset.progress;progressNode=document.createElement('p');progressNode.dataset.pmcProgress='';root.append(progressNode);}
     if(root.dataset.progress!==progress){progressNode.textContent=progress;root.dataset.progress=progress;}
     root.querySelectorAll('[data-pmc-action]').forEach(node=>node.remove());
     if(task.status==='needs_action'&&task.needs_action){S.pmcPrepareNeedsAction=task.needs_action;const button=document.createElement('button');button.type='button';button.dataset.pmcAction='';button.className='tonal';button.textContent='Настроить доступ к '+(PMC_SOURCE_LABELS[task.needs_action.source]||task.needs_action.source);button.onclick=()=>{FIELDS.accessReturn=task.needs_action.source;openSourceAccess(task.needs_action.source);};root.append(button);}

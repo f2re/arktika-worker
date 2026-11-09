@@ -34,6 +34,9 @@ def install_synthetic_vorticity(app):
     (field_dir / "metadata.json").write_text(json.dumps({
         "id": field_id, "source": "era5", "time": stamp, "variable": "wind",
         "level": 850, "time_kind": "instantaneous_analysis",
+        # The archive validates the declared domain even in this deliberately
+        # controlled projected-field fixture. It covers the smoke's plan area.
+        "area": [80, -20, 60, 70],
         "sha256": hashlib.sha256(cached).hexdigest(),
     }), encoding="utf-8")
 
@@ -295,6 +298,10 @@ def main():
                     check(
                         "Подготовку в ожидании реквизитов можно отменить и возобновить",
                         '()=>document.querySelector("#pmcArchivePrepareTask").textContent.includes("Подготовка отменена")&& !document.querySelector("#pmcArchivePrepareResume").hidden',
+                    )
+                    check(
+                        "Статус отменённой подготовки заменяет сообщение пустого состояния",
+                        '()=>!document.querySelector("#pmcArchivePrepareTask").textContent.includes("ещё не запускалась")',
                     )
                     assert not any(url.endswith("/api/pmc/archive/run") for _, url in requests)
                     report["checks"].append({"name": "Подготовка и детектор остаются раздельными", "passed": True})
