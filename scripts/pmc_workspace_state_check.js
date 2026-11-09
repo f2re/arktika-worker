@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /* Execute the production workspace state machine with controlled async I/O.
- * This checks race/error handling only; browser/PNG layout has a separate smoke.
+ * This checks race/error handling and automatic layer order; browser/PNG layout
+ * has a separate smoke.
  */
 'use strict';
 const assert=require('node:assert/strict');
@@ -115,6 +116,18 @@ async function concurrentRestoreIsRejected(){
   assert.equal(f.state().bookmarkId,'bookmark-b');
 }
 
+async function contextStackKeepsPressureOverWind(){
+  const f=fixture();
+  f.context.FIELDS.fields=[
+    {id:'pressure',source:RESULT.source,time:RESULT.valid_time,variable:'mslp',level:null},
+    {id:'wind',source:RESULT.source,time:RESULT.valid_time,variable:'wind',level:850},
+  ];
+  await f.run('pmcShowContextFields()');
+  assert.deepEqual(copy(f.context.FIELDS.stack).map(layer=>layer.id),['wind','pressure'],
+    'Cache order must not let a later wind fill obscure pressure contours');
+  assert.equal(f.context.FIELDS.stack[1].style,'contours');
+}
+
 (async()=>{
   for(const [name,check] of [
     ['late save preserves newer edits',delayedSaveKeepsNewEdits],
@@ -122,5 +135,6 @@ async function concurrentRestoreIsRejected(){
     ['failed restore preflight preserves work',()=>restoreFailurePreservesWork(1)],
     ['failed restore after mutation rolls back work',()=>restoreFailurePreservesWork(2)],
     ['concurrent restore is rejected',concurrentRestoreIsRejected],
+    ['automatic stack keeps pressure over wind independently of cache order',contextStackKeepsPressureOverWind],
   ]){await check();console.log('PASS '+name);}
 })().catch(error=>{console.error(error);process.exitCode=1;});

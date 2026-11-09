@@ -6,6 +6,7 @@
 .field-layer .field-time-warning{color:#895211;background:#fff2d9;padding:5px;border-radius:5px;font-size:11px;line-height:1.5}
 .field-render-error{color:#982e42;font-size:11px;line-height:1.5;overflow-wrap:anywhere}
 .field-colorbar{height:7px;border-radius:6px;margin:5px 0}.field-legend-numbers{display:flex;justify-content:space-between;font-size:10px}
+.field-legend-symbol{display:inline-block;width:28px;margin-right:7px;color:#193a61;vertical-align:middle}.field-legend-symbol.line{border-top:2px solid #193a61}
 .field-opacity{display:flex;gap:7px;align-items:center;margin:6px 0}.field-opacity input{flex:1;min-width:30px;margin:0;padding:0}
 .field-layer .row{flex-wrap:wrap;gap:4px}.field-layer select{width:100%;font-size:11px;padding:6px;min-height:32px}
 .field-layer button{min-height:30px;font-size:11px;padding:4px 8px}.field-layer .check{margin:0;align-items:flex-start}
@@ -36,8 +37,9 @@
 #pmcWorkspacePanel{min-width:0;overflow-wrap:anywhere}
 #pmcWorkspacePanel details{margin:14px 0}
 #pmcWorkspacePanel summary{font-weight:650;font-size:13px;cursor:pointer}
-#pmcWorkspacePanel .row{flex-wrap:wrap;gap:6px}
-#pmcWorkspacePanel .row button{flex:1 1 100px}
+#pmcWorkspacePanel .row{display:grid;grid-template-columns:minmax(0,1fr);gap:6px}
+#pmcWorkspacePanel button{max-width:100%;white-space:normal}
+#pmcWorkspacePanel .row button{width:100%;min-width:0;line-height:1.35}
 #pmcWorkspacePanel input,#pmcWorkspacePanel textarea,#pmcWorkspacePanel select{max-width:100%;min-width:0}
 #pmcWorkspacePanel label{display:block;margin:12px 0;font-size:12px}
 .pmc-result-state{font-size:11px;padding:7px;border-radius:7px;background:#f1e9fc;color:#583579}
@@ -48,6 +50,7 @@
 .pmc-annotation-select.selected{border-color:var(--primary);background:var(--tonal)}
 #pmcAnnotationForm{padding:9px;border:1px solid var(--line);border-radius:9px;margin-top:10px}
 #pmcAnnotationHeading{font-size:11px;line-height:1.5}
+#pmcAnnotationError:empty{display:none}
 .pmc-bookmark-card{padding:14px 0;border-bottom:1px solid var(--line);overflow-wrap:anywhere}
 .pmc-bookmark-card h3{font-size:16px}
 .pmc-bookmark-card p{white-space:pre-wrap;max-height:8em;overflow:auto}

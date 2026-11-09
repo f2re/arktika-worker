@@ -122,6 +122,10 @@ def catalog_sessions(app: Any, day: str, filters: dict, offset: int = 0, limit: 
     if platform not in ('', 'ARCM1', 'ARCM2'):
         raise ValueError('Неизвестный аппарат.')
     assets = app.store.assets(day, {'platform': platform})
+    # Capture queue state before scenes() registers completed downloads.
+    # A later completion may remain running until the next poll, never falsely
+    # unregistered because its local-scene snapshot preceded completion.
+    jobs = {j['id']: j for j in app.store.jobs()}
     scenes = app.scenes(day, platform)
     records = app.store.records(day, platform)
     grouped: dict[tuple[str, str], dict] = {}
@@ -131,7 +135,6 @@ def catalog_sessions(app: Any, day: str, filters: dict, offset: int = 0, limit: 
                 continue
             key = row['platform'], row['time']
             grouped.setdefault(key, {'assets': [], 'scenes': [], 'records': []})[kind].append(row)
-    jobs = {j['id']: j for j in app.store.jobs()}
     sessions, visible_assets = [], []
     for (satellite, stamp), group in sorted(grouped.items(), key=lambda x: (x[0][1], x[0][0]), reverse=True):
         aa, recs = group['assets'], group['records']

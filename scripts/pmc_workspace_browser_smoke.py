@@ -132,6 +132,16 @@ def main():
                 check("Поля того же срока нанесены штатным рендером", "()=>FIELDS.stack.length===2&&document.querySelectorAll('#reanalysisLayers>g').length===2")
                 # Include a real raster in PNG, not only vector contours/arrows.
                 page.evaluate("async()=>{FIELDS.stack.find(s=>fieldMeta(s.id).variable==='wind').style='fill_arrows';await saveFieldStack();drawFieldStack();await renderFieldMaps();}")
+                check("Изобары видны над заливкой, их легенда без ложной цветовой шкалы", """()=>{
+                    const layers=[...document.querySelector('#reanalysisLayers').children],
+                      wind=FIELDS.stack.find(s=>fieldMeta(s.id).variable==='wind'),
+                      pressure=FIELDS.stack.find(s=>fieldMeta(s.id).variable==='mslp'),
+                      windMap=document.getElementById('field-map-'+wind.id),
+                      pressureMap=document.getElementById('field-map-'+pressure.id),
+                      pressureLegend=document.querySelector('[data-layer="'+pressure.id+'"] .field-legend');
+                    return layers.indexOf(windMap)<layers.indexOf(pressureMap)&&pressureMap.querySelector('.field-contour')
+                      &&!pressureLegend.querySelector('.field-colorbar')&&pressureLegend.textContent.includes('Изолинии');
+                }""")
                 page.locator("#pmcCandidateList button").first.click()
                 page.locator("#pmcAnnotationStatus").select_option("expert_supported")
                 page.locator("#pmcAnnotationForm button[type=submit]").click()
@@ -139,11 +149,20 @@ def main():
                 page.locator("#pmcAnnotationLabel").fill("СИНТЕТИЧЕСКИЙ СЛУЧАЙ <img src=x onerror=alert(1)>")
                 page.locator("#pmcAnnotationNote").fill("Только проверка интерфейса на синтетических полях; метеорологическая точность не оценивалась.")
                 page.locator("#pmcAnnotationForm button[type=submit]").click()
-                check("Наноска отделена от научного результата и безопасна как текст", "()=>PMCW.annotations[0].status==='expert_supported'&&PMCW.result.candidates[0].confirmation_status==='not_confirmed'&&!document.querySelector('#pmcAnnotations img')")
+                check("Наноска отделена от научного результата и безопасна как текст", "()=>PMCW.annotations[0].status==='expert_supported'&&PMCW.result.candidates[0].confirmation_status==='not_confirmed'&&!document.querySelector('#pmcAnnotations img')&&document.querySelector('#pmcAnnotations').textContent.includes('<img src=x onerror=alert(1)>')")
+                page.locator("#pmcAnnotationLabel").fill("Синтетический вихрь")
+                page.locator("#pmcAnnotationForm button[type=submit]").click()
+                check("Кнопки панели читаемы, пустая ошибка не занимает места", "()=>[...document.querySelectorAll('#pmcWorkspacePanel .row button')].every(button=>button.scrollWidth<=button.clientWidth+1)&&document.querySelector('#pmcAnnotationError').getBoundingClientRect().height===0")
                 page.locator("#pmcWorkspaceTitle").fill("СИНТЕТИЧЕСКИЙ ТЕСТ — ПМЦ и закладка")
                 page.locator("#pmcWorkspaceNotes").fill("Пример не является реальным атмосферным случаем.")
                 page.locator("#zoomIn").click()
                 original_view = page.evaluate("S.view")
+                page.evaluate("""()=>{const prototype=CanvasRenderingContext2D.prototype;
+                    window.__pmcGradient=prototype.createLinearGradient;window.__pmcFillText=prototype.fillText;
+                    window.__pmcLegendGradients=0;window.__pmcExportText=[];
+                    prototype.createLinearGradient=function(...args){window.__pmcLegendGradients++;return window.__pmcGradient.apply(this,args);};
+                    prototype.fillText=function(...args){window.__pmcExportText.push(String(args[0]));return window.__pmcFillText.apply(this,args);};
+                }""")
                 with page.expect_download() as download_info:
                     page.locator("#pmcPngExport").click()
                 downloaded = download_info.value
@@ -154,6 +173,8 @@ def main():
                 with Image.open(png_path) as image:
                     assert image.width == 1600 and image.height > 1000
                     assert len(image.convert("RGB").getcolors(image.width*image.height)) > 100
+                assert page.evaluate("window.__pmcLegendGradients===1&&window.__pmcExportText.some(text=>text.startsWith('Изолинии '))"), "PNG must distinguish wind fill from pressure contours"
+                page.evaluate("()=>{CanvasRenderingContext2D.prototype.createLinearGradient=window.__pmcGradient;CanvasRenderingContext2D.prototype.fillText=window.__pmcFillText;}")
                 report["checks"].append({"name": "PNG действительно скачан, содержит карту, растр и легенду", "passed": True})
                 page.locator("#pmcBookmarkSave").click()
                 check("Закладка подтверждена сервером", "()=>PMCW.bookmarkId&&!PMCW.dirty")

@@ -1,5 +1,6 @@
 """Orchestration/security regressions; SYNTHETIC SOFTWARE TESTS, not observations."""
 import copy
+from contextlib import contextmanager
 import datetime as dt
 import json
 import os
@@ -54,6 +55,28 @@ def fake_report(scene,plan,options,root,credential,identity,runtime,cancel,progr
     folder=Path(root)/'era5'/'runs'/identity;folder.mkdir(parents=True,exist_ok=True)
     atomic_json(folder/'report.json',report)
     return report
+
+
+@contextmanager
+def finish_download_after_scene_snapshot(app):
+    """Publish a real download immediately after reading the local scenes."""
+    pending=threading.Event();release=threading.Event();published=threading.Event();injected=threading.Event()
+    original_update=app.store.update_job;original_scenes=app.scenes
+    def update(identity,**values):
+        if values.get('state')=='done' and threading.current_thread().name=='arktika-download' and not pending.is_set():
+            pending.set()
+            if not release.wait(5):raise AssertionError('Scene snapshot did not release the completed download.')
+            original_update(identity,**values);published.set();return
+        return original_update(identity,**values)
+    def scenes(*args,**kwargs):
+        result=original_scenes(*args,**kwargs)
+        if pending.is_set() and not injected.is_set():
+            injected.set();release.set()
+            if not published.wait(5):raise AssertionError('Download completion was not published.')
+        return result
+    with patch.object(app.store,'update_job',side_effect=update),patch.object(app,'scenes',side_effect=scenes):
+        try:yield pending,injected
+        finally:release.set()
 
 
 class WorkflowTests(unittest.TestCase):
@@ -147,6 +170,29 @@ class WorkflowTests(unittest.TestCase):
         state,_=self.start(calculate=bad)
         self.assertEqual(state['status'],'error');self.assertNotIn('SYNTHETIC-TOKEN',json.dumps(state))
         self.assertTrue(state.get('report_id'))
+    def test_download_finishing_after_scene_snapshot_does_not_block_calculation(self):
+        def bad(*args):
+            report=fake_report(*args);report.update(status='error',message='RTTOV: ошибка тестового расчётчика.');return report
+        with finish_download_after_scene_snapshot(self.app) as (_,injected), patch.object(self.app,'queue_add',wraps=self.app.queue_add) as enqueue:
+            state,run=self.start(calculate=bad)
+        self.assertTrue(injected.is_set(),'The real download must finish inside the tested snapshot gap.')
+        self.assertTrue(run.called,state)
+        self.assertEqual(state['status'],'error');self.assertTrue(state.get('report_id'))
+        queued=[identity for call in enqueue.call_args_list for identity in call.args[0]]
+        self.assertCountEqual(queued,[a['id'] for a in self.assets if a['channel'] in (7,10)],
+                              'Each missing channel must be enqueued exactly once.')
+    def test_catalog_download_finishing_after_scene_snapshot_is_not_unregistered(self):
+        asset=next(a for a in self.assets if a['channel']==7)
+        with finish_download_after_scene_snapshot(self.app) as (pending,injected):
+            self.app.queue_add([asset['id']]);self.assertTrue(pending.wait(5))
+            rows=self.app.sessions(self.scene['time'][:10],{})['sessions']
+        self.assertTrue(injected.is_set(),'The real download must finish inside the tested snapshot gap.')
+        channel=next(c for c in rows[0]['channel_inventory'] if c['channel']==7)
+        self.assertEqual(channel['state'],'running')
+        self.assertIsNone(channel['candidate_id'],'Do not offer a second download during registration.')
+        refreshed=self.app.sessions(self.scene['time'][:10],{})['sessions'][0]
+        self.assertEqual(refreshed['channel_inventory'][6]['state'],'local')
+        self.assertFalse(self.app.registration_errors)
     def test_unexpected_exception_hides_details(self):
         def bad(*args):raise RuntimeError('Bearer SYNTHETIC-TOKEN-NOT-SECRET')
         state,_=self.start(calculate=bad);self.assertEqual(state['status'],'error')

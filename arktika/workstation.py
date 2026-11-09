@@ -292,8 +292,10 @@ class Workstation(PmcWorkspaceMixin, DerivedProductServiceMixin, ReanalysisMixin
   return catalog_sessions(self,day,filters,offset,limit)
  def session(self,platform,stamp):
   result=super().session(platform,stamp);records=[r for r in self.store.records(stamp,platform) if r['time']==stamp]
-  local=next((s for s in self.scenes(stamp,platform) if s['time']==stamp),None)
+  # Queue completion must not be newer than the local-scene snapshot: a file
+  # finishing in between otherwise looks done but falsely unregistered.
   jobs={j['id']:j for j in self.store.jobs()}
+  local=next((s for s in self.scenes(stamp,platform) if s['time']==stamp),None)
   result.update(describe_session(result['assets'],local,jobs))
   result['local_files']=(local or {}).get('channels',[])
   result['local_composites']=(local or {}).get('composites',[])

@@ -131,7 +131,9 @@ function pmcMatchingContext(){
   return FIELDS.fields.filter(f=>!PMCW.unavailableFields.includes(f.id)&&!f.difference_of&&f.source===r.source&&Date.parse(f.time)===Date.parse(r.valid_time));
 }
 async function pmcShowContextFields(){
-  const fields=pmcMatchingContext().filter(f=>f.variable==='mslp'||(f.variable==='wind'&&Number(f.level)===850));
+  // SVG paints later layers above earlier ones: keep pressure over any wind fill.
+  const fields=pmcMatchingContext().filter(f=>f.variable==='mslp'||(f.variable==='wind'&&Number(f.level)===850))
+    .sort((a,b)=>Number(a.variable==='mslp')-Number(b.variable==='mslp'));
   if(!fields.length)throw Error('Для этого источника и срока нет полей в локальном кэше. Подготовьте их через «Поля и расчёт».');
   FIELDS.stack=fields.slice(0,8).map(f=>({id:f.id,opacity:1,visible:true,style:f.variable==='mslp'?'contours':'arrows'}));
   await saveFieldStack();drawFieldStack();drawFieldCache();await renderFieldMaps();pmcWorkspaceDirty();pmcWorkspaceMessage('Показаны доступные ветер 850 гПа и давление этого срока.');
@@ -360,7 +362,7 @@ async function pmcExportPng(){
     // raster bytes can take time; later UI changes must not relabel this image.
     const snapshot=pmcCopy({result:PMCW.result,annotations:PMCW.annotations,warnings:PMCW.warnings,restored:PMCW.restored,
       title:$('#pmcWorkspaceTitle').value,view:S.view,grid:S.map.grid,product:S.product,raster_visible:$('#layerToggle').checked,
-      legends:FIELDS.stack.filter(layer=>layer.visible).map(layer=>({field:fieldMeta(layer.id),render:FIELDS.rendered?.[layer.id]}))});
+      legends:FIELDS.stack.filter(layer=>layer.visible).map(layer=>({field:fieldMeta(layer.id),style:layer.style,render:FIELDS.rendered?.[layer.id]}))});
     const original=$('#map'),svg=original.cloneNode(true),elements=[original,...original.querySelectorAll('*')],copies=[svg,...svg.querySelectorAll('*')];
     const properties=['fill','fill-opacity','stroke','stroke-width','stroke-opacity','stroke-dasharray','stroke-linecap','stroke-linejoin','opacity','visibility','display','font-family','font-size','font-weight','text-anchor','paint-order','vector-effect'];
     for(let i=0;i<elements.length;i++){const style=getComputedStyle(elements[i]);for(const property of properties)copies[i].style.setProperty(property,style.getPropertyValue(property));}
@@ -387,7 +389,7 @@ async function pmcExportPng(){
     const legends=snapshot.legends;
     if(snapshot.product&&snapshot.raster_visible){const p=snapshot.product;lines.push(`Спутник: ${p.title} · ${p.platform} · ${pmcTime(p.time)}`);
       if(p.legend?.palette){const l=p.legend,celsius=l.quantity_kind==='absolute_temperature'&&l.units==='K',offset=celsius?273.15:0;
-        legends.unshift({field:{source_label:p.platform,title:p.title,time:p.time},render:{legend:{colors:l.palette.map(color=>'rgb('+color.join(',')+')'),min:l.display_min-offset,max:l.display_max-offset,unit:celsius?'°C':l.units}}});}
+        legends.unshift({field:{source_label:p.platform,title:p.title,time:p.time},style:'fill',render:{legend:{colors:l.palette.map(color=>'rgb('+color.join(',')+')'),min:l.display_min-offset,max:l.display_max-offset,unit:celsius?'°C':l.units}}});}
     }
     const footerLines=[snapshot.restored?'Сохранённый результат; повторный расчёт не выполнялся.':'Экспериментальные кандидаты по реанализу; не подтверждённые ПМЦ.',
       'Фиолетовый: модельный кандидат; жёлтый: ручной; зелёный: поддержан экспертом; красный: отклонён экспертом.',
@@ -402,9 +404,11 @@ async function pmcExportPng(){
     ctx.fillStyle='#f8fafc';ctx.fillRect(0,0,canvas.width,canvas.height);ctx.fillStyle='#0f172a';ctx.font='bold 28px sans-serif';ctx.fillText(snapshot.title||'Анализ ПМЦ',32,43,mapWidth-64);
     ctx.font='20px sans-serif';heading.forEach((line,index)=>ctx.fillText(line,32,78+index*28));ctx.drawImage(image,0,headerHeight,mapWidth,mapHeight);
     let y=headerHeight+mapHeight+27;
-    for(const {field,render} of legends){const legend=render?.legend;
+    for(const {field,style,render} of legends){const legend=fieldLegendPresentation(style,render);
       ctx.fillStyle='#0f172a';ctx.fillText(`${field?.source_label||field?.source} · ${field?.title||field?.variable} ${field?.level?field.level+' гПа':''} · ${pmcTime(field?.time)}`,32,y);y+=20;
-      if(legend?.colors?.length){const gradient=ctx.createLinearGradient(32,0,432,0);legend.colors.forEach((color,index)=>gradient.addColorStop(index/Math.max(1,legend.colors.length-1),color));ctx.fillStyle=gradient;ctx.fillRect(32,y,400,14);ctx.fillStyle='#0f172a';ctx.fillText(`${num(legend.min,2)} … ${num(legend.max,2)} ${legend.unit}`,450,y+14);}else{ctx.fillStyle='#0f172a';ctx.fillText('Шкала недоступна',32,y+14);}y+=46;
+      if(legend.colors.length){const gradient=ctx.createLinearGradient(32,0,432,0);legend.colors.forEach((color,index)=>gradient.addColorStop(index/Math.max(1,legend.colors.length-1),color));ctx.fillStyle=gradient;ctx.fillRect(32,y,400,14);ctx.fillStyle='#0f172a';ctx.fillText(`${num(legend.min,2)} … ${num(legend.max,2)} ${legend.unit}${legend.description?' · '+legend.description:''}`,450,y+14,mapWidth-482);}
+      else if(legend.symbol){ctx.strokeStyle='#193a61';ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(32,y+7);ctx.lineTo(92,y+7);if(legend.symbol==='arrow'){ctx.lineTo(82,y+2);ctx.moveTo(92,y+7);ctx.lineTo(82,y+12);}ctx.stroke();ctx.fillText(legend.description,110,y+14,mapWidth-142);}
+      else ctx.fillText('Шкала недоступна',32,y+14);y+=46;
     }
     ctx.fillStyle='#334155';foot.forEach((line,index)=>ctx.fillText(line,32,y+index*28));
     const blob=await new Promise((resolve,reject)=>canvas.toBlob(value=>value?resolve(value):reject(Error('PNG не сформирован.')),'image/png'));
