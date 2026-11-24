@@ -82,6 +82,14 @@ def object_validator(metadata):
 
 def download(client,asset,target,progress,cancel,chunk_size=CHUNK,max_size=None):
     target=Path(target)
+    pinned = {key: asset[key] for key in ('provider_sha256', 'object_version') if asset.get(key) is not None}
+    expected_sha = pinned.get('provider_sha256')
+    expected_version = pinned.get('object_version')
+    if expected_sha is not None and (not isinstance(expected_sha, str) or not re.fullmatch(r'[0-9a-f]{64}', expected_sha)):
+        raise NetworkError('Некорректная контрольная сумма поставщика.')
+    if expected_version is not None and (not isinstance(expected_version, str) or not expected_version.strip()
+                                         or expected_version.strip().lower() == 'null'):
+        raise NetworkError('Некорректный идентификатор версии поставщика.')
     target.parent.mkdir(parents=True,exist_ok=True)
     if target.is_symlink():raise NetworkError('Путь назначения — символьная ссылка. Запись отклонена.')
     part=Path(str(target)+'.part');mp=Path(str(target)+'.part.json');done=Path(str(target)+'.download.json')
@@ -89,7 +97,11 @@ def download(client,asset,target,progress,cancel,chunk_size=CHUNK,max_size=None)
     if target.exists():
         try:
             info=json.loads(done.read_text(encoding='utf-8'))
-            if info.get('asset_id')==asset['id'] and info.get('size')==target.stat().st_size and info.get('sha256')==digest(target,cancel):
+            if (isinstance(info, dict) and info.get('asset_id') == asset['id']
+                    and all(info.get(key) == value for key, value in pinned.items())
+                    and info.get('size') == target.stat().st_size
+                    and (expected_sha is None or info.get('sha256') == expected_sha)
+                    and info.get('sha256') == digest(target, cancel)):
                 progress(target.stat().st_size,target.stat().st_size,info.get('access_mode',''))
                 return info
         except (OSError,ValueError):pass
@@ -99,7 +111,9 @@ def download(client,asset,target,progress,cancel,chunk_size=CHUNK,max_size=None)
         try:metadata=json.loads(mp.read_text(encoding='utf-8'))
         except (ValueError,OSError):raise NetworkError('Не читается .part.json. Начните заново через кнопку в очереди.')
     offset=part.stat().st_size if part.exists() else 0
-    if offset and metadata.get('asset_id')!=asset['id']:raise NetworkError('Частичный файл относится к другому объекту и не изменён.')
+    if offset and (not isinstance(metadata, dict) or metadata.get('asset_id') != asset['id']
+                   or any(metadata.get(key) != value for key, value in pinned.items())):
+        raise NetworkError('Частичный файл относится к другому объекту или версии и не изменён.')
     validator_kind,validator=object_validator(metadata)
     if offset and not validator:raise NetworkError('Без ETag/Last-Modified нельзя безопасно продолжить. Используйте «Заново».')
     expected=metadata.get('total',asset.get('size'))
@@ -121,6 +135,8 @@ def download(client,asset,target,progress,cancel,chunk_size=CHUNK,max_size=None)
             if r.status==412:raise NetworkError(error_hint(412,'PreconditionFailed'),412,'PreconditionFailed')
             if r.status==416 and expected==offset and (offset>0 or hdr.get('content-range')=='bytes */0'):break
             if r.status not in (200,206):raise NetworkError(error_hint(r.status,''),r.status)
+            if expected_version is not None and hdr.get('x-amz-version-id') != expected_version:
+                raise NetworkError('Ответ хранилища не подтверждает ожидаемую версию объекта.')
             if hdr.get('content-encoding','identity').lower() not in ('','identity'):
                 raise NetworkError('Сжатый HTTP-ответ не подходит для побайтового возобновления.')
             if r.status==206:
@@ -157,6 +173,7 @@ def download(client,asset,target,progress,cancel,chunk_size=CHUNK,max_size=None)
             expected=total
             if not validator:validator_kind,validator=current_kind,current
             metadata.update(asset_id=asset['id'],total=total,etag=etag or metadata.get('etag',''),last_modified=modified or metadata.get('last_modified',''),response_date=hdr.get('date','') or metadata.get('response_date',''))
+            metadata.update(pinned)
             atomic_json(mp,metadata)
             received=0
             try:
@@ -178,10 +195,15 @@ def download(client,asset,target,progress,cancel,chunk_size=CHUNK,max_size=None)
     if not part.exists():part.touch()
     if part.stat().st_size!=expected:raise NetworkError('Размер загруженного файла не совпал с ожидаемым.')
     sha=digest(part,cancel)
+    if expected_sha is not None and sha != expected_sha:
+        raise NetworkError('SHA256 загруженного файла отличается от контрольной суммы поставщика.')
     # Atomic rename only after a complete, validated response.
     os.replace(str(part),str(target))
     info={'asset_id':asset['id'],'size':expected,'sha256':sha,'time':iso(now()),'access_mode':mode,
-          'etag':metadata.get('etag',''),'note':'SHA-256 вычислен локально, не является сверкой с суммой поставщика.'}
+          'etag':metadata.get('etag',''),
+          'note': ('SHA-256 совпал с контрольной суммой поставщика.' if expected_sha is not None
+                   else 'SHA-256 вычислен локально, не является сверкой с суммой поставщика.')}
+    info.update(pinned)
     atomic_json(done,info)
     try:mp.unlink()
     except FileNotFoundError:pass
