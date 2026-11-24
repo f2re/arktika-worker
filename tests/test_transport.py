@@ -35,14 +35,17 @@ class Raw(io.BytesIO):
         self.headers = headers or {}
 
 class FakeTransport:
-    def __init__(self, signed_fails=False, html=False):
+    def __init__(self, signed_fails=False, html=False, public_fails=False, version=None):
         self.calls = []
         self.signed_fails = signed_fails
         self.html = html
+        self.public_fails = public_fails
+        self.version = version
     def open(self, url, headers=None, method='GET', body=None, timeout=45):
         headers = headers or {}
         self.calls.append((url, dict(headers)))
-        if self.signed_fails and any(k.lower()=='authorization' for k in headers):
+        authenticated = any(k.lower() == 'authorization' for k in headers)
+        if (self.signed_fails and authenticated) or (self.public_fails and not authenticated):
             return Response(Raw(403, b'<Error><Code>AccessDenied</Code></Error>'))
         if self.html:
             bad = b'<html>error</html>'
@@ -50,8 +53,12 @@ class FakeTransport:
         begin, end = headers.get('Range', 'bytes=0-'+str(len(DATA)-1))[6:].split('-')
         begin, end = int(begin), min(int(end), len(DATA)-1)
         payload = DATA[begin:end+1]
-        return Response(Raw(206, payload, {'Content-Range': 'bytes {}-{}/{}'.format(begin, end, len(DATA)),
-            'Content-Length': str(len(payload)), 'Content-Type': 'image/tiff', 'ETag':'"package-fixture-v1"'}))
+        response_headers = {'Content-Range': 'bytes {}-{}/{}'.format(begin, end, len(DATA)),
+                            'Content-Length': str(len(payload)), 'Content-Type': 'image/tiff',
+                            'ETag': '"package-fixture-v1"'}
+        if self.version is not None:
+            response_headers['x-amz-version-id'] = self.version
+        return Response(Raw(206, payload, response_headers))
 
 class PackageChecks(unittest.TestCase):
     def test_runtime_files_present(self):
@@ -94,6 +101,48 @@ class PackageChecks(unittest.TestCase):
             self.assertEqual(info['sha256'],hashlib.sha256(DATA).hexdigest())
             self.assertFalse(Path(str(target)+'.part').exists())
             self.assertEqual(download(c, asset(), target, lambda *x:None, threading.Event())['sha256'], info['sha256'])
+    def test_version_selector_is_signed_via_sts_and_preserved_on_s3_uri(self):
+        http = FakeTransport(public_fails=True, version='v1')
+        client = Client('PACKAGE-TEST', transport=http)
+        client.credentials = {'AccessKeyId': 'fixture-access', 'SecretAccessKey': 'fixture-secret'}
+        client.cred_expiry = time.time() + 3600
+        with client.open_object('s3://package-test-only/fixture_ch04.tif?versionId=v1') as response:
+            self.assertEqual(response.mode, 'sts')
+        self.assertEqual([url for url, _ in http.calls], [URI + '?versionId=v1'] * 2)
+        self.assertTrue(any(key.lower() == 'authorization' for key in http.calls[1][1]))
+
+    def test_real_signature_parameter_keeps_presigned_path(self):
+        http = FakeTransport()
+        client = Client('PACKAGE-TEST', transport=http)
+        with client.open_object(URI + '?X-Amz-Signature=fixture&versionId=v1') as response:
+            self.assertEqual(response.mode, 'presigned')
+        self.assertFalse(any(key.lower() == 'authorization' for key in http.calls[0][1]))
+
+    def test_pinned_download_checks_provider_bytes_and_version_on_reuse(self):
+        expected = hashlib.sha256(DATA).hexdigest()
+        pinned = dict(asset(), uri=URI + '?versionId=v1', object_version='v1', provider_sha256=expected)
+        client = Client(transport=FakeTransport(version='v1'))
+        with tempfile.TemporaryDirectory() as td:
+            target = Path(td) / 'exact.tif'
+            info = download(client, pinned, target, lambda *x: None, threading.Event(), chunk_size=2048)
+            self.assertEqual(info['provider_sha256'], expected)
+            self.assertEqual(info['object_version'], 'v1')
+            self.assertEqual(download(client, pinned, target, lambda *x: None, threading.Event()), info)
+            with self.assertRaisesRegex(NetworkError, 'не подтверждён'):
+                download(client, dict(pinned, object_version='v2'), target, lambda *x: None, threading.Event())
+
+    def test_pinned_download_never_publishes_wrong_bytes_or_version(self):
+        for version, digest, error in (('another', hashlib.sha256(DATA).hexdigest(), 'версию'),
+                                       ('v1', '0' * 64, 'SHA256')):
+            with self.subTest(version=version), tempfile.TemporaryDirectory() as td:
+                target = Path(td) / 'exact.tif'
+                pinned = dict(asset(), uri=URI + '?versionId=v1', object_version='v1', provider_sha256=digest)
+                with self.assertRaisesRegex(NetworkError, error):
+                    download(Client(transport=FakeTransport(version=version)), pinned, target,
+                             lambda *x: None, threading.Event())
+                self.assertFalse(target.exists())
+                self.assertFalse(Path(str(target) + '.download.json').exists())
+
     def test_html_not_saved_as_tiff(self):
         with tempfile.TemporaryDirectory() as td:
             target=Path(td)/'bad.tif'; a=dict(asset(),size=None)

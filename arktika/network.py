@@ -316,12 +316,18 @@ class Client:
             self.event('STS',200,'sts')
             return dict(creds)
     def open_object(self,uri,headers=None,cancel=None,region=REGION,s3_listing=False):
-        if urlsplit(uri).scheme=='s3':uri=s3_url(*s3_parts(uri))
+        original = urlsplit(uri)
+        if original.scheme == 's3':
+            location = urlsplit(s3_url(*s3_parts(uri)))
+            uri = urlunsplit(location._replace(query=original.query))
         headers=dict(headers or {})
         for _ in range(4):
             p=self.validate(uri)
             is_s3=p.hostname in S3_HOSTS
-            presigned=bool(p.query) and not s3_listing
+            presigned = not s3_listing and any(
+                k.lower() in {'x-amz-signature', 'signature'} and value
+                for k, value in parse_qsl(p.query, keep_blank_values=True)
+            )
             key=(p.hostname,p.path.split('/')[1] if '/' in p.path else '')
             if presigned:modes=['presigned']
             elif is_s3:
